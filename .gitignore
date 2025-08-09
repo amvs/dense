@@ -1,0 +1,5 @@
+**/.ipynb_checkpoints
+**/data/MNIST
+**/data/curetgrey
+**/__pycache__
+notes.txt
