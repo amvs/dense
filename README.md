@@ -7,3 +7,7 @@
 1. Classification on MNIST dataset
 
 2. Classification on Curet dataset
+
+# Installation
+
+conda install jupyter scikit-learn

@@ -2,4 +2,7 @@
 **/data/MNIST
 **/data/curetgrey
 **/__pycache__
+**/test
+**/*.egg-info
 notes.txt
+profile*
