@@ -1,13 +1,21 @@
-# Run the file
+# Key Components
+- `dense/` → Subpackage for PyTorch model definitions
+- `training/` → Subpackage for training
+- `scripts/` → Command-line entry point
+- `experiments/` → Auto-created folder storing logs, saved model and configs for reproducibility
+- `configs/` → Subpackage for configuration of hyperparameter
 
-`jupyter nbconvert --to script dense.ipynb` to produce a `dense.py` script.
+# Get Start
 
-# Example Usage
+## Package Requirement
 
-1. Classification on MNIST dataset
+Ensure pytorch environment is working. And addtionally,
+`conda install jupyter scikit-learn matplotlib`
 
-2. Classification on Curet dataset
+## Install the packages to your environment
 
-# Installation
+`pip install -e .`
 
-conda install jupyter scikit-learn
+## Run training
+
+`python scripts/train.py --config configs/mnist.yaml`

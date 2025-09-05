@@ -35,18 +35,26 @@ def checkpoint(func, *args):
     Returns:
         The outputs of the func.
 
-    Example:
-    def MyModule(conv):
-        def operation(img):
-            result = self.non_linear(conv(img.to(torch.complex64)))
-            img = torch.cat([img, result], dim=1)
-            return img
-        return operation
+    Usage Example:
+    # A function factory that get parametric model and return forward function
+    # Note:  The returned function must take arbitary number of tensors as parameters
+    #        And call to this forward function by 
+    #           module(*list) or module(t1, t2, t3)
+
+    def funcFactory(self, conv):
+        def module(*inputs):
+            imgs = torch.cat(inputs, dim=1)
+            img_c = imgs.to(torch.complex64)
+            result = self.nonLinear(conv(img_c))
+            return result
+        return module  
     
-    # Suppose we build a module_list using MyModule in init
+    # Suppose we build a module_list using funcFactory in init
     # so now, in the forward pass, we can do
+    inputs = [img]
     for module in self.module_list:
-        checkpoint(module, img)
+        result = checkpoint(module, *inputs)
+        # possibly collect the result
 
     """
     return CheckpointFunction.apply(func, *args)

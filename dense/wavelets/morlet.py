@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
-
+from dense.helpers import LoggerManager
 def gaussian(x, y, sigma_square, domain='spatial'):
     norm = 2 * np.pi * sigma_square
     if domain == 'spatial':
@@ -36,7 +36,10 @@ def filter_bank(T, S, L):
     Create a filter bank of complex Morlet wavelets.
     T must be even, S must be odd.
     '''
-    print(f'Creating filter bank with Sampling support width={T}, Size={S}, Angles={L} ...')
+    logger = LoggerManager.get_logger()
+    logger.info(f'Creating filter bank with Sampling support width={T}, Size={S}, Angles={L} ...')
+    if T%2==1 or S%2==0:
+        raise ValueError("[Morlet filter]: T={T} must be even, S={S} must be odd.") 
     filters = []
     for orient in range(L):
         theta = orient * np.pi / L
@@ -47,10 +50,12 @@ def filter_bank(T, S, L):
         filter = torch.tensor(filter, dtype=torch.complex64).unsqueeze(0)  # Convert to complex tensor
         filters.append(filter)
     filters = torch.cat(filters, dim=0)  # Shape: (L, S, S)
-    #torch.save(filters, './filters/morlet_S'+str(S)+'_K'+str(L)+'.pt')
     return filters
 
-if __name__ == '__main__':
-    #plot_cont_filter(10)  # Change the size as needed
-    T, S, L = 8, 35, 5
-    filter_bank(T, S, L)
+def morlet(max_scale, nb_orients, T=8, S=3):
+    filters = []
+    for j in range(max_scale):
+        filter = filter_bank(T, S, nb_orients)
+        filters.append(filter)
+        S = 2*S+1
+    return filters

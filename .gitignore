@@ -1,8 +1,8 @@
 **/.ipynb_checkpoints
-**/data/MNIST
-**/data/curetgrey
+**/data
 **/__pycache__
 **/test
 **/*.egg-info
+**/experiments
 notes.txt
 profile*
