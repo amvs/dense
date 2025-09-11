@@ -39,5 +39,6 @@ def get_mnist_loaders(batch_size=64, train_ratio=0.8):
     nb_class = len(stdtrain_dataset.classes)
     sample_img, _ = train_dataset[0]
     logger = LoggerManager.get_logger()
-    logger.info(f"[Ratio:{train_ratio}] Train size: {len(train_dataset)}, Test size: {len(test_dataset)}, # class: {nb_class}, shape {sample_img.shape}")
+    logger.info(f"[Ratio:{train_ratio}] Train size: {len(train_dataset)}, Test size: {len(test_dataset)}")
+    logger.info(f"# class: {nb_class}, shape {sample_img.shape}")
     return train_loader, test_loader, nb_class, sample_img.shape

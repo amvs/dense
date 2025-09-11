@@ -1,6 +1,6 @@
 import os
 import yaml
-
+from dense.helpers import LoggerManager
 def load_config(filename: str):
     if not os.path.exists(filename):
         raise FileNotFoundError(f"Config file not found: {filename}")
@@ -18,7 +18,8 @@ def load_config(filename: str):
 
     if not isinstance(config, dict):
         raise ValueError(f"Config file {filename} must define a dictionary at top-level.")
-
+    logger = LoggerManager.get_logger()
+    logger.info(f"Loading config file {filename}")
     return config
 
 def save_config(folder:str, config):
@@ -31,3 +32,5 @@ def save_config(folder:str, config):
             yaml.safe_dump(config, f, sort_keys=False)
     except Exception as e:
         raise OSError(f"Failed to save config to {file_path}: {e}")
+    logger = LoggerManager.get_logger()
+    logger.info(f"Saving config file {file_path}")

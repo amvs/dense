@@ -5,7 +5,7 @@ nb_orients: 4
 efficient: true
 
 # training setting
-dataset: mnist
+dataset: curet
 classifier_epochs: 10
 conv_epochs: 10
 batch_size: 200

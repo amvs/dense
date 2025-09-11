@@ -5,12 +5,16 @@
 - `experiments/` → Auto-created folder storing logs, saved model and configs for reproducibility
 - `configs/` → Subpackage for configuration of hyperparameter
 
+# Support dataset
+- MNIST
+- curet
+
 # Get Start
 
 ## Package Requirement
 
 Ensure pytorch environment is working. And addtionally,
-`conda install jupyter scikit-learn matplotlib`
+`conda install scikit-learn matplotlib`
 
 ## Install the packages to your environment
 

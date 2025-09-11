@@ -1,6 +1,8 @@
 from .mnist import get_mnist_loaders
+from .curet import get_curet_loaders
 Loaders = {
-    "mnist": get_mnist_loaders
+    "mnist": get_mnist_loaders,
+    "curet": get_curet_loaders
 }
 def get_loaders(dataset, *args, **kwargs):
     if dataset not in Loaders:
