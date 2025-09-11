@@ -4,5 +4,8 @@
 **/test
 **/*.egg-info
 **/experiments
+**/.vscode
+**/.idea
+**/.DS_Store
 notes.txt
 profile*

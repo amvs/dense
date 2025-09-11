@@ -52,17 +52,19 @@ def main():
     classifier_epochs = config["classifier_epochs"]
     conv_epochs = config["conv_epochs"]
     optimizer = torch.optim.Adam([
-        {"params": model.linear.parameters(), "lr": lr, "weight_decay": 0.0},   # no decay for classifier
-        {"params": model.sequential_conv.parameters(), "lr": lr * 0.01, "weight_decay": weight_decay}   # decay for conv
+        {"params": model.linear.parameters(), "lr": lr},   # different lr
+        {"params": model.sequential_conv.parameters(), "lr": lr * 0.01}   # 
     ])
 
-    criterion = nn.CrossEntropyLoss()
+    base_loss = nn.CrossEntropyLoss()
+    with torch.no_grad():
+        original_params = [p.clone().detach() for p in model.parameters()]
     #
     logger.info("Training linear classifier...") 
     model.train_classifier()
     for epoch in range(classifier_epochs):  # Change number of epochs as needed
-        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, criterion, device)
-        test_loss, test_acc = evaluate(model, test_loader, criterion, device)
+        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, base_loss, device)
+        test_loss, test_acc = evaluate(model, test_loader, base_loss, device)
         logger.info(f"Epoch {epoch+1}: Train Acc={train_acc:.4f}, Test Acc={test_acc:.4f}")
     logger.info("Finish linear layer training task.")
 
@@ -73,8 +75,8 @@ def main():
     logger.info("Fine tuning conv layers...")
     model.train_conv()
     for epoch in range(conv_epochs):  # Change number of epochs as needed
-        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, criterion, device)
-        test_loss, test_acc = evaluate(model, test_loader, criterion, device)
+        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, base_loss, device, original_params)
+        test_loss, test_acc = evaluate(model, test_loader, base_loss, device)
         logger.info(f"Epoch {epoch+1}: Train Acc={train_acc:.4f}, Test Acc={test_acc:.4f}")
     logger.info("Finish conv fine tuning task.")
     #
