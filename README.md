@@ -14,7 +14,7 @@
 ## Package Requirement
 
 Ensure pytorch environment is working. And addtionally,
-`conda install scikit-learn matplotlib`
+`conda install scikit-learn matplotlib pandas`
 
 ## Install the packages to your environment
 

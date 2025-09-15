@@ -18,8 +18,29 @@ def load_config(filename: str):
 
     if not isinstance(config, dict):
         raise ValueError(f"Config file {filename} must define a dictionary at top-level.")
-    logger = LoggerManager.get_logger()
-    logger.info(f"Loading config file {filename}")
+    # logger = LoggerManager.get_logger()
+    # logger.info(f"Loading config file {filename}")
+    return config
+
+def apply_overrides(config, overrides):
+    for ov in overrides:
+        if "=" not in ov:
+            raise ValueError(f"Override '{ov}' not in key=value format")
+        k, v = ov.split("=", 1)
+        # try to cast to number or bool
+        if v.lower() in ["true","false"]:
+            v = v.lower() == "true"
+        else:
+            try:
+                v = int(v)
+            except ValueError:
+                try:
+                    v = float(v)
+                except ValueError:
+                    pass  # leave as string
+        config[k] = v
+    # logger = LoggerManager.get_logger()
+    # logger.info(f"Overiding config for {overrides}")
     return config
 
 def save_config(folder:str, config):
