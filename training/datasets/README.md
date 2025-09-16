@@ -1,9 +1,8 @@
 # Dataset
 
-When adding new dataset, add a rule in `.gitignore` file. And only save the download link here.
+Each get_<dataset>_loaders function must return train_loader, test_loader, nb_class, imageshape.
 
-1. curetgrey: Download and compress curetgrey from here: https://www.kaggle.com/datasets/smohsensadeghi/curet-dataset, save it under the project root folder `/data`.
+1. MNIST: it will automatically download if not exist.
 
-2. MNIST: it will automatically download if not exist.
-
-Each get_<dataset>_loaders function must return train_loader, test_loader, nb_class, imageshape
+2. kaggle: a deeper path needs to provide as direct parent of image folders.
+saurabhshahane/barkvn50, smohsensadeghi/curet-dataset, prasunroy/natural-images

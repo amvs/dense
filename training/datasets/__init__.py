@@ -1,14 +1,17 @@
 from .mnist import get_mnist_loaders
-from .curet import get_curet_loaders
+from .kaggle import get_kaggle_loaders
 from .base import split_train_val
-Loaders = {
-    "mnist": get_mnist_loaders,
-    "curet": get_curet_loaders
-}
+
+Loaders = ["mnist", "smohsensadeghi/curet-dataset", "roustoumabdelmoula/textures-dataset", "saurabhshahane/barkvn50",
+"prasunroy/natural-images"]
 
 def get_loaders(dataset, *args, **kwargs):
     if dataset not in Loaders:
         raise ValueError("[training.dataset]: dataset loaders for {dataset} is not supported") 
-    return Loaders[dataset](*args, **kwargs)
+    if dataset == "mnist":
+        loaders = get_mnist_loaders(*args, **kwargs)
+    else:
+        loaders = get_kaggle_loaders(dataset, *args, **kwargs)
+    return loaders
 
 __all__ = ["get_loaders", "split_train_val"]

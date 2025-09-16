@@ -59,7 +59,7 @@ def filter_bank(j, nb_orients, x, y, P):
     return filters 
 
 
-def yang(max_scale, nb_orients, P=256, S=7):
+def yang(max_scale, nb_orients, P=256, S=7, T=0.4):
     '''
         S = 13 is the best recommended size
 
@@ -69,7 +69,7 @@ def yang(max_scale, nb_orients, P=256, S=7):
     logger = LoggerManager.get_logger()
     logger.info(f'Creating filter bank with Sampling support Size={S}, Angles={nb_orients}, Scales={max_scale} ...')
 
-    k = np.fft.fftfreq(P, d=2.0) * 2 * np.pi
+    k = np.fft.fftfreq(P, d=1/T) * 2 * np.pi
     x, y = np.meshgrid(k, k, indexing='ij')
     filters = []
     for j in range(max_scale):

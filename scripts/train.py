@@ -27,14 +27,14 @@ def main():
     config = apply_overrides(config, args.override)
 
     # Create output folder, divides by train ratio
-    train_ratio = config["train_ratio"]
+    val_ratio = config["val_ratio"]
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     if args.sweep_dir is not None: # if this is a sweep job, save to the sweep dir
         if not os.path.exists(args.sweep_dir):
             raise ValueError(f"Sweep dir {args.sweep_dir} does not exist!")
-        exp_dir = os.path.join(args.sweep_dir, f"{train_ratio=}", f"run-{timestamp}")
+        exp_dir = os.path.join(args.sweep_dir, f"{val_ratio=}", f"run-{timestamp}")
     else:
-        exp_dir = os.path.join("experiments", f"{train_ratio=}", f"run-{timestamp}")
+        exp_dir = os.path.join("experiments", f"{val_ratio=}", f"run-{timestamp}")
     os.makedirs(exp_dir, exist_ok=True)
 
     # init logger
@@ -50,7 +50,11 @@ def main():
     batch_size = config["batch_size"]
     train_ratio = config["train_ratio"]
     val_ratio = config["val_ratio"]
+    resize = config["resize"]
+    deeper_path = config["deeper_path"]
     train_loader, test_loader, nb_class, image_shape = get_loaders(dataset=dataset, 
+                                            resize=resize,
+                                            deeper_path=deeper_path,
                                             batch_size=batch_size, 
                                             train_ratio=train_ratio)
     train_loader, val_loader = split_train_val(
@@ -98,7 +102,7 @@ def main():
         val_loss, val_acc = evaluate(model, val_loader, base_loss, device)
         logger.info(f"Epoch {epoch+1}: Train Acc={train_acc:.4f}, Val Acc={val_acc:.4f}")
     test_loss, test_acc = evaluate(model, test_loader, base_loss, device)
-    logger.info("Finish conv fine tuning task. Test Acc={test_acc:.4f}")
+    logger.info(f"Finish conv fine tuning task. Test Acc={test_acc:.4f}")
     #
     save_fine_tuned = os.path.join(exp_dir, "fine_tuned.pt")
     torch.save(model.state_dict(), save_fine_tuned)

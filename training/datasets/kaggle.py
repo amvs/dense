@@ -4,18 +4,43 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import datasets, transforms
 import torch
 from dense.helpers import LoggerManager
-class CuretDataset(Dataset):
-    def __init__(self, root_dir, transform=None):
-        self.root_dir = Path(root_dir)
+import kagglehub
+import os
+
+def get_kaggle_dataset(dataset: str) -> str:
+    """
+    Download (or reuse cached) Kaggle dataset via kagglehub.
+
+    Parameters
+    ----------
+    dataset : str
+        The Kaggle dataset identifier, e.g. "roustoumabdelmoula/textures-dataset".
+
+    Returns
+    -------
+    str
+        Local path to the dataset files.
+    """
+    os.environ['KAGGLEHUB_CACHE'] = './data'
+    # kagglehub automatically caches datasets
+    path = kagglehub.dataset_download(dataset)
+    if not os.path.exists(path):
+        raise RuntimeError(f"Dataset path {path} not found after download.")
+    return path
+
+class KaggleDataset(Dataset):
+    def __init__(self, root_dir, deeper_path='', transform=None):
+        self.root_dir = Path(root_dir) / deeper_path
         self.transform = transform
         self.image_paths = []
         self.labels = []
+
         self.classes = sorted([d.name for d in self.root_dir.iterdir() if d.is_dir()])
         self.class_to_idx = {cls_name: idx for idx, cls_name in enumerate(self.classes)}
 
         for cls in self.classes:
             cls_folder = self.root_dir / cls
-            for img_file in sorted(cls_folder.glob("*.png")) + sorted(cls_folder.glob("*.jpg")) + sorted(cls_folder.glob("*.bmp")):
+            for img_file in sorted(cls_folder.glob("*.png")) + sorted(cls_folder.glob("*.JPG")) +  sorted(cls_folder.glob("*.jpg")) + sorted(cls_folder.glob("*.bmp")):
                 self.image_paths.append(img_file)
                 self.labels.append(self.class_to_idx[cls])
 
@@ -24,7 +49,7 @@ class CuretDataset(Dataset):
 
     def __getitem__(self, idx):
         img_path = self.image_paths[idx]
-        image = Image.open(img_path).convert("L")  # grayscale
+        image = Image.open(img_path).convert("L")  # grayscale only
         label = self.labels[idx]
         if self.transform:
             image = self.transform(image)
@@ -32,12 +57,27 @@ class CuretDataset(Dataset):
 
 
 
-def get_curet_loaders(batch_size=64, train_ratio=0.8):
+def get_kaggle_loaders(dataset_name, resize, deeper_path, batch_size=64, train_ratio=0.8):
+    logger = LoggerManager.get_logger()
+    path = get_kaggle_dataset(dataset_name) # download if not exists
+    logger.info(f"Load dataset {dataset_name} from Kaggle...")
+    logger.info(f"Dataset path: {path} + {deeper_path}")
     transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.3177,), (0.2134,))
+        transforms.Grayscale(num_output_channels=1),
+        transforms.Resize((resize, resize)),      # resize shorter side
     ])
-    dataset = CuretDataset("./data/curetgrey", transform=transform)
+    #dataset = datasets.ImageFolder(root=path, transform=transform)
+    dataset = KaggleDataset(path, deeper_path, transform=transform)
+    mean, std = compute_mean_std(dataset)
+    dataset.transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Grayscale(num_output_channels=1),
+        transforms.Resize((resize, resize)),
+        transforms.Normalize((mean,), (std,))  # only gray
+    ])
+    logger.info(f"mean: {mean}, std: {std}")
+
     # compute split sizes
     total_len = len(dataset)
     train_len = int(total_len * train_ratio)
@@ -52,8 +92,6 @@ def get_curet_loaders(batch_size=64, train_ratio=0.8):
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     nb_class = len(dataset.classes)
     sample_img, _ = train_dataset[0]
-    logger = LoggerManager.get_logger()
-    logger.info("Load dataset curet")
     logger.info(f"[Ratio:{train_ratio}] Train size: {len(train_dataset)}, Test size: {len(test_dataset)}")
     logger.info(f"# class: {nb_class}, shape {sample_img.shape}")
     return train_loader, test_loader, nb_class, sample_img.shape
@@ -78,8 +116,6 @@ def compute_mean_std(dataset):
 
 if __name__ == "__main__":
     # script to run and compute the statistics
-    dataset_path = "./data/curetgrey"  # replace with your path
-    dataset = CuretDataset(dataset_path, transform=transforms.ToTensor())
-    mean, std = compute_mean_std(dataset)
-    print(f"CURET dataset mean: {mean:.6f}, std: {std:.6f}")
+    dataset_name = "smohsensadeghi/curet-dataset"  # replace with your path
+    train_loader, test_loader, nb_class, img_shape = get_kaggle_loaders(dataset_name, resize=64, batch_size=64)
     #CURET dataset mean: 0.317774, std: 0.213433
