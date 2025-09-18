@@ -42,9 +42,11 @@ for run_idx, values in enumerate(all_combinations, 1):
     # Optional: create a run name from param values
     run_name = "_".join([f"{k}{v}" for k, v in zip(keys, values)])
     logger.info(f"Run {run_idx}/{total_runs} — overrides: {overrides}")
-    subprocess.run(["python", "scripts/train.py", "--config", base, "--sweep_dir", sweep_dir, "--override"] + overrides)
-    logger.info(f"Finished run.")
-
+    result = subprocess.run(["python", "scripts/train.py", "--config", base, "--sweep_dir", sweep_dir, "--override"] + overrides)
+    if result.returncode == 0:
+        logger.info(f"Finished run.")
+    else:
+        logger.error(f"Run failed with return code {result.returncode}")
 logger.info("All runs finished.")
 
 logger.info("Analyzing results...")

@@ -22,7 +22,7 @@ def angular(omega, nb_orients):
         return np.cos(nb_orients * omega / 2) * ((omega > -theta ) & (omega < theta ))
 
 
-def filter_bank(j, nb_orients, x, y, P):
+def filter_bank(j, nb_orients, x, y, P, d):
     '''
     Create a filter bank of complex Yang wavelets at scale j.
     '''
@@ -32,8 +32,8 @@ def filter_bank(j, nb_orients, x, y, P):
         periodize_freq_signal = np.zeros((P, P))
         for xx in [-1, 0, 1]:
             for yy in [-1, 0, 1]:
-                x_shifted = x + xx * np.pi
-                y_shifted = y + yy * np.pi
+                x_shifted = x + xx * 2*np.pi/d
+                y_shifted = y + yy * 2*np.pi/d
                 R = np.sqrt(x_shifted**2 + y_shifted**2)
                 Theta = np.atan2(x_shifted, y_shifted)
                 radial_input = np.log2(R + 1e-10)
@@ -59,9 +59,9 @@ def filter_bank(j, nb_orients, x, y, P):
     return filters 
 
 
-def yang(max_scale, nb_orients, P=256, S=7, T=0.4):
+def yang(max_scale, nb_orients, P=256, S=9, d=np.pi/2):
     '''
-        S = 13 is the best recommended size
+        S = 11 is the best recommended size
 
     '''
     if S%2==0:
@@ -69,11 +69,11 @@ def yang(max_scale, nb_orients, P=256, S=7, T=0.4):
     logger = LoggerManager.get_logger()
     logger.info(f'Creating filter bank with Sampling support Size={S}, Angles={nb_orients}, Scales={max_scale} ...')
 
-    k = np.fft.fftfreq(P, d=1/T) * 2 * np.pi
+    k = np.fft.fftfreq(P, d=d) * 2 * np.pi
     x, y = np.meshgrid(k, k, indexing='ij')
     filters = []
     for j in range(max_scale):
-        filter = filter_bank(j, nb_orients, x, y, P)
+        filter = filter_bank(j, nb_orients, x, y, P, d)
         # crop to size SxS
         start = (P - S) // 2
         filter = filter[:, start:start+S, start:start+S]

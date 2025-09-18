@@ -5,8 +5,8 @@ nb_orients: 4
 efficient: true
 
 # training setting
-dataset: prasunroy/natural-images
-deeper_path: data/natural_images/
+dataset: roustoumabdelmoula/textures-dataset
+deeper_path: ''
 resize: 300
 classifier_epochs: 1
 conv_epochs: 1

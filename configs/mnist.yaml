@@ -1,15 +1,15 @@
 # model setting
 wavelet: yang
 max_scale: 2
-nb_orients: 8
+nb_orients: 4
 efficient: true
 
 # training setting
 dataset: mnist
-classifier_epochs: 15
+classifier_epochs: 10
 conv_epochs: 10
 batch_size: 200
 lr: 0.001
 lambda_reg: 1e-5
-train_ratio: 0.9
+train_ratio: 0.85
 val_ratio: 0.1

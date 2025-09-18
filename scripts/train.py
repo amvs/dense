@@ -50,13 +50,18 @@ def main():
     batch_size = config["batch_size"]
     train_ratio = config["train_ratio"]
     val_ratio = config["val_ratio"]
-    resize = config["resize"]
-    deeper_path = config["deeper_path"]
-    train_loader, test_loader, nb_class, image_shape = get_loaders(dataset=dataset, 
-                                            resize=resize,
-                                            deeper_path=deeper_path,
-                                            batch_size=batch_size, 
-                                            train_ratio=train_ratio)
+    if dataset=="mnist":
+        train_loader, test_loader, nb_class, image_shape = get_loaders(dataset=dataset, 
+                                                batch_size=batch_size, 
+                                                train_ratio=train_ratio)
+    else: # only kaggle dataset needs deeper path and resize
+        resize = config["resize"]
+        deeper_path = config["deeper_path"]
+        train_loader, test_loader, nb_class, image_shape = get_loaders(dataset=dataset, 
+                                                resize=resize,
+                                                deeper_path=deeper_path,
+                                                batch_size=batch_size, 
+                                                train_ratio=train_ratio)
     train_loader, val_loader = split_train_val(
                                 train_loader.dataset,
                                 val_ratio=val_ratio,
