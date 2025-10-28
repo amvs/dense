@@ -2,7 +2,7 @@
 
 For any task, follow these steps to ensure smooth collaboration and code quality:
 
-1.  **Create an Issue:** Start by creating an **issue** for the task you'll be working on. This helps track progress and discussions.
+1.  **Create an Issue:** Start by creating an **issue** for the task you'll be working on and assign it to yourself. This helps track progress and discussions.
 2.  **Create a Branch:** When starting work, create a new **branch** from `main`. Name it descriptively (e.g., `feature/add-new-model` or `fix/bug-in-loader`).
     * *Tip:* Commit your changes frequently and push them to this branch.
 3.  **Create a Pull Request (PR):** Once your work is complete, open a **Pull Request** (PR) targeting the `main` branch.
