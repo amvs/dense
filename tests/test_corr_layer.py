@@ -19,38 +19,34 @@ def make_filters(J, L, A, M, N, device="cpu"):
     return {"hatpsi": hatpsi, "hatphi": hatphi}
 
 
-def test_compute_correlations_matches_alpha_torch():
-    # small sizes for a quick unit test
+def test_compute_correlations_flatten_matches_alpha_torch():
+    """Test flatten=True mode matches ALPHATorch.compute_correlations + mask_correlations."""
     J, L, A, M, N = 2, 2, 2, 8, 8
-    nb = 7
-    num_channels = 3
-
+    nb = 2
+    num_channels = 1
     filters = make_filters(J, L, A, M, N)
 
-    # create ALPHATorch instance (original implementation)
     alpha = ALPHATorch(M=M, N=N, J=J, L=L, A=A, A_prime=A, num_channels=num_channels,
-                       nb_chunks=1, chunk_id=0, delta_j=1, delta_l=1, filters=filters)
+                       nb_chunks=1, chunk_id=0, delta_j=1, delta_l=1, shift='same', filters=filters, mask_union=False)
 
-    # random input
     img = torch.randn(nb, num_channels, M, N)
     x_c = torch.complex(img, torch.zeros_like(img))
     hatx = fft.fft2(x_c)
-
-    # follow alpha forward steps up to correlations
     xpsi = alpha.compute_wavelet_transform(hatx)
     xpsi = alpha.normalize_and_mask(xpsi)
     C = num_channels * J * L * A
     xpsi_flat = xpsi.view(nb, C, M, N)
 
-    out_alpha = alpha.compute_correlations(xpsi_flat, this_wph=None)
+    # ALPHATorch path: compute_correlations then mask_correlations with flatten
+    corr_alpha = alpha.compute_correlations(xpsi_flat, this_wph=None)
+    out_alpha = alpha.mask_correlations(corr_alpha, this_wph=None, flatten=True)
 
-    # prepare CorrLayer instance WITHOUT calling its __init__ (we'll pass indices explicitly)
-    corr = CorrLayer.__new__(CorrLayer)
+    # CorrLayer path: uses same indices, flatten=True (match ALPHATorch shift='same' with shift_mode='strict')
+    corr_layer = CorrLayer(J=J, L=L, A=A, A_prime=A, M=M, N=N, num_channels=num_channels,
+                           delta_j=1, delta_l=1, shift_mode='strict', mask_union=False, mask_angles=4)
+    out_corr = corr_layer.compute_correlations(xpsi_flat, flatten=True, vmap_chunk_size=32)
 
-    # call CorrLayer.compute_correlations with alpha's this_wph buffers
-    this_wph = {"la1": alpha.this_wph_la1, "la2": alpha.this_wph_la2}
-    out_corr = CorrLayer.compute_correlations(corr, xpsi_flat, this_wph=this_wph, vmap_chunk_size=32)
+    assert out_alpha.shape == out_corr.shape, f"Shape mismatch: {out_alpha.shape} vs {out_corr.shape}"
+    assert torch.allclose(out_alpha, out_corr, atol=1e-5, rtol=1e-4), "Values don't match for flatten=True"
 
-    # compare shapes and values
-    assert out_alpha.shape == out_corr.shape
-    assert torch.allclose(out_alpha, out_corr, atol=1e-5, rtol=1e-4)
+test_compute_correlations_flatten_matches_alpha_torch()

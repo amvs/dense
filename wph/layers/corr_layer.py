@@ -36,15 +36,32 @@ class CorrLayer(nn.Module):
         self.shift_mode = shift_mode
         self.mask_union = mask_union
         self.mask_angles = mask_angles
-        # precompute index mapping for filter pairs
-        self.idx_wph = self.compute_idx()
 
         masks_shift = masks_subsample_shift(self.J, self.M, self.N, mask_union = self.mask_union, alpha = self.mask_angles)
         masks_shift = torch.cat((torch.zeros(1, self.M, self.N), masks_shift), dim=0)
         masks_shift[0, 0, 0] = 1.0
-
         self.register_buffer("masks_shift", masks_shift.clone().detach())
         self.factr_shift = self.masks_shift.sum(dim=(-2, -1))
+
+        # precompute union mask and per-mask index mappings
+        self.union_of_masks = (self.masks_shift.sum(dim=0) > 0).flatten()  # (M*N,) bool - positions where any mask is nonzero
+        self.n_union = int(self.union_of_masks.sum().item())  # total union positions
+        
+        # for each shift mask, map union positions to actual mask positions
+        # mask_to_union[shift_idx] gives indices in union that correspond to this mask
+        self.mask_to_union = {}
+        for shift_idx in range(len(self.masks_shift)):
+            mask_flat = self.masks_shift[shift_idx].flatten().bool()  # (M*N,)
+            # which union positions correspond to this mask?
+            union_positions = torch.arange(self.n_union)
+            union_to_full = torch.where(self.union_of_masks)[0]  # union idx -> full M*N idx
+            mask_positions_in_full = torch.where(mask_flat)[0]  # mask positions in full M*N
+            # find which union indices map to this mask's positions
+            mask_in_union = torch.tensor([i for i, pos in enumerate(union_to_full) if pos in mask_positions_in_full])
+            self.mask_to_union[shift_idx] = mask_in_union
+
+        # precompute index mapping for filter pairs
+        self.idx_wph = self.compute_idx()
 
         
 
@@ -55,15 +72,17 @@ class CorrLayer(nn.Module):
             return c1 == c2
         elif self.shift_mode == "strict":
             return (c1 == c2) and (j1 == j2) and (l1 == l2)
+        else:
+            return False
 
 
-    def forward(self):
-        # Placeholder for computing indices
+    def compute_idx(self):
         L = self.L
         J = self.J
         A = self.A
         A_prime = self.A_prime
         dj = self.delta_j
+        dl = self.delta_l if self.delta_l is not None else L  # default to all rotations
 
         idx_la1 = []
         idx_la2 = []
@@ -81,7 +100,7 @@ class CorrLayer(nn.Module):
                         j1, min(j1 + 1 + dj, J)
                     ):  # previous scale to scale + delta_j OR max scale (so we don't get too large of a scale difference)
                         for l1 in range(L):  # from 0 to max # of rotations - scale, signal 1
-                            for l2 in range(L):  # same as l1, scale, signal 2
+                            for l2 in range(max(0, l1 + 1 - dl), min(L, l1 + 1 + dl)):  # constrained by delta_l
                                 for a1 in range(A):  # phase shifts, signal 1
                                     for a2 in range(A_prime):  # phase shifts, signal 2
                                         if self.to_shift_color(c1, c2, j1, j2, l1, l2):
@@ -119,41 +138,76 @@ class CorrLayer(nn.Module):
         self.nb_moments = nb_moments
         return idx_wph
 
-    def forward(self, xpsi, vmap_chunk_size: Optional[int] = None):
+
+    # per-pair function: compute correlation and apply mask
+    def _pair_corr(self, hatx_shared, masks_shared, i_idx, j_idx, shift_idx, flatten: bool = True):
+        nb = hatx_shared.shape[0]
+        idx1 = i_idx.unsqueeze(0).to(torch.long)
+        idx2 = j_idx.unsqueeze(0).to(torch.long)
+        shift_idx_1d = shift_idx.unsqueeze(0).to(torch.long)
+        
+        hat1 = hatx_shared.index_select(1, idx1).squeeze(1)  # (nb, M, N)
+        hat2 = hatx_shared.index_select(1, idx2).squeeze(1)
+        prod = hat1 * torch.conj(hat2)
+        corr = fft.ifft2(prod).real  # (nb, M, N)
+        
+        # apply mask (zeros outside mask)
+        mask = masks_shared.index_select(0, shift_idx_1d).squeeze(0)  # (M, N)
+        corr_masked = corr * mask  # (nb, M, N)
+        mask_downsample = masks_shared.sum(dim=0).bool()
+        if flatten:
+            return corr_masked[:, mask_downsample]  # (nb, n_masked)
+        else:
+            return corr_masked # (nb, M, N)
+
+
+    def compute_correlations(self, xpsi, flatten: bool = True, vmap_chunk_size: Optional[int] = None):
         """
-        Compute cross-correlations using FFT and a vmapped per-pair multiply/ifft.
+        Compute cross-correlations using FFT with vmapped per-pair computation.
 
         Args:
-            xpsi: real-valued tensor shaped (nb, C, M, N) where C = num_channels * J * L * A
-            this_wph: optional dict with keys 'la1','la2' to restrict pairs; if None uses full idx_wph
-            vmap_chunk_size: optional int passed to torch.vmap to limit internal batching (controls memory)
+            xpsi: real tensor (nb, C, M, N) where C = num_channels * J * L * A
+            flatten: if True, extract only masked values; if False, return full spatial grid
+            vmap_chunk_size: optional int for vmap memory control
 
         Returns:
-            Tensor of shape (nb, n_pairs, M, N) with real correlations.
+            (nb, n_corrs) with only masked correlation values if flatten=True
+            (nb, n_pairs, M, N) with zeros outside masks if flatten=False
         """
         la1 = self.idx_wph["la1"].to(xpsi.device)
         la2 = self.idx_wph["la2"].to(xpsi.device)
+        shifted = self.idx_wph["shifted"].to(xpsi.device)
 
-        # convert to complex and FFT along spatial dims
         x_c = torch.complex(xpsi, torch.zeros_like(xpsi))
         hatx = fft.fft2(x_c)  # (nb, C, M, N)
 
-        # per-pair function: select two channels and compute ifft( hat1 * conj(hat2) )
-        def _pair_corr(hatx_shared, i_idx, j_idx):
-            # hatx_shared: (nb, C, M, N) passed as None (broadcasted)
-            # i_idx, j_idx: 0-d LongTensors indexing channel dimension.
-            # Avoid converting to Python ints inside vmap (no .item()/int()).
-            # Use index_select with a 1D LongTensor to pick the channel dimension.
-            idx1 = i_idx.unsqueeze(0).to(torch.long)
-            idx2 = j_idx.unsqueeze(0).to(torch.long)
-            hat1 = hatx_shared.index_select(1, idx1).squeeze(1)  # (nb, M, N)
-            hat2 = hatx_shared.index_select(1, idx2).squeeze(1)
-            prod = hat1 * torch.conj(hat2)
-            corr = fft.ifft2(prod).real
-            return corr
+        n_pairs = la1.shape[0]
+        
+        vmapped = torch.vmap(self._pair_corr, in_dims=(None, None, 0, 0, 0, None), out_dims=0, chunk_size=vmap_chunk_size)
+        out = vmapped(hatx, self.masks_shift, la1, la2, shifted, flatten)  # (n_pairs, nb, n_union) if flatten else (n_pairs, nb, M, N)
+        out = out.permute(1, 0, 2)  # (nb, n_pairs, n_union) or (nb, n_pairs, M, N)
+        
+        if flatten:
+            # extract values for each pair's specific mask from union
+            out_list = []
+            for p in range(n_pairs):
+                shift_idx = shifted[p].item()
+                mask_indices = self.mask_to_union[shift_idx]  # positions in union for this mask
+                out_list.append(out[:, p, mask_indices])  # (nb, n_masked_p)
+            return torch.cat(out_list, dim=1)  # (nb, total_masked)
+        else:
+            return out  # (nb, n_pairs, M, N)
 
-        # vmapped over pairs: in_dims (None, 0, 0) means hatx is shared, la1/la2 batched
-        vmapped = torch.vmap(_pair_corr, in_dims=(None, 0, 0), out_dims=0, chunk_size=vmap_chunk_size)
-        out = vmapped(hatx, la1, la2)  # shape (n_pairs, nb, M, N)
-        out = out.permute(1, 0, 2, 3).contiguous()  # (nb, n_pairs, M, N)
-        return out
+    def forward(self, xpsi, flatten: bool = True, vmap_chunk_size: Optional[int] = None):
+        """
+        Compute correlations with masking.
+        
+        Args:
+            xpsi: (nb, C, M, N) real tensor after ReLU/centering
+            flatten: if True return (nb, n_corrs), else sparse (nb, n_pairs, M, N)
+            vmap_chunk_size: memory control for vmap
+        
+        Returns:
+            Masked correlations (flattened or sparse)
+        """
+        return self.compute_correlations(xpsi, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
