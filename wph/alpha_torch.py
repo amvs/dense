@@ -14,7 +14,7 @@ import math
 import sys
 from typing import Optional, Literal
 
-from ops.backend import (
+from wph.ops.backend import (
     SubInitSpatialMean,
     DivInitStd,
     padc,
