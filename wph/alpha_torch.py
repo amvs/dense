@@ -191,6 +191,7 @@ class ALPHATorch(torch.nn.Module):
         psi[2, 1, 1] = -1 / 4
         psi[2, 2, 1] = 1 / 4
         hathaar2d[2, :, :] = fft.fft2(torch.view_as_complex(psi))
+        self.register_buffer("hathaar2d", hathaar2d)
 
         # load masks for aperiodicity
         masks = self.maskns(J, M, N)
@@ -199,7 +200,6 @@ class ALPHATorch(torch.nn.Module):
         else:
             masks = masks.view(1, J, 1, 1, M, N)
 
-        self.register_buffer("hathaar2d", hathaar2d)
         self.register_buffer("masks", masks)
         # self.hathaar2d = nn.Parameter(hathaar2d, requires_grad=False)
         # self.masks = nn.Parameter(masks, requires_grad=False)
@@ -261,7 +261,7 @@ class ALPHATorch(torch.nn.Module):
                             for alpha2 in range(A_prime):
                                 if self.to_shift(j1, j2, l1, l2):  # coeffs whith shifts
                                     idx_la1.append(A * L * j1 + A * l1 + alpha1)
-                                    idx_la2.append(A_prime * L * j2 + A * l2 + alpha2)
+                                    idx_la2.append(A * L * j2 + A * l2 + alpha2)
                                     if self.mask_union:
                                         idx = J
                                     elif self.mask_select == 'j1':
@@ -276,7 +276,7 @@ class ALPHATorch(torch.nn.Module):
                                 else:
                                     idx_la1.append(A * L * j1 + A * l1 + alpha1)
                                     idx_la2.append(
-                                        A_prime * L * j2 + A_prime * l2 + alpha2
+                                        A * L * j2 + A * l2 + alpha2
                                     )
                                     shifted.append(0)
                                     nb_moments += 1
@@ -309,6 +309,7 @@ class ALPHATorch(torch.nn.Module):
         A = self.A
         A_prime = self.A_prime
         dj = self.delta_j
+        dl = self.delta_l
 
         idx_la1 = []
         idx_la2 = []
@@ -326,7 +327,7 @@ class ALPHATorch(torch.nn.Module):
                         j1, min(j1 + 1 + dj, J)
                     ):  # previous scale to scale + delta_j OR max scale (so we don't get too large of a scale difference)
                         for l1 in range(L):  # from 0 to max # of rotations
-                            for l2 in range(L):  # same as l1
+                            for l2 in range(max(0, l1 + 1 - dl), min(L, l1 + 1 + dl)):  # same as l1
                                 for a1 in range(A):  # from 0 to max number of phase shifts
                                     if self.to_shift_color(c1, c2, j1, j2, l1, l2):
                                         idx_la1.append(
