@@ -3,12 +3,9 @@ from torch import nn
 import torch.nn.functional as F
 from wph.ops.backend import SubInitSpatialMean, DivInitStd
 
+
 class ReluCenterLayer(nn.Module):
-    def __init__(self,
-                 J: int,
-                 M: int,
-                 N: int,
-                 normalize:int = True):
+    def __init__(self, J: int, M: int, N: int, normalize: int = True):
         """
         Initializes the ReLU center layer.
         J: number of scales
@@ -22,7 +19,7 @@ class ReluCenterLayer(nn.Module):
         masks = self.maskns(J, M, N)
         # shape to (1, 1, J, 1, 1, M, N) to broadcast over (nb, nc, J, L, A, M, N)
         masks = masks.view(1, 1, J, 1, 1, M, N)
-        self.register_buffer('masks', masks)
+        self.register_buffer("masks", masks)
         self.mean = SubInitSpatialMean()
         self.std = DivInitStd()
 
@@ -37,7 +34,10 @@ class ReluCenterLayer(nn.Module):
         """
         nb, nc = x.shape[:2]
         assert x.shape[2] == self.J, f"Expected J={self.J}, but got {x.shape[2]}"
-        assert x.shape[-2:] == (self.M, self.N), f"Expected spatial dimensions {(self.M, self.N)}, but got {x.shape[-2:]}"
+        assert x.shape[-2:] == (
+            self.M,
+            self.N,
+        ), f"Expected spatial dimensions {(self.M, self.N)}, but got {x.shape[-2:]}"
         # subtract spatial mean
         x = self.mean(x)
         # optionally divide by precomputed std (does not re-center)
@@ -48,7 +48,7 @@ class ReluCenterLayer(nn.Module):
         # apply masks per-scale and return
         x = x * self.masks.expand(nb, nc, -1, -1, -1, -1, -1)
         return x
-    
+
     def maskns(self, J, M, N):
         """
         Create masks for aperiodic images
