@@ -85,9 +85,14 @@ class WaveConvLayer(nn.Module):
             # real_part = expanded_filters.real[:, :, 0, :, :, :]
             # imag_part = expanded_filters.imag[:, :, 0, :, :, :]
             for l in range(self.L):
-                angle = l/ self.L * 360 # Convert to degrees
+                angle = l/ self.L * 180 # Convert to degrees
                # Rotate each part separately
                 rotated_filters = periodic_rotate(filters.flatten(end_dim=-3).clone(), angle)
+                rotated_filters.imag = 0 # zero out imaginary part
+                # kymatio filter bank also does this - claims it makes no difference
+                # bc imag part is already zero (this doesn't seem to be true in practice)
+                # but we zero it out to be consistent
+                
                 # Reconstruct complex filters
                 expanded_filters[:, :, l, :, :, :] = rotated_filters.view_as(expanded_filters[:, :, l, :, :, :])
             filters = expanded_filters

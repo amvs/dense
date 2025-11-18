@@ -230,7 +230,10 @@ class CorrLayer(nn.Module):
         out = vmapped(
             hatx, self.masks_shift, la1, la2, shifted, flatten
         )  # (n_pairs, nb, n_union) if flatten else (n_pairs, nb, M, N)
-        out = out.permute(1, 0, 2)  # (nb, n_pairs, n_union) or (nb, n_pairs, M, N)
+        if flatten:
+            out = out.permute(1, 0, 2)  # (nb, n_pairs, n_union) or (nb, n_pairs, M, N)
+        else:
+            out = out.permute(1, 0, 2, 3)  # (nb, n_pairs, M, N)
 
         if flatten:
             # extract values for each pair's specific mask from union

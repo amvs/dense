@@ -1,8 +1,8 @@
 import torch
 import torch.fft as fft
 from torch import nn
-from utils import create_masks_shift
-from wph.ops.backend import DivInitStd
+from wph.layers.utils import create_masks_shift
+from wph.ops.backend import DivInitStd, maskns
 
 
 class HighpassLayer(nn.Module):
@@ -28,12 +28,12 @@ class HighpassLayer(nn.Module):
         self.mask_union_highpass = mask_union_highpass
         self.build_haar(M=self.M, N=self.N)
         masks_shift, factr_shift = create_masks_shift(
-            J=self.J, M=self.M, mask_union=self.mask_union, mask_angles=self.mask_angles
+            J=self.J, M=self.M, N=self.N, mask_union=self.mask_union, mask_angles=self.mask_angles
         )
         self.register_buffer("masks_shift", masks_shift)
         self.factr_shift = factr_shift
 
-        masks = self.maskns(self.J, self.M, self.N)
+        masks = maskns(self.J, self.M, self.N)
         if self.num_channels == 1:
             masks = masks.unsqueeze(1).unsqueeze(1)  # (J, M, N)
         else:
@@ -51,7 +51,7 @@ class HighpassLayer(nn.Module):
         out = []
         for hid1 in range(nc):
             for hid2 in range(nc):
-                hatpsih_c = hatx_c[:, hid1, ...] * self.hatharr2d[hid2, ...].expand(
+                hatpsih_c = hatx_c[:, hid1, ...] * self.hathaar2d[hid2, ...].expand(
                     nb, -1, -1
                 )
                 xpsih_c = fft.ifft2(hatpsih_c)
@@ -105,3 +105,13 @@ class HighpassLayer(nn.Module):
         self.divinitstdH = [None] * 3 * self.num_channels
         for hid in range(3 * self.num_channels):
             self.divinitstdH[hid] = DivInitStd()
+
+    def select_shifts(self, signal, mask = None):
+        if mask is None:
+            mask = self.masks_shift[-1, ...]
+        shape = signal.shape
+        nb = shape[0]
+        signal = signal.reshape(nb, -1)
+        mask_flat = mask.expand(shape).reshape(nb, -1).bool()
+
+        return signal[mask_flat].reshape(nb, -1)

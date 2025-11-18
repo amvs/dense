@@ -1,7 +1,7 @@
 import torch
 import torch.fft as fft
 from torch import nn
-from wph.ops.backend import DivInitStd, SubInitSpatialMean
+from wph.ops.backend import DivInitStd, SubInitSpatialMean, maskns
 
 
 class LowpassLayer(nn.Module):
@@ -27,7 +27,7 @@ class LowpassLayer(nn.Module):
         self.divinitstdJ = DivInitStd()
         self.subinitmeanJ = SubInitSpatialMean()
 
-        masks = self.maskns(self.J, self.M, self.N)
+        masks = maskns(self.J, self.M, self.N)
         if self.num_channels == 1:
             masks = masks.unsqueeze(1).unsqueeze(1)  # (J, M, N)
         else:
@@ -44,7 +44,7 @@ class LowpassLayer(nn.Module):
 
         xphi0_c = xphi0_c.abs()
 
-        z = xphi0_c.repeat(1, self.num_channels, 1, 1)
+        z = xphi0_c.repeat(1, nc, 1, 1)
         z_ = torch.repeat_interleave(xphi0_c, self.num_channels, dim=1)
         xphi0_c = fft.ifft2(fft.fft2(z) * torch.conj(fft.fft2(z_)))
 

@@ -129,7 +129,7 @@ def periodic_rotate(spatial_filters, angle_degrees):
     # We use bilinear interpolation. Because we padded circularly, 
     # "out of bounds" checks will land on valid wrapped data.
     output_stack = F.grid_sample(
-        f_padded_stack, sample_grid, mode='bilinear', padding_mode='zeros', align_corners=False
+        f_padded_stack, sample_grid, mode='nearest', padding_mode='zeros', align_corners=False
     )
     
     # 7. Reconstruct
@@ -138,3 +138,12 @@ def periodic_rotate(spatial_filters, angle_degrees):
     spatial_rot = torch.fft.ifft2(f_hat_rot)
     
     return spatial_rot
+
+
+def apply_phase_shifts(filters: torch.Tensor, A: int) -> torch.Tensor:
+    expanded_filters = filters.expand(-1, -1, -1, A, -1, -1).clone()  # Clone to avoid in-place operations
+    for a in range(A):
+        i = torch.complex(torch.tensor(0.0), torch.tensor(1.0))
+        phase_shift = torch.exp(i * a * (2 * torch.pi / A))
+        expanded_filters[:, :, :, a, :, :] = expanded_filters[:, :, :, a, :, :] * phase_shift
+    return(expanded_filters)

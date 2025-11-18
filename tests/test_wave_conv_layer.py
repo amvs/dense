@@ -3,8 +3,8 @@ import os
 import sys
 import pdb
 from torchviz import make_dot
+import math
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from dense.wavelets import morlet
 
 # Add the project root directory to the Python path
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -67,7 +67,7 @@ def test_wave_conv_layer_gradients_compare_share_rotations():
 
 
     # Case 2: share_rotations=False
-    layer_not_shared = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=1, train_filters=True, share_rotations=False, filters = filters.unsqueeze(2).unsqueeze(0))
+    layer_not_shared = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=1, train_filters=True, share_rotations=False, filters = layer_shared.get_full_filters().clone())
     output_not_shared = layer_not_shared(x)
     loss_not_shared = output_not_shared.abs().sum()
     loss_not_shared.backward()
@@ -79,12 +79,53 @@ def test_wave_conv_layer_gradients_compare_share_rotations():
 
 
     # Compare gradients
-    assert torch.allclose(layer_not_shared.base_filters, layer_shared.get_full_filters())
-    assert torch.allclose(grad_shared.sum(), grad_not_shared.sum()), "Summed gradients do not match between share_rotations=True and False."
+    # Explicitly sum gradients across the L dimension for the not-shared case
+    grad_not_shared_summed = grad_not_shared.sum(dim=2)  # Summing across the L dimension
 
-if __name__ == "__main__":
-    # test_wave_conv_layer_gradients_share_rotations()
-    # test_wave_conv_layer_gradients_share_phases()
-    # test_wave_conv_layer_gradients_share_channels()
-    test_wave_conv_layer_gradients_compare_share_rotations()
-    print("All tests passed.")
+    # Check if the summed gradients match
+    assert torch.allclose(layer_not_shared.base_filters, layer_shared.get_full_filters()), "Filters do not match between shared and not-shared cases."
+    assert torch.allclose(grad_shared, grad_not_shared_summed), "Gradients do not match after summing across the L dimension."
+
+def test_wave_conv_layer_gradients_compare_share_phases():
+    J, L, A, M, N = 3, 4, 2, 8, 8
+    torch.autograd.set_detect_anomaly(True)
+
+    # Load filters from file
+    filters = torch.load('tests/morlet_N8_J3_L4.pt', weights_only=True)
+
+    # Apply phase shifts to filters
+    i = torch.complex(torch.tensor(0.0), torch.tensor(1.0))
+    phase_shifts = torch.stack([
+        filters * torch.exp(i * alpha * (2 * math.pi / A)) for alpha in range(A)
+    ], dim=-3)  # Stack along the phase dimension
+
+    # Case 1: share_phases=True
+    layer_shared = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=1, train_filters=True, share_phases=True, filters=filters.unsqueeze(0).unsqueeze(-3))
+    x = torch.randn(1, 1, M, N, requires_grad=True)
+    output_shared = layer_shared(x)
+    loss_shared = output_shared.abs().sum()
+    loss_shared.backward()
+    grad_shared = layer_shared.base_filters.grad.clone()
+
+    # Case 2: share_phases=False
+    layer_not_shared = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=1, train_filters=True, share_phases=False, filters=phase_shifts.clone().unsqueeze(0))
+    output_not_shared = layer_not_shared(x)
+    loss_not_shared = output_not_shared.abs().sum()
+    loss_not_shared.backward()
+    grad_not_shared = layer_not_shared.base_filters.grad.clone()
+
+    # Compare gradients
+
+    grad_not_shared_summed = grad_not_shared.real.abs().sum(dim=-3)  # Summing across the A dimension - take absolute value to avoid cancellation bc of opposite sign from phase
+    # recall that when A = 2, the shifts are 1 and -1, so gradients can cancel out
+    # but when accumulating gradients in pytorch the sign is accounted for
+
+    # Check if the summed gradients match
+    assert torch.allclose(layer_not_shared.base_filters, layer_shared.get_full_filters()), "Filters do not match between shared and not-shared cases."
+    assert torch.allclose(grad_shared.squeeze().real.abs(), grad_not_shared_summed.squeeze(), atol = 1e-6), "Gradients do not match after summing across the A dimension."
+
+    # Check if phase shifts are correctly applied in get_full_filters
+    full_filters = layer_shared.get_full_filters()
+    for alpha in range(A):
+        expected_phase_shift = torch.exp(i * alpha * (2 * math.pi / A))
+        assert torch.allclose(full_filters[:, :, :, alpha, :, :], phase_shifts[:, :, 0, :, :] * expected_phase_shift), f"Phase shift not correctly applied for alpha={alpha}."
