@@ -18,7 +18,6 @@ class WaveConvLayer(nn.Module):
         N: int,
         num_channels: int = 1,
         filters: Optional[torch.Tensor] = None,
-        train_filters: bool = True,
         share_rotations: bool = False,
         share_phases: bool = False,
         share_channels: bool = True,
@@ -31,7 +30,6 @@ class WaveConvLayer(nn.Module):
         M, N: spatial dimensions of filters and input signals
         num_channels: number of input channels
         filters: precomputed filters. If None, filters are initialized randomly.
-        train_filters: whether to make filters trainable
         share_scales: if True, all scales share the same filter (parameter shape: 1 instead of J)
         share_rotations: if True, all rotations share the same filter (parameter shape: 1 instead of L)
         share_phases: if True, all phases share the same filter (parameter shape: 1 instead of A)
@@ -44,7 +42,6 @@ class WaveConvLayer(nn.Module):
         self.M = M
         self.N = N
         self.num_channels = num_channels
-        self.train_filters = train_filters
         self.share_rotations = share_rotations
         self.share_phases = share_phases
         self.share_channels = share_channels
@@ -67,10 +64,7 @@ class WaveConvLayer(nn.Module):
             ), f"filters shape {filters.shape} does not match expected shape {expected_shape}"
             base_filters = filters
 
-        self.base_filters = nn.Parameter(base_filters, requires_grad=train_filters)
-
-        if not self.train_filters:
-            self.freeze_filters()
+        self.base_filters = nn.Parameter(base_filters)
 
     def get_full_filters(self):
         """Reconstruct full filter bank from base filters."""
@@ -106,14 +100,6 @@ class WaveConvLayer(nn.Module):
             filters = expanded_filters
 
         return filters
-
-    def freeze_filters(self):
-        self.train_filters = False
-        self.base_filters.requires_grad = False
-
-    def unfreeze_filters(self):
-        self.train_filters = True
-        self.base_filters.requires_grad = True
 
     def forward(self, x):
         """

@@ -107,16 +107,38 @@ class WPHModel(nn.Module):
         )
         self.nb_moments = self.corr.nb_moments + self.lowpass.nb_moments + self.highpass.nb_moments
         
-    def forward(self, x: torch.Tensor, flatten: bool = True) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, flatten: bool = True, logger=None) -> torch.Tensor:
         nb = x.shape[0]
+        if logger:
+            logger.log_tensor_state("Input", x)
+        
         xpsi = self.wave_conv(x)
+        if logger:
+            logger.log_tensor_state("WaveConv Output", xpsi)
+            logger.log_tensor_state("WaveConv Filters", self.wave_conv.base_filters)
+        
         xrelu = self.relu_center(xpsi)
+        if logger:
+            logger.log_tensor_state("ReLU Center Output", xrelu)
+        
         xcorr = self.corr(xrelu.view(nb, self.num_channels * self.J * self.L * self.A, self.M, self.N), flatten=flatten)
+        if logger:
+            logger.log_tensor_state("Correlation Layer Output", xcorr)
+        
         hatx_c = fft2(x)
+        if logger:
+            logger.log_tensor_state("FFT of Input", hatx_c)
+        
         xlow = self.lowpass(hatx_c)
+        if logger:
+            logger.log_tensor_state("Lowpass Layer Output", xlow)
+        
         xhigh = self.highpass(hatx_c)
+        if logger:
+            logger.log_tensor_state("Highpass Layer Output", xhigh)
+        
         if flatten:
-            return(torch.cat([xcorr, xlow.flatten(start_dim = 1), xhigh], dim = 1))
+            return torch.cat([xcorr, xlow.flatten(start_dim=1), xhigh], dim=1)
         else:
             return xcorr, xlow, xhigh
 
@@ -144,18 +166,19 @@ class WPHClassifier(nn.Module):
         # Define the classifier layer
         self.classifier = nn.Linear(self.feature_extractor.nb_moments, num_classes)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, logger=None) -> torch.Tensor:
         """
         Forward pass for the classifier.
 
         Args:
             x (torch.Tensor): Input tensor.
+            logger (Logger, optional): Logger for logging tensor states.
 
         Returns:
             torch.Tensor: Classification logits.
         """
         # Extract features using the feature extractor
-        features = self.feature_extractor(x, flatten=True)
+        features = self.feature_extractor(x, flatten=True, logger=logger)
 
         # Apply batch normalization if enabled
         if self.batch_norm is not None:
@@ -165,22 +188,18 @@ class WPHClassifier(nn.Module):
         logits = self.classifier(features)
         return logits
 
-    def train_feature_extractor(self, train: bool = True):
+    def set_trainable(self, parts: dict):
         """
-        Enable or disable training for the feature extractor.
+        Set trainable status for different parts of the model.
 
         Args:
-            train (bool): If True, enables training for the feature extractor. If False, freezes it.
+            parts (dict): A dictionary with keys 'feature_extractor' and 'classifier',
+                          and boolean values indicating whether each part should be trainable.
         """
-        for param in self.feature_extractor.parameters():
-            param.requires_grad = train
+        if 'feature_extractor' in parts:
+            for param in self.feature_extractor.parameters():
+                param.requires_grad = parts['feature_extractor']
 
-    def train_classifier(self, train: bool = True):
-        """
-        Enable or disable training for the classifier.
-
-        Args:
-            train (bool): If True, enables training for the feature extractor. If False, freezes it.
-        """
-        for param in self.classifier.parameters():
-            param.requires_grad = train
+        if 'classifier' in parts:
+            for param in self.classifier.parameters():
+                param.requires_grad = parts['classifier']
