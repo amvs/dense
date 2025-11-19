@@ -23,7 +23,6 @@ class WPHModel(nn.Module):
         N: int,
         filters: torch.Tensor,
         num_channels: int = 1,
-        train_filters: bool = True,
         share_rotations: bool = False,
         share_phases: bool = False,
         share_channels: bool = True,
@@ -44,7 +43,6 @@ class WPHModel(nn.Module):
         self.M = M
         self.N = N
         self.num_channels = num_channels
-        self.train_filters = train_filters
         self.share_rotations = share_rotations
         self.share_phases = share_phases
         self.share_channels = share_channels
@@ -66,7 +64,6 @@ class WPHModel(nn.Module):
             N=N,
             num_channels=num_channels,
             filters=filters['hatpsi'],
-            train_filters=train_filters,
             share_rotations=share_rotations,
             share_phases=share_phases,
             share_channels=share_channels,
