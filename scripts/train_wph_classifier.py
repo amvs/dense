@@ -12,23 +12,53 @@ from dense.helpers import LoggerManager
 from wph.layers.utils import apply_phase_shifts
 import sys
 
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train WPHClassifier with config")
     parser.add_argument(
-        "--config", type=str, required=True,
-        help="Path to YAML config file (e.g. configs/mnist.yaml)"
+        "--config",
+        type=str,
+        required=True,
+        help="Path to YAML config file (e.g. configs/mnist.yaml)",
     )
-    parser.add_argument("--override", nargs="*", default=[],
-                        help="List of key=value pairs to override config")
-    parser.add_argument("--sweep_dir", type=str, default=None,
-                        help="If this is a sweep job, specify the sweep output dir")
-    parser.add_argument("--skip-classifier-training", action='store_true',
-                        help="If set, skip the initial classifier training phase")
-    parser.add_argument("--skip-finetuning", action='store_true',
-                        help="If set, skip the fine-tuning feature extractor phase")
+    parser.add_argument(
+        "--override",
+        nargs="*",
+        default=[],
+        help="List of key=value pairs to override config",
+    )
+    parser.add_argument(
+        "--sweep_dir",
+        type=str,
+        default=None,
+        help="If this is a sweep job, specify the sweep output dir",
+    )
+    parser.add_argument(
+        "--skip-classifier-training",
+        action="store_true",
+        help="If set, skip the initial classifier training phase",
+    )
+    parser.add_argument(
+        "--skip-finetuning",
+        action="store_true",
+        help="If set, skip the fine-tuning feature extractor phase",
+    )
     return parser.parse_args()
 
-def train_model(model, train_loader, val_loader, optimizer, criterion, device, epochs, logger, phase):
+
+def train_model(
+    model,
+    train_loader,
+    val_loader,
+    optimizer,
+    criterion,
+    device,
+    epochs,
+    logger,
+    phase,
+    configs,
+    original_params=None,
+):
     """
     A reusable function for training the model.
 
@@ -42,14 +72,28 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
         epochs (int): Number of epochs to train.
         logger (Logger): Logger for logging progress.
         phase (str): Phase of training (e.g., 'classifier', 'feature_extractor').
+        configs (dict): Configuration dictionary.
+        original_params (list[torch.Tensor], optional): Original parameters for regularization during fine-tuning.
 
     Returns:
         None
     """
     for epoch in range(epochs):
-        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, criterion, device)
+        train_loss, train_acc = train_one_epoch(
+            model=model,
+            loader=train_loader,
+            optimizer=optimizer,
+            base_loss=criterion,
+            device=device,
+            lambda_reg=configs["lambda_reg"] if phase == "feature_extractor" else 0.0,
+            original_params=original_params if phase == "feature_extractor" else None,
+            logger=logger,
+        )
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
-        logger.info(f"[{phase}] Epoch {epoch+1}/{epochs}: Train Loss={train_loss:.4f}, Train Acc={train_acc:.4f}, Val Loss={val_loss:.4f}, Val Acc={val_acc:.4f}")
+        logger.info(
+            f"[{phase}] Epoch {epoch+1}/{epochs}: Train Loss={train_loss:.4f}, Train Acc={train_acc:.4f}, Val Loss={val_loss:.4f}, Val Acc={val_acc:.4f}"
+        )
+
 
 def construct_filters(config, image_shape, logger):
     """
@@ -77,36 +121,52 @@ def construct_filters(config, image_shape, logger):
     param_A = 1 if share_phases else num_phases
 
     filter_dir = os.path.join(os.path.dirname(__file__), "../filters")
-    hatpsi_path = os.path.join(filter_dir, f"morlet_N{image_shape[1]}_J{max_scale}_L{nb_orients}.pt")
-    hatphi_path = os.path.join(filter_dir, f"morlet_lp_N{image_shape[1]}_J{max_scale}_L{nb_orients}.pt")
+    hatpsi_path = os.path.join(
+        filter_dir, f"morlet_N{image_shape[1]}_J{max_scale}_L{nb_orients}.pt"
+    )
+    hatphi_path = os.path.join(
+        filter_dir, f"morlet_lp_N{image_shape[1]}_J{max_scale}_L{nb_orients}.pt"
+    )
 
     if config.get("random_filters", False):
         logger.info("Initializing filters randomly.")
         filters = {
             "hatpsi": torch.complex(
-                torch.randn(param_nc, max_scale, param_L, 1, image_shape[1], image_shape[2]),
-                torch.randn(param_nc, max_scale, param_L, 1, image_shape[1], image_shape[2])
+                torch.randn(
+                    param_nc, max_scale, param_L, 1, image_shape[1], image_shape[2]
+                ),
+                torch.randn(
+                    param_nc, max_scale, param_L, 1, image_shape[1], image_shape[2]
+                ),
             ),
             "hatphi": torch.complex(
                 torch.randn(1, image_shape[1], image_shape[2]),
-                torch.randn(1, image_shape[1], image_shape[2])
-            )
+                torch.randn(1, image_shape[1], image_shape[2]),
+            ),
         }
     else:
         # Check if filters exist, otherwise generate them
         if not os.path.exists(hatpsi_path) or not os.path.exists(hatphi_path):
             logger.info("Filters not found. Generating filters...")
-            os.system(f"python /projects/standard/lermang/vonse006/wph_collab/dense/wph/ops/build-filters.py --N {image_shape[1]} --J {max_scale} --L {nb_orients} --wavelets morlet")
+            os.system(
+                f"python /projects/standard/lermang/vonse006/wph_collab/dense/wph/ops/build-filters.py --N {image_shape[1]} --J {max_scale} --L {nb_orients} --wavelets morlet"
+            )
 
         # Load precomputed filters
         filters = {
             "hatpsi": torch.load(hatpsi_path, weights_only=True),
-            "hatphi": torch.load(hatphi_path, weights_only=True)
+            "hatphi": torch.load(hatphi_path, weights_only=True),
         }
 
     # Apply phase shifts to the filters
+    # logger.info("before applying phase shifts")
+    # logger.log_tensor_state("hatpsi_before", filters["hatpsi"])
+    # logger.log_tensor_state("hatphi_before", filters["hatphi"])
     filters["hatpsi"] = apply_phase_shifts(filters["hatpsi"], A=param_A)
+    # logger.log_tensor_state("hatpsi_after", filters["hatpsi"])
+    # logger.log_tensor_state("hatphi_after", filters["hatphi"])
     return filters
+
 
 def main():
     # Parse arguments
@@ -147,8 +207,11 @@ def main():
         resize = config["resize"]
         deeper_path = config["deeper_path"]
         train_loader, test_loader, nb_class, image_shape = get_loaders(
-            dataset=dataset, resize=resize, deeper_path=deeper_path,
-            batch_size=batch_size, train_ratio=train_ratio
+            dataset=dataset,
+            resize=resize,
+            deeper_path=deeper_path,
+            batch_size=batch_size,
+            train_ratio=train_ratio,
         )
     train_loader, val_loader = split_train_val(
         train_loader.dataset, val_ratio=val_ratio, batch_size=batch_size
@@ -175,22 +238,32 @@ def main():
         mask_union=config["mask_union"],
         mask_angles=config["mask_angles"],
         mask_union_highpass=config["mask_union_highpass"],
-        wavelets=config["wavelet"]
+        wavelets=config["wavelet"],
     ).to(device)
     model = WPHClassifier(
-        feature_extractor, 
+        feature_extractor,
         num_classes=config["num_classes"],
-        use_batch_norm=config.get("use_batch_norm", False)
+        use_batch_norm=config.get("use_batch_norm", False),
     ).to(device)
 
     # Training setup
     lr = float(config["lr"])
     classifier_epochs = config["classifier_epochs"]
     conv_epochs = config["conv_epochs"]
-    optimizer = torch.optim.Adam([
-        {"params": model.classifier.parameters(), "lr": lr},
-        {"params": model.feature_extractor.parameters(), "lr": lr * 0.01}
-    ])
+    optimizer = torch.optim.Adam(
+        [
+            {"params": model.classifier.parameters(), "lr": lr},
+            {"params": model.feature_extractor.parameters(), "lr": lr * 0.01},
+        ]
+    )
+
+    # Enable anomaly detection to trace the source of the error
+    torch.autograd.set_detect_anomaly(True)
+
+    # Debugging: Log the state of filters at key points
+    logger.info("Checking filter states before training...")
+    for key, value in filters.items():
+        logger.log_tensor_state(key, value)
 
     # Ensure filters remain complex-valued and updates propagate correctly
     if config.get("train_filters", False):
@@ -198,20 +271,41 @@ def main():
             key: value.resolve_conj() if value.is_conj() else value
             for key, value in filters.items()
         }
-        optimizer.add_param_group({"params": resolved_filters.values(), "lr": lr * 0.001})
+        logger.info("Resolved filters for training:")
+        for key, value in resolved_filters.items():
+            logger.log_tensor_state(key, value)
+        optimizer.add_param_group(
+            {"params": resolved_filters.values(), "lr": lr * 0.001}
+        )
         # Replace original filters with resolved filters to ensure updates propagate
         filters.update(resolved_filters)
 
     criterion = nn.CrossEntropyLoss()
+
+    # Clone original parameters for regularization during fine-tuning
+    with torch.no_grad():
+        original_params = [p.clone().detach() for p in model.parameters()]
 
     # Train classifier
     if not args.skip_classifier_training:
         logger.info("Training classifier...")
         model.train_feature_extractor(False)
         model.train_classifier(True)
-        train_model(model, train_loader, val_loader, optimizer, criterion, device, classifier_epochs, logger, phase='classifier')
+        train_model(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            optimizer=optimizer,
+            criterion=criterion,
+            device=device,
+            classifier_epochs=classifier_epochs,
+            logger=logger,
+            phase="classifier",
+            configs=config,
+        )
     else:
         logger.info("Skipping classifier training phase.")
+
     # Save intermediate model
     save_path = os.path.join(exp_dir, "classifier_trained.pt")
     torch.save(model.state_dict(), save_path)
@@ -222,7 +316,19 @@ def main():
         logger.info("Fine-tuning feature extractor...")
         model.train_feature_extractor(True)
         model.train_classifier(False)
-        train_model(model, train_loader, val_loader, optimizer, criterion, device, conv_epochs, logger, phase='feature_extractor')
+        train_model(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            optimizer=optimizer,
+            criterion=criterion,
+            device=device,
+            conv_epochs=conv_epochs,
+            logger=logger,
+            phase="feature_extractor",
+            configs=config,
+            original_params=original_params,
+        )
     else:
         logger.info("Skipping fine-tuning phase.")
     # Evaluate on test set
@@ -241,7 +347,18 @@ def main():
     save_config(exp_dir, config)
 
     # Add error handling for missing configuration keys
-    required_keys = ["val_ratio", "dataset", "batch_size", "train_ratio", "max_scale", "nb_orients", "wavelet", "lr", "classifier_epochs", "conv_epochs"]
+    required_keys = [
+        "val_ratio",
+        "dataset",
+        "batch_size",
+        "train_ratio",
+        "max_scale",
+        "nb_orients",
+        "wavelet",
+        "lr",
+        "classifier_epochs",
+        "conv_epochs",
+    ]
     for key in required_keys:
         if key not in config:
             raise KeyError(f"Missing required configuration key: {key}")
@@ -255,9 +372,16 @@ def main():
     config["device"] = str(device)
     filter_dir = os.path.join(os.path.dirname(__file__), "../filters")
     config["filters"] = {
-        "hatpsi": os.path.join(filter_dir, f"morlet_N{image_shape[1]}_J{config['max_scale']}_L{config['nb_orients']}.pt"),
-        "hatphi": os.path.join(filter_dir, f"morlet_lp_N{image_shape[1]}_J{config['max_scale']}_L{config['nb_orients']}.pt")
+        "hatpsi": os.path.join(
+            filter_dir,
+            f"morlet_N{image_shape[1]}_J{config['max_scale']}_L{config['nb_orients']}.pt",
+        ),
+        "hatphi": os.path.join(
+            filter_dir,
+            f"morlet_lp_N{image_shape[1]}_J{config['max_scale']}_L{config['nb_orients']}.pt",
+        ),
     }
+
 
 if __name__ == "__main__":
     main()
