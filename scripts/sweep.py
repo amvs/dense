@@ -13,11 +13,19 @@ def parse_args():
         "--config", type=str, required=True,
         help="Path to YAML config file (e.g. configs/mnist_sweep.yaml)"
     )
+    parser.add_argument('--model-type', type=str, choices=['wph', 'scat'], default='scat',
+                        help='Type of model to train (default: scat (dense))')
+    parser.add_argument('--name', type=str, default='',
+                        help='Optional short name for the sweep folder')
     return parser.parse_args()
 
+# Parse arguments
+args = parse_args()
+
 # Create output folder
+short_name = f"{args.name}-" if args.name else ""
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-sweep_dir = os.path.join("experiments", f"sweeps-{timestamp}")
+sweep_dir = os.path.join("experiments", f"{short_name}sweeps-{timestamp}")
 os.makedirs(sweep_dir, exist_ok=True)
 
 # init logger
@@ -25,24 +33,42 @@ logger = LoggerManager.get_logger(log_dir=sweep_dir)
 logger.info("Start log:")
 
 # Read config
-args = parse_args()
 sweep = load_config(args.config)
 
-
-base = sweep["base_config"]
+# Load base configuration
+base_config = load_config(sweep["base_config"])
 params = sweep["sweep"]  # dict of lists
 
 # All parameter names
 keys = list(params.keys())
 all_combinations = list(itertools.product(*params.values()))
 total_runs = len(all_combinations)
+
 # All combinations of values
 for run_idx, values in enumerate(all_combinations, 1):
-    overrides = [f"{k}={v}" for k, v in zip(keys, values)]
+    overrides = {k: v for k, v in zip(keys, values)}
+    merged_config = {**base_config, **overrides}  # Merge base config with overrides
+
+    # Debug: Log merged_config to verify content
+    logger.info(f"Merged config for run {run_idx}: {merged_config}")
+    if "num_phases" not in merged_config:
+        logger.error(f"Key 'num_phases' is missing in merged_config for run {run_idx}")
+
     # Optional: create a run name from param values
-    run_name = "_".join([f"{k}{v}" for k, v in zip(keys, values)])
+    run_name = "_".join([f"{k}{v}" for k, v in overrides.items()])
     logger.info(f"Run {run_idx}/{total_runs} — overrides: {overrides}")
-    result = subprocess.run(["python", "scripts/train.py", "--config", base, "--sweep_dir", sweep_dir, "--override"] + overrides)
+
+    if args.model_type == 'scat':
+        file = "scripts/train.py"
+    elif args.model_type == 'wph':
+        file = "scripts/train_wph_classifier.py"
+
+    # Save merged config to a temporary file
+    temp_config_path = os.path.join(sweep_dir, f"temp_config_{run_idx}.yaml")
+    with open(temp_config_path, "w") as f:
+        yaml.dump(merged_config, f)
+
+    result = subprocess.run(["python", file, "--config", temp_config_path, "--sweep_dir", sweep_dir])
     if result.returncode == 0:
         logger.info(f"Finished run.")
     else:
