@@ -34,3 +34,12 @@ class LoggerManager:
             logger.addHandler(ch)
         LoggerManager._logger = logger
         return logger
+
+    @staticmethod
+    def log_uncaught_exceptions(exctype, value, tb):
+        """
+        Logs uncaught exceptions to the error log.
+        """
+        if LoggerManager._logger is None:
+            raise RuntimeError("Logger must be initialized before logging exceptions.")
+        LoggerManager._logger.error("Unhandled exception", exc_info=(exctype, value, tb))
