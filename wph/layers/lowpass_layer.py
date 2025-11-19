@@ -23,6 +23,7 @@ class LowpassLayer(nn.Module):
         self.mask_angles = mask_angles
         self.mask_union = mask_union
         self.num_channels = num_channels
+        self.nb_moments = M*N * num_channels**2
 
         self.divinitstdJ = DivInitStd()
         self.subinitmeanJ = SubInitSpatialMean()
@@ -48,4 +49,4 @@ class LowpassLayer(nn.Module):
         z_ = torch.repeat_interleave(xphi0_c, self.num_channels, dim=1)
         xphi0_c = fft.ifft2(fft.fft2(z) * torch.conj(fft.fft2(z_)))
 
-        return xphi0_c
+        return xphi0_c.real

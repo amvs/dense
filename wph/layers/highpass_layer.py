@@ -39,6 +39,11 @@ class HighpassLayer(nn.Module):
         else:
             masks = masks.view(1, self.J, 1, 1, self.M, self.N)
         self.register_buffer("masks", masks)
+        if self.mask_union_highpass:
+            mask = (self.masks_shift.sum(dim=0) > 0).to(dtype=torch.int32)
+        else:
+            mask = self.masks_shift[-1, ...]
+        self.nb_moments = mask.sum().item() * num_channels**2
 
     def forward(self, hatx_c: torch.Tensor, flatten: bool = True) -> torch.Tensor:
         """
