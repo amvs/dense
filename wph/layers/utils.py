@@ -141,9 +141,12 @@ def periodic_rotate(spatial_filters, angle_degrees):
 
 
 def apply_phase_shifts(filters: torch.Tensor, A: int) -> torch.Tensor:
-    expanded_filters = filters.expand(-1, -1, -1, A, -1, -1).clone()  # Clone to avoid in-place operations
+    if A == 1:
+        return filters.unsqueeze(-3)
+    expanded_filters = filters.unsqueeze(-3).repeat(1, 1, A, 1, 1).clone()  # Clone to avoid in-place operations
     for a in range(A):
-        i = torch.complex(torch.tensor(0.0), torch.tensor(1.0))
+        i = torch.complex(torch.tensor(0.0, device=filters.device), torch.tensor(1.0, device=filters.device))
         phase_shift = torch.exp(i * a * (2 * torch.pi / A))
-        expanded_filters[:, :, :, a, :, :] = expanded_filters[:, :, :, a, :, :] * phase_shift
-    return(expanded_filters)
+        expanded_filters[:, :, a, :, :] = expanded_filters[:, :, a, :, :] * phase_shift
+    # Ensure the returned tensor is explicitly complex
+    return expanded_filters.to(dtype=torch.complex64)

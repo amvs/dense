@@ -15,12 +15,10 @@ def test_wph_model_default():
     model = WPHModel(J=J, L=L, A=A, A_prime=A_prime, M=M, N=N, filters=filters)
 
     x = torch.randn(1, 1, M, N)
-    xcorr, xlow, xhigh = model(x, flatten=True)
+    feats = model(x, flatten=True)
 
-    assert xcorr.shape[0] == 1  # Batch size
-    assert xlow.shape[0] == 1  # Batch size
-    assert xhigh.shape[0] == 1  # Batch size
-
+    assert feats.shape[0] == 1  # Batch size
+    assert feats.shape[1] == model.nb_moments  # Number of moments
 
 def test_wph_model_custom_params():
     # Custom initialization
@@ -56,12 +54,10 @@ def test_wph_model_multiple_channels():
     )
 
     x = torch.randn(1, 3, M, N)
-    xcorr, xlow, xhigh = model(x, flatten=True)
+    feats = model(x, flatten=True)
 
-    assert xcorr.shape[0] == 1  # Batch size
-    assert xlow.shape[0] == 1  # Batch size
-    assert xhigh.shape[0] == 1  # Batch size
-
+    assert feats.shape[0] == 1  # Batch size
+    assert feats.shape[1] == model.nb_moments  # Number of moments
 
 if __name__ == "__main__":
     test_wph_model_default()
