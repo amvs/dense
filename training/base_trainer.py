@@ -1,3 +1,4 @@
+import pdb
 import torch
 
 def regularization_loss(outputs, targets, model, original_params, lambda_reg=1e-3):
@@ -7,20 +8,30 @@ def regularization_loss(outputs, targets, model, original_params, lambda_reg=1e-
     reg_loss = lambda_reg * reg_loss
     return reg_loss
 
-def train_one_epoch(model, loader, optimizer, base_loss, device, original_params=None, lambda_reg=None):
+def train_one_epoch(model, loader, optimizer, base_loss, device, original_params=None, lambda_reg=None, logger=None):
     model.train()
     total_loss = 0
     correct = 0
+    if logger:
+        logger.info("Starting training epoch")
     for inputs, targets in loader:
         inputs, targets = inputs.to(device), targets.to(device)
 
         optimizer.zero_grad()
-        outputs = model(inputs)
+        if logger:
+            logger.info("Forward pass with tensor logging")
+            outputs = model.forward(inputs, logger=logger)
+        else:
+            outputs = model(inputs)
         loss = base_loss(outputs, targets) # Average loss in a batch
         if original_params is not None:
             reg_loss = regularization_loss(outputs, targets, model, original_params, lambda_reg)
             loss += reg_loss
         loss.backward()
+        # if logger:
+        #     for i, group in enumerate(optimizer.param_groups):
+        #         for j, param in enumerate(group['params']):
+        #             logger.log_tensor_state(name=f"group_{i}_param_{j}", tensor=param)
         optimizer.step()
 
         total_loss += loss.item() * inputs.size(0) # Total loss in a batch
