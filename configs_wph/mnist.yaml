@@ -1,0 +1,31 @@
+# Model settings
+wavelet: morlet
+max_scale: 3
+nb_orients: 4
+num_phases: 2
+num_phases_prime: 1
+random_filters: false
+share_rotations: false
+share_channels: true
+share_phases: false
+normalize_relu: true
+delta_j: null
+delta_l: null
+shift_mode: samec
+mask_union: false
+mask_angles: 4
+mask_union_highpass: true
+
+# Training settings
+dataset: mnist
+classifier_epochs: 2
+conv_epochs: 1
+batch_size: 200
+lr: 0.001
+lambda_reg: 1e-4
+train_ratio: 0.85
+val_ratio: 0.1
+
+# Classifier settings
+num_classes: 10
+use_batch_norm: false
