@@ -1,3 +1,4 @@
+import pdb
 import torch
 from torch import nn
 from typing import Optional, Literal
@@ -52,8 +53,10 @@ class WPHModel(nn.Module):
         self.shift_mode = shift_mode
         self.mask_union = mask_union
         self.mask_angles = mask_angles
-        if len(filters['hatpsi'].shape) != 6:
-            raise ValueError("filters['hatpsi'] must have shape [nc, J, L, A, M, N], don't forget to add phase shifts before initializing")
+        A_param = 1 if share_rotations else A
+        assert filters['hatpsi'].shape[-3] == A_param, "filters['hatpsi'] must have A phase shifts (or shape 1 if sharing phase shifts), has shape {}".format(filters['hatpsi'].shape)
+        if len(filters['hatpsi'].shape) == 5:
+            filters['hatpsi'] = filters['hatpsi'].unsqueeze(0).repeat(num_channels, 1, 1, 1, 1, 1)
         
         self.wave_conv = WaveConvLayer(
             J=J,
@@ -102,13 +105,82 @@ class WPHModel(nn.Module):
             mask_union=mask_union,
             mask_union_highpass=mask_union_highpass,
         )
-
+        self.nb_moments = self.corr.nb_moments + self.lowpass.nb_moments + self.highpass.nb_moments
+        
     def forward(self, x: torch.Tensor, flatten: bool = True) -> torch.Tensor:
         nb = x.shape[0]
         xpsi = self.wave_conv(x)
         xrelu = self.relu_center(xpsi)
         xcorr = self.corr(xrelu.view(nb, self.num_channels * self.J * self.L * self.A, self.M, self.N), flatten=flatten)
-        hatx_c = fft2(torch.complex(x, torch.zeros_like(x)))
+        hatx_c = fft2(x)
         xlow = self.lowpass(hatx_c)
         xhigh = self.highpass(hatx_c)
-        return xcorr, xlow, xhigh
+        if flatten:
+            return(torch.cat([xcorr, xlow.flatten(start_dim = 1), xhigh], dim = 1))
+        else:
+            return xcorr, xlow, xhigh
+
+class WPHClassifier(nn.Module):
+    def __init__(self, feature_extractor: nn.Module, num_classes: int, use_batch_norm: bool = False):
+        """
+        A wrapper class for classification using WPHModel as a feature extractor.
+
+        Args:
+            feature_extractor (nn.Module): The feature extractor model (e.g., WPHModel).
+            num_classes (int): Number of classes for classification.
+            use_batch_norm (bool): Whether to include a batch normalization layer before the classifier.
+        """
+        super().__init__()
+        self.feature_extractor = feature_extractor
+        self.num_classes = num_classes
+        self.use_batch_norm = use_batch_norm
+
+        # Define the batch normalization layer (optional)
+        if self.use_batch_norm:
+            self.batch_norm = nn.BatchNorm1d(self.feature_extractor.nb_moments)
+        else:
+            self.batch_norm = None
+
+        # Define the classifier layer
+        self.classifier = nn.Linear(self.feature_extractor.nb_moments, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass for the classifier.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Classification logits.
+        """
+        # Extract features using the feature extractor
+        features = self.feature_extractor(x, flatten=True)
+
+        # Apply batch normalization if enabled
+        if self.batch_norm is not None:
+            features = self.batch_norm(features)
+
+        # Pass the features through the classifier
+        logits = self.classifier(features)
+        return logits
+
+    def train_feature_extractor(self, train: bool = True):
+        """
+        Enable or disable training for the feature extractor.
+
+        Args:
+            train (bool): If True, enables training for the feature extractor. If False, freezes it.
+        """
+        for param in self.feature_extractor.parameters():
+            param.requires_grad = train
+
+    def train_classifier(self, train: bool = True):
+        """
+        Enable or disable training for the classifier.
+
+        Args:
+            train (bool): If True, enables training for the feature extractor. If False, freezes it.
+        """
+        for param in self.classifier.parameters():
+            param.requires_grad = train
