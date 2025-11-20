@@ -158,13 +158,20 @@ def construct_filters(config, image_shape, logger):
         }
 
     # Apply phase shifts to the filters
-    # logger.info("before applying phase shifts")
-    # logger.log_tensor_state("hatpsi_before", filters["hatpsi"])
-    # logger.log_tensor_state("hatphi_before", filters["hatphi"])
+    if share_rotations:
+        filters['hatpsi'] = filters['hatpsi'][:,0,...].unsqueeze(1)
     filters["hatpsi"] = apply_phase_shifts(filters["hatpsi"], A=param_A)
-    # logger.log_tensor_state("hatpsi_after", filters["hatpsi"])
-    # logger.log_tensor_state("hatphi_after", filters["hatphi"])
     return filters
+
+def log_model_parameters(model, logger):
+    """Logs the number of trainable parameters in the feature extractor and classifier."""
+    feature_extractor_params = sum(p.numel() for p in model.feature_extractor.parameters() if p.requires_grad)
+    classifier_params = sum(p.numel() for p in model.classifier.parameters() if p.requires_grad)
+    total_params = feature_extractor_params + classifier_params
+
+    logger.info(f"Feature Extractor Trainable Parameters: {feature_extractor_params}")
+    logger.info(f"Classifier Trainable Parameters: {classifier_params}")
+    logger.info(f"Total Trainable Parameters: {total_params}")
 
 def main():
     # Parse arguments
@@ -263,6 +270,9 @@ def main():
     logger.info("Model Architecture:")
     logger.info(str(model))
 
+    # Log model parameters
+    log_model_parameters(model, logger)
+
     # Training setup
     lr = float(config["lr"])
     classifier_epochs = config["classifier_epochs"]
@@ -281,8 +291,6 @@ def main():
         for key, value in filters.items()
     }
     logger.info("Resolved filters for training:")
-    for key, value in resolved_filters.items():
-        logger.log_tensor_state(key, value)
     optimizer.add_param_group({"params": resolved_filters.values(), "lr": lr * 0.001})
     filters.update(resolved_filters)
 
