@@ -8,7 +8,7 @@ def regularization_loss(outputs, targets, model, original_params, lambda_reg=1e-
     reg_loss = lambda_reg * reg_loss
     return reg_loss
 
-def train_one_epoch(model, loader, optimizer, base_loss, device, original_params=None, lambda_reg=None, logger=None):
+def train_one_epoch(model, loader, optimizer, base_loss, device, original_params=None, lambda_reg=None, logger=None, vmap_chunk_size=None):
     model.train()
     total_loss = 0
     correct = 0
@@ -20,9 +20,7 @@ def train_one_epoch(model, loader, optimizer, base_loss, device, original_params
         optimizer.zero_grad()
         if logger:
             logger.info("Forward pass with tensor logging")
-            outputs = model.forward(inputs, logger=logger)
-        else:
-            outputs = model(inputs)
+        outputs = model.forward(inputs, logger=logger, vmap_chunk_size=vmap_chunk_size)
         loss = base_loss(outputs, targets) # Average loss in a batch
         if original_params is not None:
             reg_loss = regularization_loss(outputs, targets, model, original_params, lambda_reg)

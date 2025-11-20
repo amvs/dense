@@ -105,11 +105,11 @@ class WPHModel(nn.Module):
         )
         self.nb_moments = self.corr.nb_moments + self.lowpass.nb_moments + self.highpass.nb_moments
         
-    def forward(self, x: torch.Tensor, flatten: bool = True, logger=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, flatten: bool = True, logger=None, vmap_chunk_size=None) -> torch.Tensor:
         nb = x.shape[0]
         xpsi = self.wave_conv(x)
         xrelu = self.relu_center(xpsi)
-        xcorr = self.corr(xrelu.view(nb, self.num_channels * self.J * self.L * self.A, self.M, self.N), flatten=flatten)
+        xcorr = self.corr(xrelu.view(nb, self.num_channels * self.J * self.L * self.A, self.M, self.N), flatten=flatten, vmap_chunk_size=vmap_chunk_size)
         hatx_c = fft2(x)
         xlow = self.lowpass(hatx_c)
         xhigh = self.highpass(hatx_c)
@@ -143,19 +143,20 @@ class WPHClassifier(nn.Module):
         # Define the classifier layer
         self.classifier = nn.Linear(self.feature_extractor.nb_moments, num_classes)
 
-    def forward(self, x: torch.Tensor, logger=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, logger=None, vmap_chunk_size=None) -> torch.Tensor:
         """
         Forward pass for the classifier.
 
         Args:
             x (torch.Tensor): Input tensor.
             logger (Logger, optional): Logger for logging tensor states.
+            vmap_chunk_size (int, optional): Chunk size for vmap operations when computing correlations.
 
         Returns:
             torch.Tensor: Classification logits.
         """
         # Extract features using the feature extractor
-        features = self.feature_extractor(x, flatten=True, logger=logger)
+        features = self.feature_extractor(x, flatten=True, logger=logger, vmap_chunk_size=vmap_chunk_size)
 
         # Apply batch normalization if enabled
         if self.batch_norm is not None:

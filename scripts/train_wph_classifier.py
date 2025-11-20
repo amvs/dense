@@ -41,7 +41,7 @@ def set_seed(seed):
         random.seed(seed)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-        torch.use_deterministic_algorithms(True)
+        # torch.use_deterministic_algorithms(True)
 
 def worker_init_fn(worker_id):
     """Ensure deterministic behavior in DataLoader workers."""
@@ -79,7 +79,8 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
             device=device,
             lambda_reg=configs['lambda_reg'] if phase == 'feature_extractor' else 0.0,
             original_params=original_params if phase == 'feature_extractor' else None,
-            logger=None
+            logger=None,
+            vmap_chunk_size=configs.get('vmap_chunk_size', None)
         )
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
         logger.info(f"[{phase}] Epoch {epoch+1}/{epochs}: Train Loss={train_loss:.4f}, Train Acc={train_acc:.4f}, Val Loss={val_loss:.4f}, Val Acc={val_acc:.4f}")
