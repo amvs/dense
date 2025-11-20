@@ -11,6 +11,10 @@ from wph.wph_model import WPHModel, WPHClassifier
 from dense.helpers import LoggerManager
 from wph.layers.utils import apply_phase_shifts
 import sys
+import random
+import numpy as np
+import time
+import platform
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train WPHClassifier with config")
@@ -27,6 +31,23 @@ def parse_args():
     parser.add_argument("--skip-finetuning", action='store_true',
                         help="If set, skip the fine-tuning feature extractor phase")
     return parser.parse_args()
+
+def set_seed(seed):
+    """Set random seed for reproducibility."""
+    if seed is not None:
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True)
+
+def worker_init_fn(worker_id):
+    """Ensure deterministic behavior in DataLoader workers."""
+    global seed  # Ensure seed is accessible
+    if seed is not None:
+        np.random.seed(seed + worker_id)
 
 def train_model(model, train_loader, val_loader, optimizer, criterion, device, epochs, logger, phase, configs, exp_dir, original_params=None):
     """
@@ -78,8 +99,10 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
         if phase == 'feature_extractor' and original_params is not None:
             l2_norm = sum((p - o).norm().item() for p, o in zip(model.feature_extractor.parameters(), original_params))
             logger.info(f"[{phase}] Epoch {epoch+1}/{epochs}: L2 Norm Distance={l2_norm:.4f}")
+        else:
+            l2_norm = 0.0
 
-    return best_acc
+    return best_acc, l2_norm
 
 def construct_filters(config, image_shape, logger):
     """
@@ -114,8 +137,8 @@ def construct_filters(config, image_shape, logger):
         logger.info("Initializing filters randomly.")
         filters = {
             "hatpsi": torch.complex(
-                torch.randn(param_nc, max_scale, param_L, 1, image_shape[1], image_shape[2]),
-                torch.randn(param_nc, max_scale, param_L, 1, image_shape[1], image_shape[2])
+                torch.randn(max_scale, param_L, image_shape[1], image_shape[2]),
+                torch.randn(max_scale, param_L, image_shape[1], image_shape[2])
             ),
             "hatphi": torch.complex(
                 torch.randn(1, image_shape[1], image_shape[2]),
@@ -149,6 +172,10 @@ def main():
     config = load_config(args.config)
     config = apply_overrides(config, args.override)
 
+    # Set random seed for reproducibility
+    seed = config.get("seed", None)  # Default seed is None if not provided
+    set_seed(seed)
+
     # Create output folder
     val_ratio = config["val_ratio"]
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -170,6 +197,15 @@ def main():
     for key, value in config.items():
         logger.info(f"{key}: {value}")
 
+    # Log environment details
+    logger.info("Environment Details:")
+    logger.info(f"Python Version: {platform.python_version()}")
+    logger.info(f"PyTorch Version: {torch.__version__}")
+    logger.info(f"CUDA Available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        logger.info(f"CUDA Version: {torch.version.cuda}")
+        logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
+
     # Set up device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
@@ -181,14 +217,14 @@ def main():
     val_ratio = config["val_ratio"]
     if dataset == "mnist":
         train_loader, test_loader, nb_class, image_shape = get_loaders(
-            dataset=dataset, batch_size=batch_size, train_ratio=train_ratio
+            dataset=dataset, batch_size=batch_size, train_ratio=train_ratio, worker_init_fn=worker_init_fn
         )
     else:
         resize = config["resize"]
         deeper_path = config["deeper_path"]
         train_loader, test_loader, nb_class, image_shape = get_loaders(
             dataset=dataset, resize=resize, deeper_path=deeper_path,
-            batch_size=batch_size, train_ratio=train_ratio
+            batch_size=batch_size, train_ratio=train_ratio, worker_init_fn=worker_init_fn
         )
     train_loader, val_loader = split_train_val(
         train_loader.dataset, val_ratio=val_ratio, batch_size=batch_size
@@ -223,6 +259,10 @@ def main():
         use_batch_norm=config.get("use_batch_norm", False)
     ).to(device)
 
+    # Log model architecture
+    logger.info("Model Architecture:")
+    logger.info(str(model))
+
     # Training setup
     lr = float(config["lr"])
     classifier_epochs = config["classifier_epochs"]
@@ -256,10 +296,13 @@ def main():
     if not args.skip_classifier_training:
         logger.info("Training classifier...")
         model.set_trainable({"feature_extractor": False, "classifier": True})
-        best_acc_classifier = train_model(model=model, train_loader=train_loader,
+        start_time = time.time()
+        best_acc_classifier, _ = train_model(model=model, train_loader=train_loader,
                                           val_loader=val_loader, optimizer=optimizer,
                                           criterion=criterion, device=device, epochs=classifier_epochs,
                                           logger=logger, phase='classifier', configs=config, exp_dir=exp_dir)
+        elapsed_time = time.time() - start_time
+        logger.info(f"Classifier training completed in {elapsed_time:.2f} seconds.")
     else:
         logger.info("Skipping classifier training phase.")
         best_acc_classifier = 0.0
@@ -272,7 +315,10 @@ def main():
     if not args.skip_finetuning:
         logger.info("Fine-tuning feature extractor...")
         model.set_trainable({"feature_extractor": True, "classifier": False})
-        best_acc_feature_extractor = train_model(model=model, train_loader=train_loader, val_loader=val_loader, optimizer=optimizer, criterion=criterion, device=device, epochs=conv_epochs, logger=logger, phase='feature_extractor', configs=config, exp_dir=exp_dir, original_params=original_params)
+        start_time = time.time()
+        best_acc_feature_extractor, l2_norm = train_model(model=model, train_loader=train_loader, val_loader=val_loader, optimizer=optimizer, criterion=criterion, device=device, epochs=conv_epochs, logger=logger, phase='feature_extractor', configs=config, exp_dir=exp_dir, original_params=original_params)
+        elapsed_time = time.time() - start_time
+        logger.info(f"Feature extractor fine-tuning completed in {elapsed_time:.2f} seconds.")
     else:
         logger.info("Skipping fine-tuning phase.")
         best_acc_feature_extractor = 0.0
@@ -289,6 +335,8 @@ def main():
     # Update config with final accuracies
     config["nb_class"] = nb_class
     config["image_shape"] = list(image_shape)
+    config["nb_moments"] = model.feature_extractor.nb_moments
+    config["l2_norm_finetuning"] = l2_norm
     config["feature_extractor_test_acc"] = feature_extractor_test_acc
     config["classifier_test_acc"] = classifier_test_acc
     config["classifier_last_acc"] = classifier_test_acc
