@@ -51,7 +51,8 @@ class WPHModel(nn.Module):
         self.shift_mode = shift_mode
         self.mask_union = mask_union
         self.mask_angles = mask_angles
-        A_param = 1 if share_rotations else A
+        A_param = 1 if share_phases else A
+        
         assert filters['hatpsi'].shape[-3] == A_param, "filters['hatpsi'] must have A phase shifts (or shape 1 if sharing phase shifts), has shape {}".format(filters['hatpsi'].shape)
         if len(filters['hatpsi'].shape) == 5:
             filters['hatpsi'] = filters['hatpsi'].unsqueeze(0).repeat(num_channels, 1, 1, 1, 1, 1)
