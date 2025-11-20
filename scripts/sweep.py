@@ -22,21 +22,25 @@ def parse_args():
 # Parse arguments
 args = parse_args()
 
+# Read config
+sweep = load_config(args.config)
+
+# Load base configuration
+base_config = load_config(sweep["base_config"])
+
+# Extract dataset name after loading base_config
+dataset_name = base_config["dataset"].split("/")[-1] if "dataset" in base_config else "unknown"
+
 # Create output folder
 short_name = f"{args.name}-" if args.name else ""
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-sweep_dir = os.path.join("experiments", f"{short_name}sweeps-{timestamp}")
+sweep_dir = os.path.join("experiments", dataset_name, f"{short_name}sweeps-{timestamp}")
 os.makedirs(sweep_dir, exist_ok=True)
 
 # init logger
 logger = LoggerManager.get_logger(log_dir=sweep_dir)
 logger.info("Start log:")
 
-# Read config
-sweep = load_config(args.config)
-
-# Load base configuration
-base_config = load_config(sweep["base_config"])
 params = sweep["sweep"]  # dict of lists
 
 # All parameter names
