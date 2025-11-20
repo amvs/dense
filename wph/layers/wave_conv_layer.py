@@ -65,22 +65,30 @@ class WaveConvLayer(nn.Module):
             base_filters = filters
 
         self.base_filters = nn.Parameter(base_filters)
+        # Add caching for full filters
+        self.register_buffer("full_filters", None)
+        self.filters_cached = False
+        # Register a hook to invalidate cache when base_filters are updated
+        self.base_filters.register_hook(lambda grad: self._invalidate_cache())
+
+    def _invalidate_cache(self):
+        """Invalidates the full filters cache."""
+        self.filters_cached = False
 
     def get_full_filters(self):
         """Reconstruct full filter bank from base filters."""
+        if self.filters_cached and self.full_filters is not None:
+            return self.full_filters
+
         filters = self.base_filters
 
         # Expand dimensions based on sharing settings
         if self.share_channels:
             filters = filters.expand(self.num_channels, -1, -1, -1, -1, -1)
         if self.share_rotations:
-            unflatten = nn.Unflatten(0, filters.squeeze(2).shape[:-2])
             expanded_filters = filters.expand(-1, -1, self.L, -1, -1, -1).clone()  # Clone to avoid in-place operations
-            # real_part = expanded_filters.real[:, :, 0, :, :, :]
-            # imag_part = expanded_filters.imag[:, :, 0, :, :, :]
             for l in range(self.L):
-                angle = l/ self.L * 180 # Convert to degrees
-               # Rotate each part separately
+                angle = l / self.L * 180  # Convert to degrees
                 rotated_filters = periodic_rotate(filters.flatten(end_dim=-3).clone(), angle)
                 rotated_filters.imag = 0 # zero out imaginary part
                 # kymatio filter bank also does this - claims it makes no difference
@@ -99,6 +107,9 @@ class WaveConvLayer(nn.Module):
                 expanded_filters[:, :, :, a, :, :] = expanded_filters[:, :, :, a, :, :] * phase_shift
             filters = expanded_filters
 
+        # Cache the computed full filters
+        self.full_filters = filters
+        self.filters_cached = True
         return filters
 
     def forward(self, x):
