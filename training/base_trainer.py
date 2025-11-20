@@ -28,10 +28,6 @@ def train_one_epoch(model, loader, optimizer, base_loss, device, original_params
             reg_loss = regularization_loss(outputs, targets, model, original_params, lambda_reg)
             loss += reg_loss
         loss.backward()
-        # if logger:
-        #     for i, group in enumerate(optimizer.param_groups):
-        #         for j, param in enumerate(group['params']):
-        #             logger.log_tensor_state(name=f"group_{i}_param_{j}", tensor=param)
         optimizer.step()
 
         total_loss += loss.item() * inputs.size(0) # Total loss in a batch

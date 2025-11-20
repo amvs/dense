@@ -107,33 +107,12 @@ class WPHModel(nn.Module):
         
     def forward(self, x: torch.Tensor, flatten: bool = True, logger=None) -> torch.Tensor:
         nb = x.shape[0]
-        if logger:
-            logger.log_tensor_state("Input", x)
-        
         xpsi = self.wave_conv(x)
-        if logger:
-            logger.log_tensor_state("WaveConv Output", xpsi)
-            logger.log_tensor_state("WaveConv Filters", self.wave_conv.base_filters)
-        
         xrelu = self.relu_center(xpsi)
-        if logger:
-            logger.log_tensor_state("ReLU Center Output", xrelu)
-        
         xcorr = self.corr(xrelu.view(nb, self.num_channels * self.J * self.L * self.A, self.M, self.N), flatten=flatten)
-        if logger:
-            logger.log_tensor_state("Correlation Layer Output", xcorr)
-        
         hatx_c = fft2(x)
-        if logger:
-            logger.log_tensor_state("FFT of Input", hatx_c)
-        
         xlow = self.lowpass(hatx_c)
-        if logger:
-            logger.log_tensor_state("Lowpass Layer Output", xlow)
-        
         xhigh = self.highpass(hatx_c)
-        if logger:
-            logger.log_tensor_state("Highpass Layer Output", xhigh)
         
         if flatten:
             return torch.cat([xcorr, xlow.flatten(start_dim=1), xhigh], dim=1)
