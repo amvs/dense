@@ -17,6 +17,8 @@ def parse_args():
                         help='Type of model to train (default: scat (dense))')
     parser.add_argument('--name', type=str, default='',
                         help='Optional short name for the sweep folder')
+    parser.add_argument('--metric', type=str, default='last_val_acc',
+                        help='Metric to evaluate top models (default: last_val_acc)')
     return parser.parse_args()
 
 # Parse arguments
@@ -123,16 +125,21 @@ logger.info(f"Saved results summary plot to {results_path}")
 
 topN = 3
 # Step 2: take top-N runs per val_ratio by validation accuracy
-topN_runs = df.sort_values(["val_ratio", "last_val_acc"], ascending=[True, False])\
-               .groupby("val_ratio").head(topN)
+# Sort by val_ratio and the specified metric
+metric = args.metric
+df = df.sort_values(["val_ratio", metric], ascending=[True, False])
+
+# Group by val_ratio and keep top N runs
+top_runs = df.groupby("val_ratio").head(topN)
+
 topN_csv_path = os.path.join(results_path, f"top{topN}_runs_per_val_ratio.csv")
-topN_runs.to_csv(topN_csv_path, index=False)
+top_runs.to_csv(topN_csv_path, index=False)
 logger.info(f"Saved top-{topN} runs per val_ratio to {topN_csv_path}")
 
 # Create a label for x-axis: "val_ratio-rank" only
 labels = []
 heights = []
-for val_ratio, group in topN_runs.groupby("val_ratio"):
+for val_ratio, group in top_runs.groupby("val_ratio"):
     # sort by val_acc descending within this val_ratio
     group_sorted = group.sort_values("last_val_acc", ascending=False).reset_index()
     for rank, row in enumerate(group_sorted.itertuples(), 1):
