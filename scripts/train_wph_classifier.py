@@ -235,7 +235,7 @@ def main():
             batch_size=batch_size, train_ratio=train_ratio, worker_init_fn=worker_init_fn
         )
     train_loader, val_loader = split_train_val(
-        train_loader.dataset, val_ratio=val_ratio, batch_size=batch_size
+        train_loader.dataset, val_ratio=val_ratio, batch_size=batch_size, drop_last=True
     )
 
     # Initialize models

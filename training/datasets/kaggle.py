@@ -88,8 +88,8 @@ def get_kaggle_loaders(dataset_name, resize, deeper_path, batch_size=64, train_r
         dataset, [train_len, test_len],
         generator=torch.Generator().manual_seed(42)
     )
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn, drop_last=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=True)
     nb_class = len(dataset.classes)
     sample_img, _ = train_dataset[0]
     logger.info(f"[Ratio:{train_ratio}] Train size: {len(train_dataset)}, Test size: {len(test_dataset)}")
