@@ -6,7 +6,8 @@ For any task, follow these steps to ensure smooth collaboration and code quality
 2.  **Create a Branch:** When starting work, create a new **branch** from `main`. Name it descriptively (e.g., `feature/add-new-model` or `fix/bug-in-loader`).
     * *Tip:* Commit your changes frequently and push them to this branch.
 3.  **Create a Pull Request (PR):** Once your work is complete, open a **Pull Request** (PR) targeting the `main` branch.
-4.  **Review and Merge:** The programmer who *did not* write the code is responsible for **reviewing** the PR. The code should be reviewed and approved before it can be **merged** into `main`.
+   * Assign the PR to the person who did not write the code so that they get a notification
+5.  **Review and Merge:** The programmer who *did not* write the code is responsible for **reviewing** the PR. The code should be reviewed and approved before it can be **merged** into `main`.
     * Bonus points if the person who writes the code includes some tests that the reviewer can run (Copilot can be very helpful for writing tests quickly).
 
 
