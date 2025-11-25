@@ -2,7 +2,7 @@ from torch.utils.data import random_split, DataLoader
 from dense.helpers import LoggerManager
 import torch
 
-def split_train_val(train_dataset, val_ratio=0.1, batch_size=64, seed=123):
+def split_train_val(train_dataset, val_ratio=0.1, batch_size=64, seed=123, drop_last=False):
     """
     Split an existing train_dataset into train and validation subsets
     with a fixed seed for reproducibility.
@@ -16,8 +16,8 @@ def split_train_val(train_dataset, val_ratio=0.1, batch_size=64, seed=123):
         generator=torch.Generator().manual_seed(seed)
     )
 
-    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, drop_last=drop_last)
+    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, drop_last=drop_last)
     logger = LoggerManager.get_logger()
     logger.info(f"Split train dataset into train and val subsets...")
     logger.info(f"[Ratio: {val_ratio}] Train size: {train_len}, Val size: {val_len}")
