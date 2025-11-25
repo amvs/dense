@@ -91,22 +91,22 @@ def main():
     #
     logger.info("Training linear classifier...") 
     model.train_classifier()
-    for epoch in range(classifier_epochs):  # Change number of epochs as needed
-        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, base_loss, device)
+    for epoch in range(classifier_epochs):
+        train_metrics = train_one_epoch(model, train_loader, optimizer, base_loss, device)
         val_loss, val_acc = evaluate(model, val_loader, base_loss, device)
-        logger.info(f"Epoch {epoch+1}: Train Acc={train_acc:.4f}, Val Acc={val_acc:.4f}")
+        logger.info(f"Epoch {epoch+1}: Train Acc={train_metrics['accuracy']:.4f}, Val Acc={val_acc:.4f}, Base Loss={train_metrics['base_loss']:.4e}, Reg Loss={train_metrics['reg_loss']:.4e}, Total Loss={train_metrics['total_loss']:.4e}")
     logger.info("Finish linear layer training task.")
 
     save_original = os.path.join(exp_dir, "origin.pt")
     torch.save(model.state_dict(), save_original)
     logger.info(f"Save model to {save_original}")
-    #
+
     logger.info("Fine tuning conv layers...")
     model.train_conv()
-    for epoch in range(conv_epochs):  # Change number of epochs as needed
-        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, base_loss, device, original_params, lambda_reg)
+    for epoch in range(conv_epochs):
+        train_metrics = train_one_epoch(model, train_loader, optimizer, base_loss, device, original_params, lambda_reg)
         val_loss, val_acc = evaluate(model, val_loader, base_loss, device)
-        logger.info(f"Epoch {epoch+1}: Train Acc={train_acc:.4f}, Val Acc={val_acc:.4f}")
+        logger.info(f"Epoch {epoch+1}: Train Acc={train_metrics['accuracy']:.4f}, Val Acc={val_acc:.4f}, Base Loss={train_metrics['base_loss']:.4e}, Reg Loss={train_metrics['reg_loss']:.4e}, Total Loss={train_metrics['total_loss']:.4e}")
     test_loss, test_acc = evaluate(model, test_loader, base_loss, device)
     logger.info(f"Finish conv fine tuning task. Test Acc={test_acc:.4f}")
     #
@@ -117,7 +117,7 @@ def main():
     # back up config
     config["nb_class"] = nb_class
     config["image_shape"] = list(image_shape)
-    config["last_train_acc"] = train_acc
+    config["last_train_acc"] = train_metrics['accuracy']
     config["last_val_acc"] = val_acc
     config["test_acc"] = test_acc
     save_config(exp_dir, config)
