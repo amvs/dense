@@ -13,4 +13,5 @@ lr: 0.05
 lambda_reg: 1e-1
 train_ratio: 0.85
 val_ratio: 0.1
+train_size: null  # Optional: Set a fixed training dataset size (overrides train_ratio if provided)
 
