@@ -71,9 +71,9 @@ def main():
     nb_orients = config["nb_orients"]
     wavelet = config["wavelet"]
     efficient = config["efficient"]
-    isShared = config.get("isShared", False)
+    share_channels = config.get("share_channels", False)
     model = dense(max_scale, nb_orients, image_shape,
-                wavelet=wavelet, nb_class=nb_class, efficient=efficient, isShared=isShared).to(device)
+                wavelet=wavelet, nb_class=nb_class, efficient=efficient, share_channels=share_channels).to(device)
     
     # Train classifier
     lr = float(config["lr"])

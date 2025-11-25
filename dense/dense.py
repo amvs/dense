@@ -8,7 +8,7 @@ class dense(nn.Module):
                        wavelet:str = "morlet",   # Choose wavelet to use
                        nb_class:int = None,      # nb of classification class
                        efficient:bool = True,     # enable memory efficient
-                       isShared:bool = False
+                       share_channels:bool = False
                 ):
         super().__init__()
         self.max_scale = max_scale
@@ -16,7 +16,7 @@ class dense(nn.Module):
         self.image_channel, self.image_size, self.image_size2 = image_shape
         self.wavelet = wavelet
         self.efficient = efficient
-        self.isShared = isShared
+        self.share_channels = share_channels
         # check valid parameter
         if self.image_size != self.image_size2:
             raise ValueError("Images are not square size")
@@ -43,7 +43,7 @@ class dense(nn.Module):
         self.sequential_conv = nn.ModuleList()
         in_channel = self.image_channel
         for j in range(max_scale):
-            conv = wavelet2d(self.filters[0], in_channel, isShared=self.isShared)
+            conv = wavelet2d(self.filters[0], in_channel, share_channels=self.share_channels)
             self.sequential_conv.append(conv)
             in_channel = in_channel * (nb_orients + 1) # non_linear doesn't increase the channel, only conv
         

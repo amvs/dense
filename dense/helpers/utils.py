@@ -22,7 +22,7 @@ def wavelet2d(filters: torch.Tensor,
               stride: int = 1, 
               dilation: int = 1, 
               kernel_dtype = torch.complex64,
-              isShared: bool = False) -> nn.Conv2d:
+              share_channels: bool = False) -> nn.Conv2d:
     '''
     Create nn.Conv2d with
     - bias = False
@@ -32,7 +32,7 @@ def wavelet2d(filters: torch.Tensor,
         with each oriented filter.
     
     Arguments:
-    isShared -- if True, all in_channels share the same set of filters.
+    share_channels -- if True, all in_channels share the same set of filters.
                 if False, each in_channel has its own set of filters in the memory.
 
     filters must have shape [C_filter, S, S]
@@ -45,7 +45,7 @@ def wavelet2d(filters: torch.Tensor,
     result = conv2d(image) -> shape [1, 12, 128, 128]
     '''
     nb_orients, S, _ = filters.shape
-    if isShared:
+    if share_channels:
         weight = filters.unsqueeze(0).expand(in_channels, -1, -1, -1).reshape(nb_orients * in_channels, 1, S, S)
         conv = SharedConv2d(weight, groups=in_channels)
     else:
