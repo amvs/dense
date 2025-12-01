@@ -10,7 +10,7 @@ where $\Omega$ is the domain. $u$ is the spatial location and $\tau$ is the spat
 
 If $\Omega$ is a discrete domain (e.g. an image),
 
-$$Cx ( \gamma, \gamma', \tau )  = \frac{1}{|\Omega|} \sum_{u \in \Omega} Rx (\gamma, u) Rx(\gamma', u-\tau)^* du$$
+$$Cx ( \gamma, \gamma', \tau )  = \frac{1}{|\Omega|} \sum_{u \in \Omega} Rx (\gamma, u) Rx(\gamma', u-\tau)^*$$
 
 This is a general framework that works for many representations of a signal.
 The specifics of the model depend on the representation.
@@ -18,7 +18,7 @@ The specifics of the model depend on the representation.
 ## WPH Representation
 
 Choose a mother wavelet $\psi: \mathbb{R}^2 \mapsto \mathbb{C}$.
-Choose maximum scale $J$ and number of angles $L$; this gives scales $j \in \{ 0, 1, \ldots, J-1 \}$ and rotations $r_{\theta}$ over angles $\theta = l \pi / L$ for $l \in \{ 0 , 1, \ldots, L \}$.
+Choose maximum scale $J$ and number of angles $L$; this gives scales $j \in \{ 0, 1, \ldots, J-1 \}$ and rotations $r_{\theta}$ over angles $\theta = l \pi / L$ for $l \in \{ 0 , 1, L-1 \}$.
 Let $\Delta = \{ 0, 1,\ldots, J-1 \} \times \frac{\pi}{L} \{ 0, \ldots, L-1 \}$ be the index set for the wavelets.
 Then we have wavelet with scale $j$ and angle $\theta$ given by
 $$\psi_{j, \theta} (u) = 2^{-2j} \psi( 2^{-2j} r_{\theta} u), u \in \mathbb{R}^2$$
@@ -32,14 +32,14 @@ $$[z]^k = |z| e^{i k \phi(z)}$$
 
 ## Alpha Representation
 
-However, in practice, we don't actually use the phase harmonics, because they capture the same information as phase-shifted ReLU coefficients.
+However, in practice, we don't actually use the phase harmonics, because they capture the same information as phase-shifted ReLU coefficients (connected via Fourier transform, see "Phase Harmonic Correlations and Convolutional Neural Networks" by Mallat et al).
 
 Define phase-shifted ReLU by:
-$$\mathbb{R}ho_{\alpha}(z) = \mathbb{R}ho(\mathcal{R}(e^{i \alpha}z))$$
-where $\mathbb{R}ho$ is ReLU and $\mathcal{R}$ denotes taking the real part.
+$$\rho_{\alpha}(z) = \rho(\mathcal{R}(e^{i \alpha}z))$$
+where $\rho$ is ReLU and $\mathcal{R}$ denotes taking the real part.
 
 Then the Alpha model representation is given by:
-$$R^{Alpha} x (\gamma, u) = \mathbb{R}ho_{\alpha} (x \star \psi_{j, \theta}(u)) - \mu_{\gamma}, \quad \gamma  = (j, \theta, \alpha) $$
+$$R^{Alpha} x (\gamma, u) = \rho_{\alpha} (x \star \psi_{j, \theta}(u)) - \mu_{\gamma}, \quad \gamma  = (j, \theta, \alpha) $$
 
 ### Implementation Note: Filter Phase-Shifting
 
@@ -47,7 +47,7 @@ In practice, we phase-shift the filters before convolution rather than phase-shi
 $$x \star (e^{i\alpha}\psi_{j,\theta})(u) = e^{i\alpha}(x \star \psi_{j,\theta}(u)) $$
 
 Therefore:
-$$\mathbb{R}ho(\mathcal{R}(x \star (e^{i\alpha}\psi_{j,\theta})(u))) = \mathbb{R}ho(\mathcal{R}(e^{i\alpha} z)) = \mathbb{R}ho_\alpha(z)$$
+$$\rho(\mathcal{R}(x \star (e^{i\alpha}\psi_{j,\theta})(u))) = \rho(\mathcal{R}(e^{i\alpha} z)) = \rho_\alpha(z)$$
 
 This equivalence allows us to precompute phase-shifted filters $e^{i\alpha}\psi_{j,\theta}$ and use them directly in a CNN architecture.
 
