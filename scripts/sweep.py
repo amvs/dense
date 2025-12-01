@@ -13,36 +13,66 @@ def parse_args():
         "--config", type=str, required=True,
         help="Path to YAML config file (e.g. configs/mnist_sweep.yaml)"
     )
+    parser.add_argument('--model-type', type=str, choices=['wph', 'scat'], default='scat',
+                        help='Type of model to train (default: scat (dense))')
+    parser.add_argument('--name', type=str, default='',
+                        help='Optional short name for the sweep folder')
+    parser.add_argument('--metric', type=str, default='last_val_acc',
+                        help='Metric to evaluate top models (default: last_val_acc)')
     return parser.parse_args()
 
+# Parse arguments
+args = parse_args()
+
+# Read config
+sweep = load_config(args.config)
+
+# Load base configuration
+base_config = load_config(sweep["base_config"])
+
+# Extract dataset name after loading base_config
+dataset_name = base_config["dataset"].split("/")[-1] if "dataset" in base_config else "unknown"
+
 # Create output folder
+short_name = f"{args.name}-" if args.name else ""
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-sweep_dir = os.path.join("experiments", f"sweeps-{timestamp}")
+sweep_dir = os.path.join("experiments", dataset_name, f"{short_name}sweeps-{timestamp}")
 os.makedirs(sweep_dir, exist_ok=True)
 
 # init logger
 logger = LoggerManager.get_logger(log_dir=sweep_dir)
 logger.info("Start log:")
 
-# Read config
-args = parse_args()
-sweep = load_config(args.config)
-
-
-base = sweep["base_config"]
 params = sweep["sweep"]  # dict of lists
 
 # All parameter names
 keys = list(params.keys())
 all_combinations = list(itertools.product(*params.values()))
 total_runs = len(all_combinations)
+
 # All combinations of values
 for run_idx, values in enumerate(all_combinations, 1):
-    overrides = [f"{k}={v}" for k, v in zip(keys, values)]
+    overrides = {k: v for k, v in zip(keys, values)}
+    merged_config = {**base_config, **overrides}  # Merge base config with overrides
+
+    # Debug: Log merged_config to verify content
+    logger.info(f"Merged config for run {run_idx}: {merged_config}")
+
     # Optional: create a run name from param values
-    run_name = "_".join([f"{k}{v}" for k, v in zip(keys, values)])
+    run_name = "_".join([f"{k}{v}" for k, v in overrides.items()])
     logger.info(f"Run {run_idx}/{total_runs} — overrides: {overrides}")
-    result = subprocess.run(["python", "scripts/train.py", "--config", base, "--sweep_dir", sweep_dir, "--override"] + overrides)
+
+    if args.model_type == 'scat':
+        file = "scripts/train.py"
+    elif args.model_type == 'wph':
+        file = "scripts/train_wph_classifier.py"
+
+    # Save merged config to a temporary file
+    temp_config_path = os.path.join(sweep_dir, f"temp_config_{run_idx}.yaml")
+    with open(temp_config_path, "w") as f:
+        yaml.dump(merged_config, f)
+
+    result = subprocess.run(["python", file, "--config", temp_config_path, "--sweep_dir", sweep_dir])
     if result.returncode == 0:
         logger.info(f"Finished run.")
     else:
@@ -93,16 +123,21 @@ logger.info(f"Saved results summary plot to {results_path}")
 
 topN = 3
 # Step 2: take top-N runs per val_ratio by validation accuracy
-topN_runs = df.sort_values(["val_ratio", "last_val_acc"], ascending=[True, False])\
-               .groupby("val_ratio").head(topN)
+# Sort by val_ratio and the specified metric
+metric = args.metric
+df = df.sort_values(["val_ratio", metric], ascending=[True, False])
+
+# Group by val_ratio and keep top N runs
+top_runs = df.groupby("val_ratio").head(topN)
+
 topN_csv_path = os.path.join(results_path, f"top{topN}_runs_per_val_ratio.csv")
-topN_runs.to_csv(topN_csv_path, index=False)
+top_runs.to_csv(topN_csv_path, index=False)
 logger.info(f"Saved top-{topN} runs per val_ratio to {topN_csv_path}")
 
 # Create a label for x-axis: "val_ratio-rank" only
 labels = []
 heights = []
-for val_ratio, group in topN_runs.groupby("val_ratio"):
+for val_ratio, group in top_runs.groupby("val_ratio"):
     # sort by val_acc descending within this val_ratio
     group_sorted = group.sort_values("last_val_acc", ascending=False).reset_index()
     for rank, row in enumerate(group_sorted.itertuples(), 1):

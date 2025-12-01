@@ -7,7 +7,8 @@ class dense(nn.Module):
                        image_shape:tuple,        # image_channel, Height, Width
                        wavelet:str = "morlet",   # Choose wavelet to use
                        nb_class:int = None,      # nb of classification class
-                       efficient:bool = True     # enable memory efficient
+                       efficient:bool = True,     # enable memory efficient
+                       share_channels:bool = False
                 ):
         super().__init__()
         self.max_scale = max_scale
@@ -15,7 +16,7 @@ class dense(nn.Module):
         self.image_channel, self.image_size, self.image_size2 = image_shape
         self.wavelet = wavelet
         self.efficient = efficient
-
+        self.share_channels = share_channels
         # check valid parameter
         if self.image_size != self.image_size2:
             raise ValueError("Images are not square size")
@@ -42,7 +43,7 @@ class dense(nn.Module):
         self.sequential_conv = nn.ModuleList()
         in_channel = self.image_channel
         for j in range(max_scale):
-            conv = wavelet2d(self.filters[j], in_channel)
+            conv = wavelet2d(self.filters[0], in_channel, share_channels=self.share_channels)
             self.sequential_conv.append(conv)
             in_channel = in_channel * (nb_orients + 1) # non_linear doesn't increase the channel, only conv
         
@@ -53,7 +54,7 @@ class dense(nn.Module):
             self.module_list.append(module)
 
         # pooling on the last layer, as low pass filter    
-        self.pooling = nn.AvgPool2d(2**max_scale, 2**max_scale)
+        self.pooling = nn.AvgPool2d(2, 2)
         self.out_dim = in_channel * (self.image_size//2**max_scale)**2
 
 
@@ -88,8 +89,8 @@ class dense(nn.Module):
             # the first operation must not be checkpointed, to avoid no gradients in all cases
             result = checkpoint(module, *inputs) if self.efficient and index != 0 else module(*inputs)
             inputs.append(result)
+            inputs = [self.pooling(inp) for inp in inputs]
         features = torch.cat(inputs, dim=1)
-        features = self.pooling(features)
         if self.linear:
             features = self.linear(features.reshape(img.shape[0], -1))
         return features
