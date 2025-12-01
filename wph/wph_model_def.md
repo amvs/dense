@@ -44,7 +44,7 @@ $$R^{Alpha} x (\gamma, u) = \rho_{\alpha} (x \star \psi_{j, \theta}(u)) - \mu_{\
 ### Implementation Note: Filter Phase-Shifting
 
 In practice, we phase-shift the filters before convolution rather than phase-shifting the coefficients after. These are equivalent due to linearity of convolution. Let $z = x \star \psi_{j,\theta}(u)$. Then:
-$$x \star (e^{i\alpha}\psi_{j,\theta})(u) = e^{i\alpha}(x \star \psi_{j,\theta}(u)) $$
+$$x \star (e^{i\alpha}\psi_{j,\theta})(u) = e^{i\alpha}(x \star \psi_{j,\theta}(u)) = e^{i\alpha} z $$
 
 Therefore:
 $$\rho(\mathcal{R}(x \star (e^{i\alpha}\psi_{j,\theta})(u))) = \rho(\mathcal{R}(e^{i\alpha} z)) = \rho_\alpha(z)$$
