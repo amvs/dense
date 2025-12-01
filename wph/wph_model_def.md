@@ -19,7 +19,7 @@ The specifics of the model depend on the representation.
 
 Choose a mother wavlet $\psi: \R^2 \mapsto \mathbb{C}$.
 Choose maximum scale $J$ and number of angles $L$; this gives scales $j \in \{ 0, 1, \ldots, J-1 \}$ and rotations $r_{\theta}$ over angles $\theta = l \pi / L$ for $l \in \{ 0 , 1, \ldots, L \}$.
-Let $\Delta = \{ 0, 1, ,\ldots, J-1 \} \times \frac{\pi}{L} \{ 0, \ldots, L-1 \}$ be the index set for the wavelets.
+Let $\Delta = \{ 0, 1,\ldots, J-1 \} \times \frac{\pi}{L} \{ 0, \ldots, L-1 \}$ be the index set for the wavelets.
 Then we have wavelet with scale $j$ and angle $\theta$ given by
 $$ \psi_{k, \theta} (u) = 2^{-2j} \psi( 2^{-2j} r_{\theta} u), u \in \R^2$$
 The wavelet coefficients for input signal $x$ are given by:
@@ -44,7 +44,7 @@ $$R^{Alpha} x (\gamma, u) = \rho_{\alpha} (x \star \psi_{j, \theta}(u)) - \mu_{\
 ### Implementation Note: Filter Phase-Shifting
 
 In practice, we phase-shift the filters before convolution rather than phase-shifting the coefficients after. These are equivalent due to linearity of convolution. Let $z = x \star \psi_{j,\theta}(u)$. Then:
-$$x \star (e^{i\alpha}\psi_{j,\theta})(u) = e^{i\alpha}(x \star \psi_{j,\theta}(u)) = e^{i\alpha} z$$
+$$x \star (e^{i\alpha}\psi_{j,\theta})(u) = e^{i\alpha}(x \star \psi_{j,\theta}(u)) $$
 
 Therefore:
 $$\rho(\mathcal{R}(x \star (e^{i\alpha}\psi_{j,\theta})(u))) = \rho(\mathcal{R}(e^{i\alpha} z)) = \rho_\alpha(z)$$
@@ -82,6 +82,7 @@ The output is $\Phi^{WPH}(x) = \{ C^{WPH} x (\gamma, \gamma', \tau) : (\gamma, \
 ## References
 
 This notation is taken from the paper in which the WPH model is proposed and applied to texture generation: 
+```
 @inproceedings{
 brochard2022generalized,
 title={Generalized rectifier wavelet covariance models for texture synthesis},
@@ -90,3 +91,4 @@ booktitle={International Conference on Learning Representations},
 year={2022},
 url={https://openreview.net/forum?id=ziRLU3Y2PN_}
 }
+```
