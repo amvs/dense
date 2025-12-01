@@ -4,12 +4,12 @@ from torch import nn
 from typing import Optional, Literal
 from torch.fft import fft2, ifft2
 
-from dense import wavelets as wlets
 from wph.layers.wave_conv_layer import WaveConvLayer
 from wph.layers.relu_center_layer import ReluCenterLayer
 from wph.layers.corr_layer import CorrLayer
 from wph.layers.lowpass_layer import LowpassLayer
 from wph.layers.highpass_layer import HighpassLayer
+from dense.helpers.logger import LoggerManager
 
 
 class WPHModel(nn.Module):
@@ -105,7 +105,7 @@ class WPHModel(nn.Module):
         )
         self.nb_moments = self.corr.nb_moments + self.lowpass.nb_moments + self.highpass.nb_moments
         
-    def forward(self, x: torch.Tensor, flatten: bool = True, logger=None, vmap_chunk_size=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> torch.Tensor:
         nb = x.shape[0]
         xpsi = self.wave_conv(x)
         xrelu = self.relu_center(xpsi)
@@ -143,7 +143,7 @@ class WPHClassifier(nn.Module):
         # Define the classifier layer
         self.classifier = nn.Linear(self.feature_extractor.nb_moments, num_classes)
 
-    def forward(self, x: torch.Tensor, logger=None, vmap_chunk_size=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, vmap_chunk_size=None) -> torch.Tensor:
         """
         Forward pass for the classifier.
 
@@ -156,7 +156,7 @@ class WPHClassifier(nn.Module):
             torch.Tensor: Classification logits.
         """
         # Extract features using the feature extractor
-        features = self.feature_extractor(x, flatten=True, logger=logger, vmap_chunk_size=vmap_chunk_size)
+        features = self.feature_extractor(x, flatten=True, vmap_chunk_size=vmap_chunk_size)
 
         # Apply batch normalization if enabled
         if self.batch_norm is not None:
