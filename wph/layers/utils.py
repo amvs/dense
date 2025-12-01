@@ -129,7 +129,7 @@ def periodic_rotate(spatial_filters, angle_degrees):
     # We use bilinear interpolation. Because we padded circularly, 
     # "out of bounds" checks will land on valid wrapped data.
     output_stack = F.grid_sample(
-        f_padded_stack, sample_grid, mode='nearest', padding_mode='zeros', align_corners=False
+        f_padded_stack, sample_grid, mode='bilinear', padding_mode='zeros', align_corners=False
     )
     
     # 7. Reconstruct

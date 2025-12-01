@@ -5,7 +5,7 @@ from wph.ops.backend import SubInitSpatialMean, DivInitStd
 
 
 class ReluCenterLayer(nn.Module):
-    def __init__(self, J: int, M: int, N: int, normalize: int = True):
+    def __init__(self, J: int, M: int, N: int, normalize: bool = True):
         """
         Initializes the ReLU center layer.
         J: number of scales

@@ -79,7 +79,6 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
             device=device,
             lambda_reg=configs['lambda_reg'] if phase == 'feature_extractor' else 0.0,
             original_params=original_params if phase == 'feature_extractor' else None,
-            logger=None,
             vmap_chunk_size=configs.get('vmap_chunk_size', None)
         )
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
@@ -150,8 +149,9 @@ def construct_filters(config, image_shape, logger):
         # Check if filters exist, otherwise generate them
         if not os.path.exists(hatpsi_path) or not os.path.exists(hatphi_path):
             logger.info("Filters not found. Generating filters...")
-            os.system(f"python /projects/standard/lermang/vonse006/wph_collab/dense/wph/ops/build-filters.py --N {image_shape[1]} --J {max_scale} --L {nb_orients} --wavelets morlet")
-
+            build_filters_script = os.path.join(os.path.dirname(__file__), "../wph/ops/build-filters.py")
+            os.system(f"python {build_filters_script} --N {image_shape[1]} --J {max_scale} --L {nb_orients} --wavelets morlet")
+            
         # Load precomputed filters
         filters = {
             "hatpsi": torch.load(hatpsi_path, weights_only=True),
@@ -282,9 +282,6 @@ def main():
         {"params": model.classifier.parameters(), "lr": lr},
         {"params": model.feature_extractor.parameters(), "lr": lr * 0.01}
     ])
-
-    # Enable anomaly detection to trace the source of the error
-    torch.autograd.set_detect_anomaly(True)
 
     # Ensure filters remain complex-valued and updates propagate correctly
     resolved_filters = {

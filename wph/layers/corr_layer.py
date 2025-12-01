@@ -61,8 +61,6 @@ class CorrLayer(nn.Module):
         self.mask_to_union = {}
         for shift_idx in range(len(self.masks_shift)):
             mask_flat = self.masks_shift[shift_idx].flatten().bool()  # (M*N,)
-            # which union positions correspond to this mask?
-            union_positions = torch.arange(self.n_union)
             union_to_full = torch.where(self.union_of_masks)[
                 0
             ]  # union idx -> full M*N idx
@@ -178,7 +176,6 @@ class CorrLayer(nn.Module):
     def _pair_corr(
         self, hatx_shared, masks_shared, i_idx, j_idx, shift_idx, flatten: bool = True
     ):
-        nb = hatx_shared.shape[0]
         idx1 = i_idx.unsqueeze(0).to(torch.long)
         idx2 = j_idx.unsqueeze(0).to(torch.long)
         shift_idx_1d = shift_idx.unsqueeze(0).to(torch.long)

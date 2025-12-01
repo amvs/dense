@@ -46,8 +46,6 @@ class LoggerManager:
                 tensor (torch.Tensor): The tensor to log.
             """
             logger.info(f"Tensor {name}: is_complex={torch.is_complex(tensor)}, is_conj={tensor.is_conj()}")
-            if tensor.is_conj():
-                pdb.set_trace()
 
         logger.log_tensor_state = log_tensor_state
 

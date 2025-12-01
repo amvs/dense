@@ -4,7 +4,6 @@ import torch.nn.functional as F
 from torch import nn
 import math
 from typing import Optional
-from torchvision.transforms.functional import rotate
 from wph.layers.utils import periodic_rotate
 import pdb
 
@@ -90,7 +89,8 @@ class WaveConvLayer(nn.Module):
             for l in range(self.L):
                 angle = l / self.L * 180  # Convert to degrees
                 rotated_filters = periodic_rotate(filters.flatten(end_dim=-3).clone(), angle)
-                rotated_filters.imag = 0 # zero out imaginary part
+                rotated_filters = torch.complex(rotated_filters.real, \
+                                                torch.zeros_like(rotated_filters.imag)) # zero out imaginary part
                 # kymatio filter bank also does this - claims it makes no difference
                 # bc imag part is already zero (this doesn't seem to be true in practice)
                 # but we zero it out to be consistent
