@@ -22,7 +22,7 @@ classifier_epochs: 10
 conv_epochs: 10
 batch_size: 200
 lr: 0.0001
-lambda_reg: 1e-4
+lambda_reg: 1.0e-4
 train_ratio: 0.85
 val_ratio: 0.1
 seed: 42

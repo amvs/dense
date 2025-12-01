@@ -1,6 +1,7 @@
 import os
 import yaml
 from dense.helpers import LoggerManager
+
 def load_config(filename: str):
     if not os.path.exists(filename):
         raise FileNotFoundError(f"Config file not found: {filename}")
@@ -39,14 +40,6 @@ def apply_overrides(config, overrides):
                 except ValueError:
                     pass  # leave as string
         config[k] = v
-    try:
-        config['lambda_reg'] = float(config['lambda_reg'])
-    except KeyError:
-        pass
-    except ValueError:
-        raise ValueError(f"lambda_reg must be a float, got {config['lambda_reg']}")
-    # logger = LoggerManager.get_logger()
-    # logger.info(f"Overiding config for {overrides}")
     return config
 
 def save_config(folder:str, config):
