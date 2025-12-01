@@ -14,6 +14,7 @@ import random
 import numpy as np
 import time
 import platform
+from functools import partial
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train WPHClassifier with config")
@@ -42,9 +43,8 @@ def set_seed(seed):
         torch.backends.cudnn.benchmark = False
         # torch.use_deterministic_algorithms(True)
 
-def worker_init_fn(worker_id):
+def worker_init_fn(worker_id, seed=None):
     """Ensure deterministic behavior in DataLoader workers."""
-    global seed  # Ensure seed is accessible
     if seed is not None:
         np.random.seed(seed + worker_id)
 
@@ -222,16 +222,18 @@ def main():
     batch_size = config["batch_size"]
     train_ratio = config["train_ratio"]
     val_ratio = config["val_ratio"]
+    # Create a worker_init_fn with seed bound using functools.partial
+    worker_init_with_seed = partial(worker_init_fn, seed=seed)
     if dataset == "mnist":
         train_loader, test_loader, nb_class, image_shape = get_loaders(
-            dataset=dataset, batch_size=batch_size, train_ratio=train_ratio, worker_init_fn=worker_init_fn
+            dataset=dataset, batch_size=batch_size, train_ratio=train_ratio, worker_init_fn=worker_init_with_seed
         )
     else:
         resize = config["resize"]
         deeper_path = config["deeper_path"]
         train_loader, test_loader, nb_class, image_shape = get_loaders(
             dataset=dataset, resize=resize, deeper_path=deeper_path,
-            batch_size=batch_size, train_ratio=train_ratio, worker_init_fn=worker_init_fn
+            batch_size=batch_size, train_ratio=train_ratio, worker_init_fn=worker_init_with_seed
         )
     train_loader, val_loader = split_train_val(
         train_loader.dataset, val_ratio=val_ratio, batch_size=batch_size, drop_last=True

@@ -14,7 +14,7 @@ from wph.layers.wave_conv_layer import WaveConvLayer
 
 def test_wave_conv_layer_gradients_share_rotations():
     J, L, A, M, N = 3, 4, 2, 8, 8
-    layer = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=1, train_filters=True, share_rotations=True)
+    layer = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=1, share_rotations=True)
 
     x = torch.randn(1, 1, M, N, requires_grad=True)
     output = layer(x)
@@ -26,7 +26,7 @@ def test_wave_conv_layer_gradients_share_rotations():
 
 def test_wave_conv_layer_gradients_share_phases():
     J, L, A, M, N = 3, 4, 2, 8, 8
-    layer = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=1, train_filters=True, share_phases=True)
+    layer = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=1, share_phases=True)
 
     x = torch.randn(1, 1, M, N, requires_grad=True)
     output = layer(x)
@@ -38,7 +38,7 @@ def test_wave_conv_layer_gradients_share_phases():
 
 def test_wave_conv_layer_gradients_share_channels():
     J, L, A, M, N = 3, 4, 2, 8, 8
-    layer = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=3, train_filters=True, share_channels=True)
+    layer = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=3, share_channels=True)
 
     x = torch.randn(1, 3, M, N, requires_grad=True)
     output = layer(x)
@@ -54,7 +54,7 @@ def test_wave_conv_layer_gradients_compare_share_rotations():
     # Case 1: share_rotations=True
     # need to define filters carefully
     filters = torch.load('tests/morlet_N8_J3_L4.pt', weights_only=True)
-    layer_shared = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=1, train_filters=True, share_rotations=True, filters=filters[:,0,...].unsqueeze(0).unsqueeze(2).unsqueeze(3))
+    layer_shared = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=1, share_rotations=True, filters=filters[:,0,...].unsqueeze(0).unsqueeze(2).unsqueeze(3))
     x = torch.randn(1, 1, M, N, requires_grad=True)
     output_shared = layer_shared(x)
     loss_shared = output_shared.abs().sum()
@@ -66,7 +66,7 @@ def test_wave_conv_layer_gradients_compare_share_rotations():
 
 
     # Case 2: share_rotations=False
-    layer_not_shared = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=1, train_filters=True, share_rotations=False, filters = layer_shared.get_full_filters().clone())
+    layer_not_shared = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=1, share_rotations=False, filters = layer_shared.get_full_filters().clone())
     output_not_shared = layer_not_shared(x)
     loss_not_shared = output_not_shared.abs().sum()
     loss_not_shared.backward()
@@ -99,7 +99,7 @@ def test_wave_conv_layer_gradients_compare_share_phases():
     ], dim=-3)  # Stack along the phase dimension
 
     # Case 1: share_phases=True
-    layer_shared = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=1, train_filters=True, share_phases=True, filters=filters.unsqueeze(0).unsqueeze(-3))
+    layer_shared = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=1, share_phases=True, filters=filters.unsqueeze(0).unsqueeze(-3))
     x = torch.randn(1, 1, M, N, requires_grad=True)
     output_shared = layer_shared(x)
     loss_shared = output_shared.abs().sum()
@@ -107,7 +107,7 @@ def test_wave_conv_layer_gradients_compare_share_phases():
     grad_shared = layer_shared.base_filters.grad.clone()
 
     # Case 2: share_phases=False
-    layer_not_shared = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=1, train_filters=True, share_phases=False, filters=phase_shifts.clone().unsqueeze(0))
+    layer_not_shared = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=1, share_phases=False, filters=phase_shifts.clone().unsqueeze(0))
     output_not_shared = layer_not_shared(x)
     loss_not_shared = output_not_shared.abs().sum()
     loss_not_shared.backward()
