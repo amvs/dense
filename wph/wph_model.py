@@ -1,4 +1,3 @@
-import pdb
 import torch
 from torch import nn
 from typing import Optional, Literal
@@ -9,7 +8,6 @@ from wph.layers.relu_center_layer import ReluCenterLayer
 from wph.layers.corr_layer import CorrLayer
 from wph.layers.lowpass_layer import LowpassLayer
 from wph.layers.highpass_layer import HighpassLayer
-from dense.helpers.logger import LoggerManager
 
 
 class WPHModel(nn.Module):

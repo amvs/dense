@@ -1,11 +1,9 @@
 import torch
 import torch.fft as fft
-import torch.nn.functional as F
 from torch import nn
 import math
 from typing import Optional
 from wph.layers.utils import periodic_rotate
-import pdb
 
 class WaveConvLayer(nn.Module):
     def __init__(
@@ -102,7 +100,7 @@ class WaveConvLayer(nn.Module):
         if self.share_phases:
             expanded_filters = filters.expand(-1, -1, -1, self.A, -1, -1).clone()  # Clone to avoid in-place operations
             for a in range(self.A):
-                i = torch.complex(torch.tensor(0.0), torch.tensor(1.0))
+                i = torch.complex(torch.tensor(0.0), torch.tensor(1.0), device=filters.device)
                 phase_shift = torch.exp(i * a * (2 * math.pi / self.A))
                 expanded_filters[:, :, :, a, :, :] = expanded_filters[:, :, :, a, :, :] * phase_shift
             filters = expanded_filters

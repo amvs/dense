@@ -57,8 +57,6 @@ for run_idx, values in enumerate(all_combinations, 1):
 
     # Debug: Log merged_config to verify content
     logger.info(f"Merged config for run {run_idx}: {merged_config}")
-    if "num_phases" not in merged_config:
-        logger.error(f"Key 'num_phases' is missing in merged_config for run {run_idx}")
 
     # Optional: create a run name from param values
     run_name = "_".join([f"{k}{v}" for k, v in overrides.items()])

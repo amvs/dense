@@ -19,7 +19,7 @@ The specifics of the model depend on the representation.
 
 Choose a mother wavelet $\psi: \R^2 \mapsto \mathbb{C}$.
 Choose maximum scale $J$ and number of angles $L$; this gives scales $j \in \{ 0, 1, \ldots, J-1 \}$ and rotations $r_{\theta}$ over angles $\theta = l \pi / L$ for $l \in \{ 0 , 1, \ldots, L \}$.
-Let $\Delta = \{ 0, 1, ,\ldots, J-1 \} \times \frac{\pi}{L} \{ 0, \ldots, L-1 \}$ be the index set for the wavelets.
+Let $\Delta = \{ 0, 1,\ldots, J-1 \} \times \frac{\pi}{L} \{ 0, \ldots, L-1 \}$ be the index set for the wavelets.
 Then we have wavelet with scale $j$ and angle $\theta$ given by
 $$ \psi_{j, \theta} (u) = 2^{-2j} \psi( 2^{-2j} r_{\theta} u), u \in \R^2$$
 The wavelet coefficients for input signal $x$ are given by:
