@@ -4,6 +4,8 @@ from torch import nn
 import math
 from typing import Optional
 from wph.layers.utils import periodic_rotate
+from dense.wavelets import filter_bank
+from dense.helpers.utils import wavelet2d
 
 class WaveConvLayer(nn.Module):
     def __init__(
@@ -99,8 +101,8 @@ class WaveConvLayer(nn.Module):
 
         if self.share_phases:
             expanded_filters = filters.expand(-1, -1, -1, self.A, -1, -1).clone()  # Clone to avoid in-place operations
+            i = torch.complex(torch.tensor(0.0), torch.tensor(1.0), device=filters.device)
             for a in range(self.A):
-                i = torch.complex(torch.tensor(0.0), torch.tensor(1.0), device=filters.device)
                 phase_shift = torch.exp(i * a * (2 * math.pi / self.A))
                 expanded_filters[:, :, :, a, :, :] = expanded_filters[:, :, :, a, :, :] * phase_shift
             filters = expanded_filters
@@ -129,3 +131,118 @@ class WaveConvLayer(nn.Module):
         )  # (nb, nc, J, L, A, M, N)
         xpsi_bc = fft.ifft2(hatxpsi_bc)  # (nb, nc, J, L, A, M, N)
         return xpsi_bc
+
+class WaveConvLayerDownsample(nn.Module):
+    def __init__(
+        self,
+       J, L, A, num_channels=1,
+       share_rotations=False,
+       share_channels=False,
+       share_phases=False,
+    ):
+        super().__init__()
+        self.J = J
+        self.L = L
+        self.A = A
+        self.num_channels = num_channels
+        self.share_rotations = share_rotations
+        self.share_channels = share_channels
+        self.share_phases = share_phases
+        self._set_filters()
+        self.register_buffer("full_filters", None)
+        self.filters_cached = False
+        # Register a hook to invalidate cache when base_filters are updated
+        self.base_filters.register_hook(lambda grad: self._invalidate_cache())
+        self.downsample = self._create_downsampler()
+        # self._set_convs()
+
+
+
+    def _set_filters(self):
+        if self.share_channels:
+            param_nc = 1
+        else:
+            param_nc = self.num_channels
+        if self.share_rotations:
+            param_L = 1
+        else:
+            param_L = self.L
+        # initialize base filters
+        base_filters = filter_bank(self.wavelet, self.max_scale, param_L)
+        if not self.share_phases:
+            # expand phase dimension
+            base_filters = self.expand_filters_phase(base_filters)
+        self.base_filters = nn.ParameterList([nn.Parameter(f) for f in base_filters])
+
+    def _invalidate_cache(self):
+        """Invalidates the full filters cache."""
+        self.filters_cached = False
+
+    def get_full_filters(self):
+        """Reconstruct full filter bank from base filters."""
+        if self.filters_cached and self.full_filters is not None:
+            return self.full_filters
+
+        filters = self.base_filters
+        expanded_filters = []
+
+        # Expand dimensions based on sharing settings
+        if self.share_rotations:
+            for f in filters:
+                for l in range(self.L):
+                    angle = l / self.L * 180  # Convert to degrees
+                    rotated_filters = periodic_rotate(filters.flatten(end_dim=-3).clone(), angle)
+                    rotated_filters = torch.complex(rotated_filters.real, \
+                                                    torch.zeros_like(rotated_filters.imag)) # zero out imaginary part
+                    expanded_filters.append(rotated_filters)
+            filters = expanded_filters
+
+        if self.share_phases:
+            filters = self.expand_filters_phase(filters)
+
+        # Cache the computed full filters
+        self.full_filters = filters
+        self.filters_cached = True
+        return filters
+
+    def expand_filters_phase(self, filters: list[torch.Tensor]) -> list[torch.Tensor]:
+        """Expand phase dimension of filters."""
+        expanded_filters = []
+        i = torch.complex(torch.tensor(0.0), torch.tensor(1.0))
+        for f in filters:
+            tmp_f = f.unsqueeze(1)  # add phase dimension
+            tmp_f = tmp_f.expand(-1, self.A, -1, -1)  # expand phase dimension
+            for a in range(self.A):
+                phase_shift = torch.exp(i * a * (2 * math.pi / self.A))
+                tmp_f[:, a, :, :] = tmp_f[:, a, :, :] * phase_shift
+                expanded_filters.append(tmp_f)
+        return expanded_filters
+
+
+    def _create_downsampler(self, ):
+        # IDEA - maybe redo with gaussian low pass filter?
+        return nn.AvgPool2d(2, 2)
+    
+    def forward(self, x):
+        """
+        Applies the wavelet convolution layer with downsampling to the input tensor x.
+        x: (nb, nc, M, N), real-valued input tensor
+        Returns: List of J tensors, where item j has shape (B, C, L, A, H//2^j, W//2^j)
+        """
+        nb = x.shape[0]
+        num_channels = x.shape[1]
+
+        # Get full filter bank (with sharing applied)
+        filters = self.get_full_filters()  # list of (L, A, M, N)
+        results = []
+        current_x = x
+        pad = self.T // 2  # assuming square filters
+
+        for idx, f in enumerate(filters):
+            conv_x = nn.functional.conv2d(input = current_x, weight=f, bias=None, padding=pad, padding_mode='circular')
+            results.append(conv_x)
+
+            if idx < self.J-1:
+                current_x = self.downsample(current_x)
+
+        return results
