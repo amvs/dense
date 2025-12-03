@@ -85,26 +85,37 @@ class WaveConvLayer(nn.Module):
         if self.share_channels:
             filters = filters.expand(self.num_channels, -1, -1, -1, -1, -1)
         if self.share_rotations:
-            expanded_filters = filters.expand(-1, -1, self.L, -1, -1, -1).clone()  # Clone to avoid in-place operations
+            expanded_filters = filters.expand(
+                -1, -1, self.L, -1, -1, -1
+            ).clone()  # Clone to avoid in-place operations
             for l in range(self.L):
                 angle = l / self.L * 180  # Convert to degrees
-                rotated_filters = periodic_rotate(filters.flatten(end_dim=-3).clone(), angle)
-                rotated_filters = torch.complex(rotated_filters.real, \
-                                                torch.zeros_like(rotated_filters.imag)) # zero out imaginary part
+                rotated_filters = periodic_rotate(
+                    filters.flatten(end_dim=-3).clone(), angle
+                )
+                rotated_filters = torch.complex(
+                    rotated_filters.real, torch.zeros_like(rotated_filters.imag)
+                )  # zero out imaginary part
                 # kymatio filter bank also does this - claims it makes no difference
                 # bc imag part is already zero (this doesn't seem to be true in practice)
                 # but we zero it out to be consistent
-                
+
                 # Reconstruct complex filters
-                expanded_filters[:, :, l, :, :, :] = rotated_filters.view_as(expanded_filters[:, :, l, :, :, :])
+                expanded_filters[:, :, l, :, :, :] = rotated_filters.view_as(
+                    expanded_filters[:, :, l, :, :, :]
+                )
             filters = expanded_filters
 
         if self.share_phases:
-            expanded_filters = filters.expand(-1, -1, -1, self.A, -1, -1).clone()  # Clone to avoid in-place operations
-            i = torch.complex(torch.tensor(0.0), torch.tensor(1.0), device=filters.device)
+            expanded_filters = filters.expand(
+                -1, -1, -1, self.A, -1, -1
+            ).clone()  # Clone to avoid in-place operations
+            i = torch.complex(torch.tensor(0.0), torch.tensor(1.0)            )
             for a in range(self.A):
                 phase_shift = torch.exp(i * a * (2 * math.pi / self.A))
-                expanded_filters[:, :, :, a, :, :] = expanded_filters[:, :, :, a, :, :] * phase_shift
+                expanded_filters[:, :, :, a, :, :] = (
+                    expanded_filters[:, :, :, a, :, :] * phase_shift
+                )
             filters = expanded_filters
 
         # Cache the computed full filters
@@ -125,124 +136,183 @@ class WaveConvLayer(nn.Module):
         filters = self.get_full_filters()  # (nc, J, L, A, M, N)
 
         hatx_c = fft.fft2(torch.complex(x, torch.zeros_like(x)))  # (nb, nc, M, N)
-        hatpsi_la = filters.unsqueeze(0).conj()  # (1, nc, J, L, A, M, N)
+        hatpsi_la = filters.unsqueeze(0)  # (1, nc, J, L, A, M, N)
         hatxpsi_bc = hatpsi_la * hatx_c.view(
             nb, num_channels, 1, 1, 1, self.M, self.N
         )  # (nb, nc, J, L, A, M, N)
         xpsi_bc = fft.ifft2(hatxpsi_bc)  # (nb, nc, J, L, A, M, N)
         return xpsi_bc
 
+
 class WaveConvLayerDownsample(nn.Module):
     def __init__(
         self,
-       J, L, A, num_channels=1,
-       share_rotations=False,
-       share_channels=False,
-       share_phases=False,
+        J,
+        L,
+        A,
+        T,
+        num_channels=1,
+        share_rotations=False,
+        share_channels=False,
+        share_phases=False,
+        init_filters=None, # optional: pass pre-computed base filters
     ):
         super().__init__()
         self.J = J
         self.L = L
         self.A = A
+        self.T = T
         self.num_channels = num_channels
         self.share_rotations = share_rotations
         self.share_channels = share_channels
         self.share_phases = share_phases
-        self._set_filters()
-        self.register_buffer("full_filters", None)
+
+        # 1. Setup Base Parameters
+        # We store the MINIMUM necessary parameters to allow gradient sharing.
+
+        # Determine shape of the learnable parameter
+        # If sharing rotations, we only need 1 orientation. Else L.
+        param_L = 1 if share_rotations else L
+        param_A = 1 if share_phases else A
+
+        # For the Pyramid model, we assume filter size T is CONSTANT.
+        if init_filters is None:
+            # Random complex initialization
+            # Shape: (param_L, 1, T, T) (1 input channel per filter, usually)
+            base_real = torch.randn(param_L, param_A, T, T)
+            base_imag = torch.randn(param_L, param_A, T, T)
+        else:
+            # Ensure init_filters matches (param_L, 1, T, T)
+            base_real = init_filters.real
+            base_imag = init_filters.imag
+
+        self.base_real = nn.Parameter(base_real)
+        self.base_imag = nn.Parameter(base_imag)
         self.filters_cached = False
-        # Register a hook to invalidate cache when base_filters are updated
-        self.base_filters.register_hook(lambda grad: self._invalidate_cache())
-        self.downsample = self._create_downsampler()
-        # self._set_convs()
+        self.full_filters_real = None
+        self.full_filters_imag = None
+        
 
+        # 2. Antialiasing Filter (Fixed buffer)
+        self.register_buffer("aa_filter", self._create_gaussian_kernel())
 
-
-    def _set_filters(self):
-        if self.share_channels:
-            param_nc = 1
-        else:
-            param_nc = self.num_channels
-        if self.share_rotations:
-            param_L = 1
-        else:
-            param_L = self.L
-        # initialize base filters
-        base_filters = filter_bank(self.wavelet, self.max_scale, param_L)
-        if not self.share_phases:
-            # expand phase dimension
-            base_filters = self.expand_filters_phase(base_filters)
-        self.base_filters = nn.ParameterList([nn.Parameter(f) for f in base_filters])
+        self.base_real.register_hook(lambda grad: self._invalidate_cache())
+        self.base_imag.register_hook(lambda grad: self._invalidate_cache())
 
     def _invalidate_cache(self):
         """Invalidates the full filters cache."""
         self.filters_cached = False
 
+    def _create_gaussian_kernel(self, sigma=0.8, kernel_size=3):
+        # Create separable Gaussian
+        x = torch.arange(kernel_size) - (kernel_size - 1) / 2
+        gauss_1d = torch.exp(-(x**2) / (2 * sigma**2))
+        gauss_1d = gauss_1d / gauss_1d.sum()
+        gauss_2d = gauss_1d[:, None] * gauss_1d[None, :]
+        return gauss_2d.view(1, 1, kernel_size, kernel_size)
+
     def get_full_filters(self):
-        """Reconstruct full filter bank from base filters."""
-        if self.filters_cached and self.full_filters is not None:
-            return self.full_filters
+        """
+        Constructs the full filter bank (L*A filters) from the base parameters.
+        """
+        # 1. Combine to complex for rotation/phase math
+        # Shape: (param_L, param_A, T, T)
+        if self.filters_cached and self.full_filters_real is not None and self.full_filters_imag is not None:
+            return torch.complex(self.full_filters_real, self.full_filters_imag)
+        
+        filters = torch.complex(self.base_real, self.base_imag)
 
-        filters = self.base_filters
-        expanded_filters = []
-
-        # Expand dimensions based on sharing settings
+        # 2. Handle Rotation Expansion
         if self.share_rotations:
-            for f in filters:
-                for l in range(self.L):
-                    angle = l / self.L * 180  # Convert to degrees
-                    rotated_filters = periodic_rotate(filters.flatten(end_dim=-3).clone(), angle)
-                    rotated_filters = torch.complex(rotated_filters.real, \
-                                                    torch.zeros_like(rotated_filters.imag)) # zero out imaginary part
-                    expanded_filters.append(rotated_filters)
-            filters = expanded_filters
+            # We have 1 filter, we need L
+            # filters: (1, 1, T, T) -> (L, 1, T, T)
+            rotated_list = []
+            for l in range(self.L):
+                angle = l * (180.0 / self.L)
+                # Ensure your rotation function supports gradients!
+                rot_f = periodic_rotate(filters.flatten(end_dim=-3), angle)
+                rotated_list.append(rot_f.view_as(filters))
+            filters = torch.cat(rotated_list, dim=0)  # (L, 1, T, T)
 
+        # 3. Handle Phase Expansion
         if self.share_phases:
-            filters = self.expand_filters_phase(filters)
+            # We have L filters, we need L*A
+            # filters: (L, 1, T, T) -> (L, A, T, T)
+            # Ensure flexibility: only unsqueeze if the A dimension does not already exist
+            if filters.dim() < 4:
+                filters = filters.unsqueeze(1)
+            filters = filters.repeat(1, self.A, 1, 1)
 
-        # Cache the computed full filters
-        self.full_filters = filters
+            # Create phase shifts
+            phases = torch.arange(self.A, device=filters.device) * (
+                2 * math.pi / self.A
+            )
+            phase_shift = torch.exp(1j * phases).view(1, self.A, 1, 1)
+
+            filters = filters * phase_shift
+
+            # Flatten to (L*A, 1, T, T)
+            filters = filters.view(self.L * self.A, 1, self.T, self.T)
+
+        filters = filters.reshape(self.L * self.A, 1, self.T, self.T)
+        self.full_filters_real = filters.real
+        self.full_filters_imag = filters.imag
         self.filters_cached = True
         return filters
 
-    def expand_filters_phase(self, filters: list[torch.Tensor]) -> list[torch.Tensor]:
-        """Expand phase dimension of filters."""
-        expanded_filters = []
-        i = torch.complex(torch.tensor(0.0), torch.tensor(1.0))
-        for f in filters:
-            tmp_f = f.unsqueeze(1)  # add phase dimension
-            tmp_f = tmp_f.expand(-1, self.A, -1, -1)  # expand phase dimension
-            for a in range(self.A):
-                phase_shift = torch.exp(i * a * (2 * math.pi / self.A))
-                tmp_f[:, a, :, :] = tmp_f[:, a, :, :] * phase_shift
-                expanded_filters.append(tmp_f)
-        return expanded_filters
-
-
-    def _create_downsampler(self, ):
-        # IDEA - maybe redo with gaussian low pass filter?
-        return nn.AvgPool2d(2, 2)
-    
     def forward(self, x):
         """
-        Applies the wavelet convolution layer with downsampling to the input tensor x.
-        x: (nb, nc, M, N), real-valued input tensor
-        Returns: List of J tensors, where item j has shape (B, C, L, A, H//2^j, W//2^j)
+        x: (B, C, H, W)
         """
-        nb = x.shape[0]
-        num_channels = x.shape[1]
-
-        # Get full filter bank (with sharing applied)
-        filters = self.get_full_filters()  # list of (L, A, M, N)
+        nb, nc, m, n = x.shape
         results = []
         current_x = x
-        pad = self.T // 2  # assuming square filters
 
-        for idx, f in enumerate(filters):
-            conv_x = nn.functional.conv2d(input = current_x, weight=f, bias=None, padding=pad, padding_mode='circular')
-            results.append(conv_x)
+        # Generate filters for this pass (autograd-safe)
+        # Shape: (L*A, 1, T, T)
+        filters_c = self.get_full_filters()
+        w_real = filters_c.real
+        w_imag = filters_c.imag
 
-            if idx < self.J-1:
-                current_x = self.downsample(current_x)
+        # Expand for Grouped Convolution
+        # We want to apply the bank of (L*A) filters to EACH input channel.
+        # Standard trick: Repeat weights nc times
+        # Shape: (nc * L * A, 1, T, T)
+        w_real = w_real.repeat(nc, 1, 1, 1)
+        w_imag = w_imag.repeat(nc, 1, 1, 1)
+
+        pad_amt = self.T // 2
+        # F.pad format is (left, right, top, bottom)
+        padding = (pad_amt, pad_amt, pad_amt, pad_amt)
+
+        for j in range(self.J):
+            # 1. Explicit Circular Padding
+            x_pad = nn.functional.pad(current_x, padding, mode="circular")
+
+            # 2. Convolution (Grouped)
+            y_real = nn.functional.conv2d(x_pad, w_real, groups=nc)
+            y_imag = nn.functional.conv2d(x_pad, w_imag, groups=nc)
+            
+            # 3. Reshape and Store
+            # Output is (B, nc*L*A, H, W) -> (B, nc, L, A, H, W)
+            m_j, n_j = y_real.shape[-2:]
+            out = torch.complex(
+                y_real.view(nb, nc, self.L, self.A, m_j, n_j),
+                y_imag.view(nb, nc, self.L, self.A, m_j, n_j),
+            )
+            results.append(out)
+
+            # 4. Downsample Logic (Pyramid)
+            if j < self.J - 1:
+                # Antialias (Gaussian)
+                # Expand AA filter to match channels: (C, 1, 3, 3)
+                aa_k = self.aa_filter.expand(nc, 1, -1, -1)
+
+                # Pad for AA (Reflect implies continuity)
+                x_aa_pad = nn.functional.pad(current_x, (1, 1, 1, 1), mode="reflect")
+                x_blur = nn.functional.conv2d(x_aa_pad, aa_k, groups=nc)
+
+                # Decimate
+                current_x = x_blur[:, :, ::2, ::2]
 
         return results
