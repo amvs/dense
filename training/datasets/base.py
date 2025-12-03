@@ -22,7 +22,11 @@ def split_train_val(train_dataset, val_ratio=0.1, batch_size=64, seed=123, drop_
     """
     total_len = len(train_dataset)
     if train_size is not None:
-        train_size = min(train_size, total_len - int(total_len * val_ratio))
+        max_train_size = total_len - int(total_len * val_ratio)
+        if train_size > max_train_size:
+            logger = LoggerManager.get_logger()
+            logger.warning(f"Requested train_size ({train_size}) exceeds available data ({max_train_size}). Using {max_train_size} instead.")
+        train_size = min(train_size, max_train_size)
     else:
         train_size = total_len - int(total_len * val_ratio)
 
