@@ -1,6 +1,7 @@
 import torch
 import torch.fft as fft
 from torch import nn
+from itertools import product
 from typing import Optional, Literal
 from .utils import create_masks_shift
 
@@ -34,8 +35,8 @@ class CorrLayer(nn.Module):
         self.A = A
         self.A_prime = A_prime
         self.num_channels = num_channels
-        self.delta_j = delta_j
-        self.delta_l = delta_l
+        self.delta_j = delta_j if delta_j is not None else J  # default to all scales
+        self.delta_l = delta_l if delta_l is not None else L  # default to all rotations
         self.shift_mode = shift_mode
         self.mask_union = mask_union
         self.mask_angles = mask_angles
@@ -96,7 +97,7 @@ class CorrLayer(nn.Module):
         A = self.A
         A_prime = self.A_prime
         dj = self.delta_j
-        dl = self.delta_l if self.delta_l is not None else L  # default to all rotations
+        dl = self.delta_l
 
         idx_la1 = []
         idx_la2 = []
@@ -262,3 +263,181 @@ class CorrLayer(nn.Module):
         return self.compute_correlations(
             xpsi, flatten=flatten, vmap_chunk_size=vmap_chunk_size
         )
+
+class CorrLayerDownsample(nn.Module):
+    def __init__(
+        self,
+        J: int,
+        L: int,
+        A: int,
+        A_prime: int,
+        M: int,
+        N: int,
+        num_channels: int = 1,
+        delta_j: Optional[int] = None,
+        delta_l: Optional[int] = None,
+        shift_mode: Literal["samec", "all", "strict"] = "samec",
+        mask_angles: int = 4,
+    ):
+        """
+        Initializes the Correlation layer.
+        J: number of scales
+        M, N: spatial dimensions of input signals
+        """
+        super().__init__()
+        self.J = J
+        self.M = M
+        self.N = N
+        self.L = L
+        self.A = A
+        self.A_prime = A_prime
+        self.num_channels = num_channels
+        self.delta_j = delta_j if delta_j is not None else J  # default to all scales
+        self.delta_l = delta_l if delta_l is not None else L  # default to all rotations
+        self.shift_mode = shift_mode
+        self.mask_angles = mask_angles
+
+        masks_shift, factr_shift = create_masks_shift(
+            J=self.J,
+            M=self.M,
+            N=self.N,
+            mask_union=False,
+            mask_angles=self.mask_angles,
+        )
+        self.register_buffer("masks_shift", masks_shift)
+        self.factr_shift = factr_shift
+
+        # precompute index mapping for filter pairs
+        self.idx_wph = self.compute_idx()
+
+    def to_shift_color(self, c1, c2, j1, j2, l1, l2):
+        if self.shift_mode == "all":
+            return True
+        elif self.shift_mode == "samec":
+            return c1 == c2
+        elif self.shift_mode == "strict":
+            return (c1 == c2) and (j1 == j2) and (l1 == l2)
+        else:
+            return False
+
+
+    def forward(self, xpsi, flatten: bool = True, vmap_chunk_size: Optional[int] = None):
+        pass
+
+    def compute_correlations(self, xpsi: list[torch.Tensor], flatten: bool = True, vmap_chunk_size: Optional[int] = None):
+        """
+        Match same scales, and pass to vmap together
+        Do upsampling here before passing to _pair_corr in vmap
+        """
+        la1 = self.idx_wph["la1"].to(xpsi.device)
+        la2 = self.idx_wph["la2"].to(xpsi.device)
+        shifted = self.idx_wph["shifted"].to(xpsi.device)
+
+        for (j1, j2) in product(range(self.J), range(self.J)):
+            x1 = xpsi[j1].flatten(start_dim=1, end_dim=-3)
+            x2 = xpsi[j2].flatten(start_dim=1, end_dim=-3)
+            x1, x2 = self.upsample_correlations(x1, x2)
+            x1 = torch.complex(x1, torch.zeros_like(x1))
+            x2 = torch.complex(x2, torch.zeros_like(x2))
+            hatx1 = fft.fft2(x1)  # (nb, C, M, N)
+            hatx2 = fft.fft2(x2)  # (nb, C, M, N)
+
+            vmapped = torch.vmap()
+
+        vmapped = torch.vmap(
+            self._pair_corr,
+            in_dims=(None, None, 0, 0, 0, None),
+            out_dims=0,
+            chunk_size=vmap_chunk_size,
+        )
+
+
+    def _pair_corr(self, hatx_shared, masks_shared, i_idx, j_idx, shift_idx, flatten = True):
+        """
+
+        """
+
+    def upsample_correlations(self, x1: torch.Tensor, x2: torch.Tensor):
+        if x1.shape == x2.shape:
+            return x1, x2
+        else:
+            m1, n1 = x1.shape[-2:]
+            m2, n2 = x2.shape[-2:]
+            assert m1 > m2 and n1 > n2, "x1 must be larger spatially than x2 to upsample x2"
+            x2 = nn.UpsamplingBilinear2d(size=(m1, n1))(x2)
+            return x1, x2
+
+    def compute_idx(self):
+        L = self.L
+        J = self.J
+        A = self.A
+        A_prime = self.A_prime
+        dj = self.delta_j
+        dl = self.delta_l
+
+        idx_la1 = []
+        idx_la2 = []
+        shifted = []
+        params_la1 = []
+        params_la2 = []
+        nb_moments = 0
+
+        for c1 in range(self.num_channels):  # channels - signal 1
+            for c2 in range(self.num_channels):  # channels - signal 2
+                for j1 in range(J):  # 0 to max scale - scale, signal 1
+                    for j2 in range(
+                        j1, min(j1 + 1 + dj, J)
+                    ):  # previous scale to scale + delta_j OR max scale (so we don't get too large of a scale difference)
+                        for l1 in range(
+                            L
+                        ):  # from 0 to max # of rotations - scale, signal 1
+                            for l2 in range(
+                                max(0, l1 + 1 - dl), min(L, l1 + 1 + dl)
+                            ):  # constrained by delta_l
+                                for a1 in range(A):  # phase shifts, signal 1
+                                    for a2 in range(A_prime):  # phase shifts, signal 2
+                                        if self.to_shift_color(c1, c2, j1, j2, l1, l2):
+                                            idx_la1.append((j1, 
+                                                A * L * c1
+                                                + A * l1
+                                                + a1
+                                            ))
+                                            idx_la2.append((j2,
+                                                A * L * c2
+                                                + A * l2
+                                                + a2
+                                            ))
+                                            idx = (
+                                                j2 + 1
+                                            )  # we take mask corresponding to scale j2, which should always be bigger than j1
+                                            shifted.append(idx)
+                                            nb_moments += int(self.factr_shift[idx])
+                                        else:  # if spatial shift conditions not satisfied, only keep self-correlation
+                                            idx_la1.append((j1,
+                                                A * L * c1
+                                                + A * l1
+                                                + a1
+                                            ))
+                                            idx_la2.append((j2,
+                                                A * L * c2
+                                                + A * l2
+                                                + a2
+                                            ))
+                                            shifted.append(0)
+                                            nb_moments += 1
+                                        params_la1.append(
+                                            {"j": j1, "l": l1, "a": a1, "c": c1}
+                                        )
+                                        params_la2.append(
+                                            {"j": j2, "l": l2, "a": a2, "c": c2}
+                                        )
+        print("number of moments (without low-pass and harr): ", nb_moments)
+
+        idx_wph = dict()
+        idx_wph["la1"] = torch.tensor(idx_la1).type(torch.long)
+        idx_wph["la2"] = torch.tensor(idx_la2).type(torch.long)
+        idx_wph["shifted"] = torch.tensor(shifted).type(torch.long)
+        self.params_la1 = params_la1
+        self.params_la2 = params_la2
+        self.nb_moments = nb_moments
+        return idx_wph
