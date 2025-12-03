@@ -222,6 +222,7 @@ def main():
     batch_size = config["batch_size"]
     train_ratio = config["train_ratio"]
     val_ratio = config["val_ratio"]
+    train_size = config.get("train_size", None)
     # Create a worker_init_fn with seed bound using functools.partial
     worker_init_with_seed = partial(worker_init_fn, seed=seed)
     if dataset == "mnist":
@@ -236,7 +237,7 @@ def main():
             batch_size=batch_size, train_ratio=train_ratio, worker_init_fn=worker_init_with_seed
         )
     train_loader, val_loader = split_train_val(
-        train_loader.dataset, val_ratio=val_ratio, batch_size=batch_size, drop_last=True
+        train_loader.dataset, val_ratio=val_ratio, batch_size=batch_size, drop_last=True, train_size=train_size
     )
 
     # Initialize models
