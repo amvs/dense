@@ -74,3 +74,70 @@ class ReluCenterLayer(nn.Module):
             masks.append(mask)
 
         return torch.stack(masks, dim=0)
+
+class ReluCenterLayerDownsample(ReluCenterLayer):
+    def __init__(self, **kwargs):
+        # Initialize Base without calling mask logic yet (or ignore base mask)
+        super().__init__(**kwargs)
+        
+        # Overwrite masks with correct downsampled list
+        self.masks = nn.ParameterList() 
+        _masks_list = []
+        
+        for j in range(self.J):
+            h_j = self.M // (2**j)
+            w_j = self.N // (2**j)
+            
+            # differnt mask logic for downsampled feature maps
+            # On the full grid, border is 2^j // 2.
+            # On the downsampled grid (factor 2^j), this border size becomes:
+            # (2^j // 2) / 2^j = 0.5 pixels.
+            # So effectively, for j >= 1, we treat the border as 0 or 1 pixel.
+            #  to be safe, reuse the J=0 logic (border=0) for all scales.
+            
+        
+            # Using J=1 forces maskns to calculate for j=0 (border=0).
+            m_stack = self.maskns(J=1, M=h_j, N=w_j) 
+            mask = m_stack[0] # Take the only mask
+            
+            # Input item shape: (B, C, L, A, H, W)
+            # Mask needs to be: (1, 1, 1, 1, H, W)
+            mask = mask.view(1, 1, 1, 1, h_j, w_j)
+            
+            _masks_list.append(mask)
+
+        # Register them properly so they move to GPU with the model
+        for i, m in enumerate(_masks_list):
+            self.register_buffer(f'mask_{i}', m)
+
+    def get_mask(self, idx):
+        # Helper to retrieve buffer by name
+        return getattr(self, f'mask_{idx}')
+
+    def forward(self, x):
+        """
+        x: list of J tensors
+        """
+        out = []
+        for idx, feature_map in enumerate(x):
+            # Checks
+            expected_h = self.M // (2 ** idx)
+            assert feature_map.shape[-2] == expected_h
+            
+            # 1. Norm
+            feature_map = self.mean(feature_map)
+            if self.normalize:
+                feature_map = self.std(feature_map)
+            
+            # 2. ReLU (Real)
+            if torch.is_complex(feature_map):
+                feature_map = feature_map.real
+                
+            feature_map = F.relu(feature_map)
+            
+            # 3. Mask
+            mask = self.get_mask(idx)
+            feature_map = feature_map * mask
+            
+            out.append(feature_map)
+        return out
