@@ -79,8 +79,8 @@ class BaseCorrLayer(nn.Module):
 
 
 class CorrLayer(BaseCorrLayer):
-    def __init__(self, union_mask: bool = False, *args, **kwargs):
-        self.mask_union = union_mask
+    def __init__(self, mask_union: bool = False, *args, **kwargs):
+        self.mask_union = mask_union
         super().__init__(*args, **kwargs)
         # precompute union mask and per-mask index mappings
         self.union_of_masks = (
@@ -272,63 +272,60 @@ class CorrLayerDownsample(BaseCorrLayer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        del self.masks_shift
-        del self.factr_shift
+        # 2. Cleanup Parent Buffers we don't need
+        if hasattr(self, 'masks_shift'): del self.masks_shift
+        if hasattr(self, 'factr_shift'): del self.factr_shift
 
+        # 3. Create Correct Per-Scale Masks
         _masks_temp = []
+        _factr_temp = [] # <--- FIX: Need to store these too
+        
         for j in range(self.J):
             h_j, w_j = self.M // (2 ** j), self.N // (2 ** j)
-            m_shift, factr_shift_j = create_masks_shift(J = 1, M = h_j, N = w_j,
-                                            mask_union=self.uses_mask_union(),
-                                            mask_angles=self.mask_angles
-                                            )
+            m_shift, factr_shift_j = create_masks_shift(
+                J=1, M=h_j, N=w_j,
+                mask_union=self.uses_mask_union(),
+                mask_angles=self.mask_angles
+            )
             _masks_temp.append(m_shift)
-        for i, m in enumerate(_masks_temp):
+            _factr_temp.append(factr_shift_j)
+
+        # Register buffers using the stored lists
+        for i, (m, f) in enumerate(zip(_masks_temp, _factr_temp)):
             self.register_buffer(f'mask_scale_{i}', m)
-            self.register_buffer(f'factr_scale_{i}', factr_shift_j)
+            self.register_buffer(f'factr_scale_{i}', f)
             
-        ref_masks = self.get_mask_for_scale(0) 
+        # 4. Pre-compute Union Topology 
+        ref_masks, _ = self.get_mask_for_scale(0) 
         
-        # 1. Compute Union (Boolean)
-        union_mask = ref_masks.sum(dim=0).bool() # (M, N)
-        
-        # 2. Get Linear Indices of the Union pixels
-        # These are the pixels vmap will return.
-        # We flatten spatial dims to match what happens inside _pair_corr(flatten=True)
+        union_mask = ref_masks.sum(dim=0).bool()
         union_indices = torch.nonzero(union_mask.flatten(), as_tuple=True)[0]
         
-        # 3. Map each specific mask to its position inside the Union vector
         self.mask_indices_map = {}
+        # ... (Your logic for mapping indices) ...
+        grid_to_union_map = torch.full((ref_masks[0].numel(),), -1, dtype=torch.long)
+        grid_to_union_map[union_indices] = torch.arange(len(union_indices))
         
         for k in range(ref_masks.shape[0]):
-            # Get pixels for this specific mask
             k_mask = ref_masks[k].flatten().bool()
             k_indices = torch.nonzero(k_mask, as_tuple=True)[0]
-            
-            # Find where k_indices appear within union_indices
-            # This logic finds the intersection relative to the union
-            # Logic: valid_positions = [i for i, u_idx in enumerate(union_indices) if u_idx in k_indices]
-            
-            # Optimized torch version using isin/searchsorted or simple boolean indexing
-            # Since k_mask is a subset of union_mask:
-            # We want indices in the COMPRESSED (union) vector that correspond to k.
-            
-            # Create a map from Full Grid -> Union Vector Index
-            # Fill with -1 for invalid pixels
-            grid_to_union_map = torch.full((ref_masks[0].numel(),), -1, dtype=torch.long)
-            grid_to_union_map[union_indices] = torch.arange(len(union_indices))
-            
-            # Get the Union indices for the current mask's pixels
             mapped_indices = grid_to_union_map[k_indices]
-            
             self.mask_indices_map[k] = mapped_indices
 
-        # Register as buffers so they move to device
         for k, idxs in self.mask_indices_map.items():
             self.register_buffer(f'mask_idx_map_{k}', idxs)
 
+        # 5. CRITICAL STEP: Re-run compute_idx
+        # The first run (in super) used bad/fallback values. 
+        self.idx_wph = self.compute_idx()
+
     def get_mask_for_scale(self, j):
-        return getattr(self, f'mask_scale_{j}'), getattr(self, f'factr_scale_{j}')
+        if hasattr(self, f'mask_scale_{j}'):
+            return getattr(self, f'mask_scale_{j}'), getattr(self, f'factr_scale_{j}')
+        elif hasattr(self, 'masks_shift') and hasattr(self, 'factr_shift'): # fallback needed during super().__init__()
+            return self.masks_shift, self.factr_shift
+        else:
+            raise ValueError(f"No masks found for scale {j}")
     
     def compute_idx(self):
         L = self.L
@@ -372,7 +369,7 @@ class CorrLayerDownsample(BaseCorrLayer):
                                                 + a2
                                             ))
                                             shifted.append(1)
-                                            factr_shift_j2 = self.get_mask_for_scale(j2)[1]
+                                            _, factr_shift_j2 = self.get_mask_for_scale(j2)
                                             nb_moments += int(factr_shift_j2[1])
                                         else:  # if spatial shift conditions not satisfied, only keep self-correlation
                                             idx_la1.append((j1,
@@ -480,7 +477,7 @@ class CorrLayerDownsample(BaseCorrLayer):
 
         # Final Assembly
         if flatten:
-            return torch.stack(results_storage, dim=1)  # (nb, total_masked)
+            return torch.concat(results_storage, dim=1)  # (nb, total_masked)
         else:
             return results_storage
 
