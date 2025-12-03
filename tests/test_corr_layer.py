@@ -196,7 +196,7 @@ class TestCorrLayerDownsample:
 
     @pytest.mark.parametrize("model", all_params, indirect=True)
     def test_forward_output_shape_flatten(self, model):
-        """Verify forward pass produces stacked tensor."""
+        """Verify forward pass produces list of tensor."""
         B = 2
         # Create input list [Scale0, Scale1, Scale2]
         xpsi = []
@@ -207,24 +207,26 @@ class TestCorrLayerDownsample:
             xpsi.append(x)
 
         out = model.compute_correlations(xpsi, flatten=True)
-        
-        # Output shape: (B, Total_Pairs, Mask_Size)
-        # In our mock, if shift condition met -> Mask 1 (size 5)
-        # If not -> Mask 0 (size 1).
-        # But wait! We implemented `torch.stack`.
-        # Stack requires ALL pairs to have SAME output size.
-        #
-        # CRITICAL CHECK: In your code, you use `shifted.append(1)` or `0`.
-        # If you mix 0 and 1, `results_storage` will contain tensors of size 1 AND size 5.
-        # torch.stack will FAIL.
-        #
-        # FIX LOGIC: If we want to stack, we must return valid_indices of a CONSTANT size,
-        # OR pad the output.
-        # Based on previous turns, you implied output size is constant (e.g. 8 shifts).
-        # Our mock returns variable sizes (1 vs 5).
-        # Let's verify if the test fails (it should).
-        
-        pass 
+        assert out.ndim == 2  # (B, Coeffs)
+        assert out.shape[0] == B
+        assert out.shape[1] == model.nb_moments
+
+    @pytest.mark.parametrize("model", all_params, indirect=True)
+    def test_forward_output_shape_not_flatten(self, model):
+        """Verify forward pass produces concatenated tensor."""
+        B = 2
+        # Create input list [Scale0, Scale1, Scale2]
+        xpsi = []
+        for j in range(model.J):
+            dim = 32 // (2**j)
+            # Input channels C_in = num_channels * L * A = 1*2*1 = 2
+            x = torch.randn(B, model.num_channels * model.L * model.A, dim, dim) 
+            xpsi.append(x)
+
+        out = model.compute_correlations(xpsi, flatten=False)
+        assert len(out) == model.idx_wph["la1"].shape[0]  # (B, Coeffs)
+        assert out[0].shape[-2:] == (model.M, model.N)
+        assert out[-1].shape[-2:] == (model.M // (2**(model.J-1)), model.N // (2**(model.J-1)))
 
     @pytest.mark.parametrize("model", all_params, indirect=True)
     def test_forward_constant_size_logic(self, model):
