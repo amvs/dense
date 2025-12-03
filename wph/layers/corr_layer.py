@@ -1,7 +1,7 @@
 import torch
 import torch.fft as fft
 from torch import nn
-from itertools import product
+import warnings
 from typing import Optional, Literal
 from .utils import create_masks_shift
 
@@ -49,33 +49,6 @@ class BaseCorrLayer(nn.Module):
         self.register_buffer("masks_shift", masks_shift)
         self.factr_shift = factr_shift
 
-        # precompute union mask and per-mask index mappings
-        self.union_of_masks = (
-            self.masks_shift.sum(dim=0) > 0
-        ).flatten()  # (M*N,) bool - positions where any mask is nonzero
-        self.n_union = int(self.union_of_masks.sum().item())  # total union positions
-
-        # for each shift mask, map union positions to actual mask positions
-        # mask_to_union[shift_idx] gives indices in union that correspond to this mask
-        self.mask_to_union = {}
-        for shift_idx in range(len(self.masks_shift)):
-            mask_flat = self.masks_shift[shift_idx].flatten().bool()  # (M*N,)
-            union_to_full = torch.where(self.union_of_masks)[
-                0
-            ]  # union idx -> full M*N idx
-            mask_positions_in_full = torch.where(mask_flat)[
-                0
-            ]  # mask positions in full M*N
-            # find which union indices map to this mask's positions
-            mask_in_union = torch.tensor(
-                [
-                    i
-                    for i, pos in enumerate(union_to_full)
-                    if pos in mask_positions_in_full
-                ]
-            )
-            self.mask_to_union[shift_idx] = mask_in_union
-
         # precompute index mapping for filter pairs
         self.idx_wph = self.compute_idx()
 
@@ -106,8 +79,38 @@ class BaseCorrLayer(nn.Module):
 
 
 class CorrLayer(BaseCorrLayer):
+    def __init__(self, union_mask: bool = False, *args, **kwargs):
+        self.mask_union = union_mask
+        super().__init__(*args, **kwargs)
+        # precompute union mask and per-mask index mappings
+        self.union_of_masks = (
+            self.masks_shift.sum(dim=0) > 0
+        ).flatten()  # (M*N,) bool - positions where any mask is nonzero
+        self.n_union = int(self.union_of_masks.sum().item())  # total union positions
+
+        # for each shift mask, map union positions to actual mask positions
+        # mask_to_union[shift_idx] gives indices in union that correspond to this mask
+        self.mask_to_union = {}
+        for shift_idx in range(len(self.masks_shift)):
+            mask_flat = self.masks_shift[shift_idx].flatten().bool()  # (M*N,)
+            union_to_full = torch.where(self.union_of_masks)[
+                0
+            ]  # union idx -> full M*N idx
+            mask_positions_in_full = torch.where(mask_flat)[
+                0
+            ]  # mask positions in full M*N
+            # find which union indices map to this mask's positions
+            mask_in_union = torch.tensor(
+                [
+                    i
+                    for i, pos in enumerate(union_to_full)
+                    if pos in mask_positions_in_full
+                ]
+            )
+            self.mask_to_union[shift_idx] = mask_in_union
+        
     def uses_mask_union(self):
-        return True
+        return self.mask_union
 
     def compute_idx(self):
         L = self.L
@@ -266,6 +269,67 @@ class CorrLayer(BaseCorrLayer):
 
 
 class CorrLayerDownsample(BaseCorrLayer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        del self.masks_shift
+        del self.factr_shift
+
+        _masks_temp = []
+        for j in range(self.J):
+            h_j, w_j = self.M // (2 ** j), self.N // (2 ** j)
+            m_shift, factr_shift_j = create_masks_shift(J = 1, M = h_j, N = w_j,
+                                            mask_union=self.uses_mask_union(),
+                                            mask_angles=self.mask_angles
+                                            )
+            _masks_temp.append(m_shift)
+        for i, m in enumerate(_masks_temp):
+            self.register_buffer(f'mask_scale_{i}', m)
+            self.register_buffer(f'factr_scale_{i}', factr_shift_j)
+            
+        ref_masks = self.get_mask_for_scale(0) 
+        
+        # 1. Compute Union (Boolean)
+        union_mask = ref_masks.sum(dim=0).bool() # (M, N)
+        
+        # 2. Get Linear Indices of the Union pixels
+        # These are the pixels vmap will return.
+        # We flatten spatial dims to match what happens inside _pair_corr(flatten=True)
+        union_indices = torch.nonzero(union_mask.flatten(), as_tuple=True)[0]
+        
+        # 3. Map each specific mask to its position inside the Union vector
+        self.mask_indices_map = {}
+        
+        for k in range(ref_masks.shape[0]):
+            # Get pixels for this specific mask
+            k_mask = ref_masks[k].flatten().bool()
+            k_indices = torch.nonzero(k_mask, as_tuple=True)[0]
+            
+            # Find where k_indices appear within union_indices
+            # This logic finds the intersection relative to the union
+            # Logic: valid_positions = [i for i, u_idx in enumerate(union_indices) if u_idx in k_indices]
+            
+            # Optimized torch version using isin/searchsorted or simple boolean indexing
+            # Since k_mask is a subset of union_mask:
+            # We want indices in the COMPRESSED (union) vector that correspond to k.
+            
+            # Create a map from Full Grid -> Union Vector Index
+            # Fill with -1 for invalid pixels
+            grid_to_union_map = torch.full((ref_masks[0].numel(),), -1, dtype=torch.long)
+            grid_to_union_map[union_indices] = torch.arange(len(union_indices))
+            
+            # Get the Union indices for the current mask's pixels
+            mapped_indices = grid_to_union_map[k_indices]
+            
+            self.mask_indices_map[k] = mapped_indices
+
+        # Register as buffers so they move to device
+        for k, idxs in self.mask_indices_map.items():
+            self.register_buffer(f'mask_idx_map_{k}', idxs)
+
+    def get_mask_for_scale(self, j):
+        return getattr(self, f'mask_scale_{j}'), getattr(self, f'factr_scale_{j}')
+    
     def compute_idx(self):
         L = self.L
         J = self.J
@@ -277,6 +341,7 @@ class CorrLayerDownsample(BaseCorrLayer):
         idx_la1 = []
         idx_la2 = []
         shifted = []
+        pair_metadata = []
         params_la1 = []
         params_la2 = []
         nb_moments = 0
@@ -306,11 +371,9 @@ class CorrLayerDownsample(BaseCorrLayer):
                                                 + A * l2
                                                 + a2
                                             ))
-                                            idx = (
-                                                j2 + 1
-                                            )  # we take mask corresponding to scale j2, which should always be bigger than j1
-                                            shifted.append(idx)
-                                            nb_moments += int(self.factr_shift[idx])
+                                            shifted.append(1)
+                                            factr_shift_j2 = self.get_mask_for_scale(j2)[1]
+                                            nb_moments += int(factr_shift_j2[1])
                                         else:  # if spatial shift conditions not satisfied, only keep self-correlation
                                             idx_la1.append((j1,
                                                 A * L * c1
@@ -330,15 +393,24 @@ class CorrLayerDownsample(BaseCorrLayer):
                                         params_la2.append(
                                             {"j": j2, "l": l2, "a": a2, "c": c2}
                                         )
+                                        pair_metadata.append((j1,j2))
         print("number of moments (without low-pass and harr): ", nb_moments)
 
         idx_wph = dict()
-        idx_wph["la1"] = torch.tensor(idx_la1).type(torch.long)
-        idx_wph["la2"] = torch.tensor(idx_la2).type(torch.long)
-        idx_wph["shifted"] = torch.tensor(shifted).type(torch.long)
+        idx_wph["la1"] = torch.tensor(idx_la1).long()
+        idx_wph["la2"] = torch.tensor(idx_la2).long()
+        idx_wph["shifted"] = torch.tensor(shifted).long()
         self.params_la1 = params_la1
         self.params_la2 = params_la2
         self.nb_moments = nb_moments
+        # Pre-group indices by (j1, j2) for batch processing
+        grouped_indices = {}
+        for global_idx, (j1, j2) in enumerate(pair_metadata):
+            if (j1, j2) not in grouped_indices:
+                grouped_indices[(j1, j2)] = []
+            grouped_indices[(j1, j2)].append(global_idx)
+        # convert lists to tensors for faster indexing later
+        self.grouped_indices = {k: torch.tensor(v).long() for k, v in grouped_indices.items()}
         return idx_wph
 
     def compute_correlations(self, xpsi: list[torch.Tensor], flatten: bool = True, vmap_chunk_size: Optional[int] = None):
@@ -346,33 +418,71 @@ class CorrLayerDownsample(BaseCorrLayer):
         Match same scales, and pass to vmap together
         Do upsampling here before passing to _pair_corr in vmap
         """
-        la1 = self.idx_wph["la1"].to(xpsi.device)
-        la2 = self.idx_wph["la2"].to(xpsi.device)
-        shifted = self.idx_wph["shifted"].to(xpsi.device)
+        nb = xpsi[0].shape[0]
+        device = xpsi[0].device
+        # Get total number of pairs
+        total_pairs = self.idx_wph["la1"].shape[0]
 
-        for (j1, j2) in product(range(self.J), range(self.J)):
-            x1 = xpsi[j1].flatten(start_dim=1, end_dim=-3)
-            x2 = xpsi[j2].flatten(start_dim=1, end_dim=-3)
-            x1, x2 = self.upsample_correlations(x1, x2)
-            x1 = torch.complex(x1, torch.zeros_like(x1))
-            x2 = torch.complex(x2, torch.zeros_like(x2))
-            hatx1 = fft.fft2(x1)  # (nb, C, M, N)
-            hatx2 = fft.fft2(x2)  # (nb, C, M, N)
-            mask_j1j2 = (la1[:, 0] == j1) & (la2[:, 0] == j2)
-            j1j2_idxs = mask_j1j2.nonzero(as_tuple=True)[0]
-            # if no pairs match these scales, skip
-            if j1j2_idxs.numel() == 0:
-                continue
-            # la1/la2 store (j, idx) pairs; extract the actual index (second column)
-            la1_j1 = la1[j1j2_idxs][:, 1]
-            la2_j2 = la2[j1j2_idxs][:, 1]
-            shifted_j1j2 = shifted[j1j2_idxs]
+        # pre-compute ffts to save time
+        hatx_list = []
+        for x in xpsi:
+            if not torch.is_complex(x):
+                x_c = torch.complex(x, torch.zeros_like(x))
+            hatx_list.append(fft.fft2(x_c))  # (nb, C, M, N)
+
+        # List to store results before reordering
+        results_storage = [None] * total_pairs
+
+        # 3. Iterate over unique (j1, j2) pairs
+        for (j1, j2), global_idxs in self.grouped_indices.items():
+            global_idxs = global_idxs.to(device)
+            
+            # Extract specific indices for this batch
+            # idx_wph["la1"] is (N, 2), we want column 1 (channel index)
+            # We filter by the rows in global_idxs
+            la1_batch = self.idx_wph["la1"][global_idxs, 1].to(device)
+            la2_batch = self.idx_wph["la2"][global_idxs, 1].to(device)
+            shifted_batch = self.idx_wph["shifted"][global_idxs].to(device)
+
+            h1 = hatx_list[j1]
+            h2 = hatx_list[j2]
+
+            if j2 > j1:
+                h2 = self.spectral_pad(h2, target_shape=h1.shape[-2:])
+            elif j2 < j1:
+                 # Should not happen based on j loop, but for safety:
+                 warnings.warn("j2 < j1 encountered in CorrLayerDownsample; upsampling m1 instead of m2.")
+                 h1 = self.spectral_pad(h1, target_shape=h2.shape[-2:])
+
+            masks_current, _ = self.get_mask_for_scale(j1)
             vmapped = torch.vmap(self._pair_corr,
                                  in_dims = (None, None, None, 0,0,0,None),
                                  out_dims=0,
                                  chunk_size=vmap_chunk_size)
-            out_j1j2 = vmapped(hatx1, hatx2, self.masks_shift, la1_j1, la2_j2, shifted_j1j2, flatten)
-            # process out_j1j2 into final output
+            # out_batch: (Batch_Pairs, nb, N_UNION_PIXELS)
+            out_batch = vmapped(h1, h2, masks_current, la1_batch, la2_batch, shifted_batch, flatten)
+
+            # reorder list to match original order
+            # and if flattening throw away extra zeros from union to make sure all outputs same size
+            for i, global_idx in enumerate(global_idxs):
+                shift_type = shifted_batch[i].item()
+                
+                if flatten:
+                    # 1. Retrieve the pre-calculated indices for this shift type
+                    # (e.g., indices for center pixel if shift=0, or neighbors if shift=1)
+                    valid_indices = getattr(self, f'mask_idx_map_{shift_type}')
+                    cleaned_result = out_batch[i][:, valid_indices]
+                    
+                    results_storage[global_idx.item()] = cleaned_result
+                else:
+                    # If not flattening, we keep the full spatial grid (M, N)
+                    results_storage[global_idx.item()] = out_batch[i]
+
+        # Final Assembly
+        if flatten:
+            return torch.stack(results_storage, dim=1)  # (nb, total_masked)
+        else:
+            return results_storage
 
 
     def _pair_corr(self, hatx1_shared, hatx2_shared, masks_shared, i_idx, j_idx, shift_idx, flatten = True):
@@ -398,12 +508,27 @@ class CorrLayerDownsample(BaseCorrLayer):
             return corr_masked  # (nb, M, N)
 
 
-    def upsample_correlations(self, x1: torch.Tensor, x2: torch.Tensor):
-        if x1.shape == x2.shape:
-            return x1, x2
-        else:
-            m1, n1 = x1.shape[-2:]
-            m2, n2 = x2.shape[-2:]
-            assert m1 > m2 and n1 > n2, "x1 must be larger spatially than x2 to upsample x2"
-            x2 = nn.UpsamplingBilinear2d(size=(m1, n1))(x2)
-            return x1, x2
+    def spectral_pad(self, x_hat, target_shape):
+        """
+        Zero-pads a Fourier representation to a larger size (Spectral Upsampling).
+        x_hat: (..., M, N)
+        target_shape: (M_new, N_new)
+        """
+        M, N = x_hat.shape[-2:]
+        M_new, N_new = target_shape
+        
+        if M == M_new and N == N_new:
+            return x_hat
+        
+        # use fftshift and ifftshift to handle corners correctly    
+        x_shifted = fft.fftshift(x_hat, dim=(-2, -1))
+        
+        # Calculate padding
+        pad_h = (M_new - M) // 2
+        pad_w = (N_new - N) // 2
+        # F.pad order: (left, right, top, bottom)
+        # Handle odd/even sizes carefully if needed, but usually power of 2
+        x_padded = torch.nn.functional.pad(x_shifted, (pad_w, pad_w, pad_h, pad_h))
+        
+        return fft.ifftshift(x_padded, dim=(-2, -1)) * (M_new * N_new) / (M * N) 
+        
