@@ -1,6 +1,6 @@
 import torch
 
-def regularization_loss(outputs, targets, model, original_params, lambda_reg=1e-3):
+def regularization_loss(model, original_params, lambda_reg=1e-3):
     reg_loss = 0.0
     num_params = 0
     for p, p0 in zip(model.parameters(), original_params):
@@ -28,10 +28,10 @@ def train_one_epoch(model, loader, optimizer, base_loss, device, original_params
         else:
             outputs = model.forward(inputs, vmap_chunk_size=vmap_chunk_size)
         base_loss_value = base_loss(outputs, targets) # Average loss in a batch
-        reg_loss_value = 0.0
+        reg_loss_value = torch.tensor(0.0, device=device)
 
         if original_params is not None:
-            reg_loss_value = regularization_loss(outputs, targets, model, original_params, lambda_reg)
+            reg_loss_value = regularization_loss(model, original_params, lambda_reg)
         total_loss_value = base_loss_value + reg_loss_value
 
         total_loss_value.backward()

@@ -81,7 +81,7 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
             vmap_chunk_size=configs.get('vmap_chunk_size', None)
         )
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
-        logger.info(f"[{phase}] Epoch {epoch+1}: Train Acc={train_metrics['accuracy']:.4f}, Val Acc={val_acc:.4f}, Base Loss={train_metrics['base_loss']:.4e}, Reg Loss={train_metrics['reg_loss']:.4e}, Total Loss={train_metrics['total_loss']:.4e}")
+        logger.info(f"[{phase}] Epoch {epoch+1}/{epochs}: Train Acc={train_metrics['accuracy']:.4f}, Val Acc={val_acc:.4f}, Base Loss={train_metrics['base_loss']:.4e}, Reg Loss={train_metrics['reg_loss']:.4e}, Total Loss={train_metrics['total_loss']:.4e}")
 
         # Track best accuracy
         if val_acc > best_acc:
