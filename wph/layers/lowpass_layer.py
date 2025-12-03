@@ -23,7 +23,7 @@ class LowpassLayer(nn.Module):
         self.mask_angles = mask_angles
         self.mask_union = mask_union
         self.num_channels = num_channels
-        self.nb_moments = M*N * num_channels**2
+        self.nb_moments = M * N * num_channels**2
 
         self.divinitstdJ = DivInitStd()
         self.subinitmeanJ = SubInitSpatialMean()
