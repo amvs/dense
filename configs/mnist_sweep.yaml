@@ -8,5 +8,6 @@ sweep:
   lr: [0.01, 0.001, 0.0001]
   lambda_reg: [1e-3, 1e-4, 1e-5]
   nb_orients: [4, 6, 8]
+  train_size: [null, 500, 5000, 10000]  # Optional: Sweep over fixed training dataset sizes
 
 

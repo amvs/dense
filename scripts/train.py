@@ -62,10 +62,12 @@ def main():
                                                 deeper_path=deeper_path,
                                                 batch_size=batch_size, 
                                                 train_ratio=train_ratio)
+    train_size = config.get("train_size", None)
     train_loader, val_loader = split_train_val(
                                 train_loader.dataset,
                                 val_ratio=val_ratio,
-                                batch_size=batch_size)
+                                batch_size=batch_size,
+                                train_size=train_size)
     # init model
     max_scale = config["max_scale"]
     nb_orients = config["nb_orients"]
