@@ -30,7 +30,7 @@ def split_train_val(train_dataset, val_ratio=0.1, batch_size=64, seed=123, drop_
         train_size = min(train_size, max_train_size)
         remainder = total_len - val_len - train_size
     else:
-        train_size = total_len - int(total_len * val_ratio)
+        train_size = total_len - val_len
         remainder = 0
 
 
