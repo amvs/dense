@@ -14,26 +14,28 @@ def split_train_val(train_dataset, val_ratio=0.1, batch_size=64, seed=123, drop_
         seed: Random seed for reproducibility (default: 123)
         drop_last: Whether to drop the last incomplete batch (default: False)
         train_size: Optional fixed size for training set. If provided, limits 
-                    training data to this size, with remaining data used for validation.
+                    training data to this size, with remaining data discarded.
                     Cannot exceed total_len - int(total_len * val_ratio).
 
     Returns:
         Tuple of (train_loader, val_loader)
     """
     total_len = len(train_dataset)
+    val_len = int(total_len * val_ratio)
     if train_size is not None:
-        max_train_size = total_len - int(total_len * val_ratio)
+        max_train_size = total_len - val_len
         if train_size > max_train_size:
             logger = LoggerManager.get_logger()
             logger.warning(f"Requested train_size ({train_size}) exceeds available data ({max_train_size}). Using {max_train_size} instead.")
         train_size = min(train_size, max_train_size)
+        remainder = total_len - val_len - train_size
     else:
         train_size = total_len - int(total_len * val_ratio)
+        remainder = 0
 
-    val_len = total_len - train_size
 
-    train_subset, val_subset = random_split(
-        train_dataset, [train_size, val_len],
+    train_subset, val_subset, _ = random_split(
+        train_dataset, [train_size, val_len, remainder],
         generator=torch.Generator().manual_seed(seed)
     )
 
