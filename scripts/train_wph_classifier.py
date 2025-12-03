@@ -70,7 +70,7 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
     """
     best_acc = 0.0  # Initialize best accuracy
     for epoch in range(epochs):
-        train_loss, train_acc = train_one_epoch(
+        train_metrics = train_one_epoch(
             model=model,
             loader=train_loader,
             optimizer=optimizer,
@@ -81,7 +81,7 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
             vmap_chunk_size=configs.get('vmap_chunk_size', None)
         )
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
-        logger.info(f"[{phase}] Epoch {epoch+1}/{epochs}: Train Loss={train_loss:.4f}, Train Acc={train_acc:.4f}, Val Loss={val_loss:.4f}, Val Acc={val_acc:.4f}")
+        logger.info(f"[{phase}] Epoch {epoch+1}/{epochs}: Train Acc={train_metrics['accuracy']:.4f}, Val Acc={val_acc:.4f}, Base Loss={train_metrics['base_loss']:.4e}, Reg Loss={train_metrics['reg_loss']:.4e}, Total Loss={train_metrics['total_loss']:.4e}")
 
         # Track best accuracy
         if val_acc > best_acc:
@@ -346,9 +346,7 @@ def main():
     config["l2_norm_finetuning"] = l2_norm
     config["feature_extractor_test_acc"] = feature_extractor_test_acc
     config["classifier_test_acc"] = classifier_test_acc
-    config["classifier_last_acc"] = classifier_test_acc
     config["classifier_best_acc"] = best_acc_classifier
-    config["feature_extractor_last_acc"] = feature_extractor_test_acc
     config["feature_extractor_best_acc"] = best_acc_feature_extractor
     config["feature_extractor_params"] = sum(p.numel() for p in model.feature_extractor.parameters())
     config["classifier_params"] = sum(p.numel() for p in model.classifier.parameters())
