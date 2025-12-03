@@ -10,7 +10,7 @@ sweep:
   nb_orients: [4, 8]
   num_phases: [2, 4]
   max_scale: [4, 5, 6]
-  val_ratio: [0.1, 0.5, 0.9, 0.95]
   use_batch_norm: [true]
   random_filters: [true, false]
+  train_size: [100, 500, 1000, 4000]
 

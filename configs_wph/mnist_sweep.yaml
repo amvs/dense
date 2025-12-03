@@ -12,6 +12,7 @@ sweep:
   val_ratio: [0.1, 0.9, 0.95, 0.99]
   use_batch_norm: [true]
   random_filters: [true, false]
+  train_size: [100, 500, 1000, 10000, 45000]
 
 
 

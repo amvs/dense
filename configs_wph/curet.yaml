@@ -26,6 +26,7 @@ batch_size: 32
 lr: 0.00001
 lambda_reg: 1.0e-5
 train_ratio: 0.9
+train_size: None
 val_ratio: 0.1
 seed: 42
 vmap_chunk_size: 50
