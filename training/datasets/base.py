@@ -5,7 +5,20 @@ import torch
 def split_train_val(train_dataset, val_ratio=0.1, batch_size=64, seed=123, drop_last=False, train_size=None):
     """
     Split an existing train_dataset into train and validation subsets
-    with a fixed seed for reproducibility. Optionally control train size.
+    with a fixed seed for reproducibility.
+
+    Args:
+        train_dataset: The dataset to split
+        val_ratio: Ratio of data to reserve for validation (default: 0.1)
+        batch_size: Batch size for both loaders (default: 64)
+        seed: Random seed for reproducibility (default: 123)
+        drop_last: Whether to drop the last incomplete batch (default: False)
+        train_size: Optional fixed size for training set. If provided, limits 
+                    training data to this size, with remaining data used for validation.
+                    Cannot exceed total_len - int(total_len * val_ratio).
+
+    Returns:
+        Tuple of (train_loader, val_loader)
     """
     total_len = len(train_dataset)
     if train_size is not None:
