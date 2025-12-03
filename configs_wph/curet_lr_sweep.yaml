@@ -1,0 +1,7 @@
+# This is a sweep config file for hyperparameter tuning on MNIST dataset
+# It uses the base configuration from mnist.yaml and overrides specific parameters for the sweep
+base_config: configs_wph/curet.yaml
+sweep:
+  lr: [1.0, 0.5, 0.1, 0.01, 0.001, 0.0001, 0.00001]
+
+

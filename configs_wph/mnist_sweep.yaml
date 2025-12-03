@@ -1,0 +1,17 @@
+# This is a sweep config file for hyperparameter tuning on MNIST dataset
+# It uses the base configuration from mnist.yaml and overrides specific parameters for the sweep
+base_config: configs_wph/mnist.yaml
+sweep:
+  classifier_epochs: [10, 15]
+  conv_epochs: [10, 15]
+  nb_orients: [4, 6, 8]
+  max_scale: [2, 3, 4]
+  num_phases: [2, 4]
+  share_rotations: [true, false]
+  share_phases: [true, false]
+  val_ratio: [0.1, 0.9, 0.95, 0.99]
+  use_batch_norm: [true]
+  random_filters: [true, false]
+
+
+

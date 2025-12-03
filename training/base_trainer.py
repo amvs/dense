@@ -7,15 +7,19 @@ def regularization_loss(outputs, targets, model, original_params, lambda_reg=1e-
     reg_loss = lambda_reg * reg_loss
     return reg_loss
 
-def train_one_epoch(model, loader, optimizer, base_loss, device, original_params=None, lambda_reg=None):
+def train_one_epoch(model, loader, optimizer, base_loss, device, original_params=None, lambda_reg=None, vmap_chunk_size=None):
     model.train()
     total_loss = 0
     correct = 0
+
     for inputs, targets in loader:
         inputs, targets = inputs.to(device), targets.to(device)
 
         optimizer.zero_grad()
-        outputs = model(inputs)
+        if vmap_chunk_size is None:
+            outputs = model(inputs)
+        else:
+            outputs = model.forward(inputs, vmap_chunk_size=vmap_chunk_size)
         loss = base_loss(outputs, targets) # Average loss in a batch
         if original_params is not None:
             reg_loss = regularization_loss(outputs, targets, model, original_params, lambda_reg)
