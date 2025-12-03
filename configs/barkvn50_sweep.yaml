@@ -7,5 +7,4 @@ sweep:
   lambda_reg: [1e-3, 1e-4, 1e-5]
   nb_orients: [4, 6, 8]
   train_size: [null, 5000, 10000]  # Optional: Sweep over fixed training dataset sizes
-
-
+  val_ratio: 0.1  # Fixed validation ratio
