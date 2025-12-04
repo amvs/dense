@@ -3,8 +3,11 @@ base_config: configs/curet.yaml
 sweep:
   classifier_epochs: [10, 15]
   conv_epochs: [10, 15]
-  val_ratio: [0.1, 0.2, 0.4]
-  lr: [0.01, 0.001, 0.0001]
+  train_ratio:
+    start: 0.01
+    stop: 0.31
+    step: 0.02
+  lr: [0.05]
   lambda_reg: [1e-3, 1e-4, 1e-5]
   nb_orients: [4, 6, 8]
   
