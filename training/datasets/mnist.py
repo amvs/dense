@@ -3,7 +3,7 @@ from torch.utils.data import DataLoader, ConcatDataset, Subset
 from sklearn.model_selection import train_test_split
 import numpy as np
 from dense.helpers import LoggerManager
-def get_mnist_loaders(batch_size=64, train_ratio=0.8):
+def get_mnist_loaders(batch_size=64, train_ratio=0.8, worker_init_fn=None):
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
@@ -11,8 +11,8 @@ def get_mnist_loaders(batch_size=64, train_ratio=0.8):
     stdtrain_dataset = datasets.MNIST(root="./data", train=True, download=True, transform=transform)
     stdtest_dataset = datasets.MNIST(root="./data", train=False, download=True, transform=transform)
     if train_ratio == 1.0: # std setting
-        train_loader = DataLoader(stdtrain_dataset, batch_size=batch_size, shuffle=True)
-        test_loader = DataLoader(stdtest_dataset, batch_size=batch_size, shuffle=False)
+        train_loader = DataLoader(stdtrain_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn)
+        test_loader = DataLoader(stdtest_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn)
     else:
         # Merge into one dataset
         full_dataset = ConcatDataset([stdtrain_dataset, stdtest_dataset])
@@ -34,8 +34,8 @@ def get_mnist_loaders(batch_size=64, train_ratio=0.8):
         test_dataset = Subset(full_dataset, test_indices)
 
         # DataLoaders
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn)
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn)
     nb_class = len(stdtrain_dataset.classes)
     sample_img, _ = train_dataset[0]
     logger = LoggerManager.get_logger()

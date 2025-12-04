@@ -57,7 +57,7 @@ class KaggleDataset(Dataset):
 
 
 
-def get_kaggle_loaders(dataset_name, resize, deeper_path, batch_size=64, train_ratio=0.8):
+def get_kaggle_loaders(dataset_name, resize, deeper_path, batch_size=64, train_ratio=0.8, worker_init_fn=None):
     logger = LoggerManager.get_logger()
     path = get_kaggle_dataset(dataset_name) # download if not exists
     logger.info(f"Load dataset {dataset_name} from Kaggle...")
@@ -88,8 +88,8 @@ def get_kaggle_loaders(dataset_name, resize, deeper_path, batch_size=64, train_r
         dataset, train_size=train_len,
         seed=42
     )
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn, drop_last=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=True)
     nb_class = len(dataset.classes)
     sample_img, _ = train_dataset[0]
     logger.info(f"[Ratio:{train_ratio}] Train size: {len(train_dataset)}, Test size: {len(test_dataset)}")

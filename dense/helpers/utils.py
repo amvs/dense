@@ -25,19 +25,19 @@ class MyConv2d(nn.Module):
     Arguments:
     filters -- tensor of shape [nb_orients, S, S], the set of convolution kernels
     in_channel -- int, number of input channels
-    share_kernels 
+    share_channels 
         -- bool, if True, all input channels share the same set of kernels.
            param will have shape [1, nb_orients, S, S]
         -- if False, each input channel has its own set of kernels.
            param will have shape [in_channel * nb_orients, 1, S, S]
 
     '''
-    def __init__(self, filters, in_channel, share_kernels: bool = False):
+    def __init__(self, filters, in_channel, share_channels: bool = False):
         super().__init__()
         nb_orients, S, _ = filters.shape
         self.S = S
         self.in_channel = in_channel
-        self.share_kernels = share_kernels
+        self.share_kernels = share_channels
         self.out_channel = nb_orients * in_channel
         if share_kernels:
             weight = filters.unsqueeze(0)

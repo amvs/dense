@@ -3,14 +3,14 @@ wavelet: meyer
 max_scale: 2
 nb_orients: 4
 efficient: true
-isShared: true
+share_channels: true
 # training setting
 dataset: mnist
 classifier_epochs: 10
 conv_epochs: 10
 batch_size: 32
 lr: 0.05
-lambda_reg: 1e-1
+lambda_reg: 1.0e-5
 test_ratio: 0.15    # used to split train_set and test_set from full dataset
 train_ratio: 0.85   # used to further split train and val set from train_set
 train_val_ratio: 4  # train:val = 4:1, keep a fix ratio between train and val set

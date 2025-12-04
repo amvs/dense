@@ -62,8 +62,6 @@ def apply_overrides(config, overrides):
                 except ValueError:
                     pass  # leave as string
         config[k] = v
-    # logger = LoggerManager.get_logger()
-    # logger.info(f"Overiding config for {overrides}")
     return config
 
 def save_config(folder:str, config):

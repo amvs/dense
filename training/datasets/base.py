@@ -37,7 +37,7 @@ def stratify_split(dataset, train_size, seed=123):
 
     return subset1, subset2
 
-def split_train_val(train_dataset, train_ratio=0.1, batch_size=64, seed=123, train_val_ratio=4):
+def split_train_val(train_dataset, train_ratio=0.1, batch_size=64, seed=123, train_val_ratio=4, drop_last=False):
     """
     Split an existing train_dataset further into train and validation subsets
     with a fixed seed for reproducibility.
@@ -73,8 +73,8 @@ def split_train_val(train_dataset, train_ratio=0.1, batch_size=64, seed=123, tra
             seed=seed
         )
     discard_len = total_len - len(train_subset) - len(val_subset)
-    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, drop_last=drop_last)
+    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, drop_last=drop_last)
     logger = LoggerManager.get_logger()
     logger.info(f"Split train dataset into train and val subsets...")
     logger.info(f"[Train Ratio: {train_ratio}] Train size: {train_len}, "
