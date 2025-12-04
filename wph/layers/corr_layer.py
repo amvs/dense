@@ -409,33 +409,32 @@ class CorrLayerDownsample(BaseCorrLayer):
         # convert lists to tensors for faster indexing later
         self.grouped_indices = {k: torch.tensor(v).long() for k, v in grouped_indices.items()}
         return idx_wph
+    
 
     def compute_correlations(self, xpsi: list[torch.Tensor], flatten: bool = True, vmap_chunk_size: Optional[int] = None):
-        """
-        Match same scales, and pass to vmap together
-        Do upsampling here before passing to _pair_corr in vmap
-        """
         nb = xpsi[0].shape[0]
         device = xpsi[0].device
-        # Get total number of pairs
-        total_pairs = self.idx_wph["la1"].shape[0]
-
-        # pre-compute ffts to save time
+        
+        # 1. Pre-compute FFTs to save time
         hatx_list = []
         for x in xpsi:
             if not torch.is_complex(x):
                 x_c = torch.complex(x, torch.zeros_like(x))
-            hatx_list.append(fft.fft2(x_c))  # (nb, C, M, N)
+            hatx_list.append(fft.fft2(x_c))
 
-        # List to store results before reordering
-        results_storage = [None] * total_pairs
+        # Containers for accumulation
+        if flatten:
+            # For flatten=True, outputs are 1D vectors, we can just cat them all at the end
+            results_flat = []
+        else:
+            # For flatten=False,  group by scale j1 
+            # scale_accumulators[j] will hold a list of tensors for scale j
+            scale_accumulators = [[] for _ in range(self.J)]
 
-        # 3. Iterate over unique (j1, j2) pairs
+        # 2. Iterate groups
         for (j1, j2), global_idxs in self.grouped_indices.items():
             global_idxs = global_idxs.to(device)
             
-            # Extract specific indices for this batch
-            # idx_wph["la1"] is (N, 2), we want column 1 (channel index)
             # We filter by the rows in global_idxs
             la1_batch = self.idx_wph["la1"][global_idxs, 1].to(device)
             la2_batch = self.idx_wph["la2"][global_idxs, 1].to(device)
@@ -452,35 +451,50 @@ class CorrLayerDownsample(BaseCorrLayer):
                  h1 = self.spectral_pad(h1, target_shape=h2.shape[-2:])
 
             masks_current, _ = self.get_mask_for_scale(j1)
-            vmapped = torch.vmap(self._pair_corr,
-                                 in_dims = (None, None, None, 0,0,0,None),
-                                 out_dims=0,
-                                 chunk_size=vmap_chunk_size)
-            # out_batch: (Batch_Pairs, nb, N_UNION_PIXELS)
+            
+            vmapped = torch.vmap(
+                self._pair_corr,
+                in_dims=(None, None, None, 0, 0, 0, None),
+                out_dims=0,
+                chunk_size=vmap_chunk_size
+            )
+            
+            # out_batch shape:
+            # flatten=True:  (Batch_Pairs, nb, Union_Pixels)
+            # flatten=False: (Batch_Pairs, nb, M, N)
             out_batch = vmapped(h1, h2, masks_current, la1_batch, la2_batch, shifted_batch, flatten)
 
-            # reorder list to match original order
-            # and if flattening throw away extra zeros from union to make sure all outputs same size
+            if not flatten:
+                # out_batch contains full spatial maps. 
+                # Just save the whole batch to the correct scale bucket.
+                scale_accumulators[j1].append(out_batch)
+                continue 
+
+            # flatten=True Path: Must slice per item due to variable mask sizes
             for i, global_idx in enumerate(global_idxs):
                 shift_type = shifted_batch[i].item()
+                valid_indices = getattr(self, f'mask_idx_map_{shift_type}')
                 
-                if flatten:
-                    # 1. Retrieve the pre-calculated indices for this shift type
-                    # (e.g., indices for center pixel if shift=0, or neighbors if shift=1)
-                    valid_indices = getattr(self, f'mask_idx_map_{shift_type}')
-                    cleaned_result = out_batch[i][:, valid_indices]
-                    
-                    results_storage[global_idx.item()] = cleaned_result
-                else:
-                    # If not flattening, we keep the full spatial grid (M, N)
-                    results_storage[global_idx.item()] = out_batch[i]
+                # Slice and append
+                results_flat.append(out_batch[i][:, valid_indices])
 
-        # Final Assembly
+        # 3. Final Assembly
         if flatten:
-            return torch.concat(results_storage, dim=1)  # (nb, total_masked)
+            # (nb, Total_Features)
+            return torch.cat(results_flat, dim=1)
         else:
-            return results_storage
-
+            final_output = []
+            for j in range(self.J):
+                batches = scale_accumulators[j]
+                if not batches:
+                    continue
+                
+                # batches is a list of tensors shape (Batch_Pairs, nb, M, N)
+                combined = torch.cat(batches, dim=1) # ( nb,Total_Pairs_J, M, N)
+                final_output.append(combined)
+                
+            return final_output
+        
 
     def _pair_corr(self, hatx1_shared, hatx2_shared, masks_shared, i_idx, j_idx, shift_idx, flatten = True):
         """

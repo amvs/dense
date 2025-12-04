@@ -224,7 +224,7 @@ class TestCorrLayerDownsample:
             xpsi.append(x)
 
         out = model.compute_correlations(xpsi, flatten=False)
-        assert len(out) == model.idx_wph["la1"].shape[0]  # (B, Coeffs)
+        assert len(out) == model.J  # (B, Coeffs)
         assert out[0].shape[-2:] == (model.M, model.N)
         assert out[-1].shape[-2:] == (model.M // (2**(model.J-1)), model.N // (2**(model.J-1)))
 
