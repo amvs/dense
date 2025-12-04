@@ -65,7 +65,7 @@ for run_idx, values in enumerate(all_combinations, 1):
     if args.model_type == 'scat':
         file = "scripts/train.py"
     elif args.model_type == 'wph':
-        file = "scripts/train_wph_classifier.py"
+        file = "scripts/train_wph.py"
 
     # Save merged config to a temporary file
     temp_config_path = os.path.join(sweep_dir, f"temp_config_{run_idx}.yaml")
