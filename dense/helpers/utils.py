@@ -37,9 +37,9 @@ class MyConv2d(nn.Module):
         nb_orients, S, _ = filters.shape
         self.S = S
         self.in_channel = in_channel
-        self.share_kernels = share_channels
+        self.share_channels = share_channels
         self.out_channel = nb_orients * in_channel
-        if share_kernels:
+        if share_channels:
             weight = filters.unsqueeze(0)
             self.param = nn.Parameter(weight) # shape [1, nb_orients, S, S]
         else:
@@ -47,7 +47,7 @@ class MyConv2d(nn.Module):
             self.param = nn.Parameter(weight) # shape [in_channel * nb_orients, 1, S, S]
 
     def forward(self, x):
-        if self.share_kernels:
+        if self.share_channels:
             kernel = self.param.expand(self.in_channel, -1, -1, -1).reshape(self.out_channel, 1, self.S, self.S)
         else:
             kernel = self.param

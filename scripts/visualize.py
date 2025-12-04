@@ -45,15 +45,15 @@ def visualize_main(exp_dir):
     nb_class = config["nb_class"]
     image_shape = config["image_shape"]
     random = config["random"]
-    isShared = config["isShared"]
+    share_channels = config["share_channels"]
     origin_path = os.path.join(exp_dir, "origin.pt")
     tuned_path = os.path.join(exp_dir, "trained.pt")
     if not os.path.exists(origin_path) or not os.path.exists(tuned_path):
             raise FileNotFoundError(f"At least one model not found.")
     origin_model = dense(max_scale, nb_orients, image_shape,
-                wavelet=wavelet, nb_class=nb_class, efficient=efficient, random=random, isShared=isShared).to(device)
+                wavelet=wavelet, nb_class=nb_class, efficient=efficient, random=random, share_channels=share_channels).to(device)
     tuned_model = dense(max_scale, nb_orients, image_shape,
-                wavelet=wavelet, nb_class=nb_class, efficient=efficient, random=random, isShared=isShared).to(device)
+                wavelet=wavelet, nb_class=nb_class, efficient=efficient, random=random, share_channels=share_channels).to(device)
 
     # load model weights
     logger.log("Loading model weights...")
