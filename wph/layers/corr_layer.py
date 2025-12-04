@@ -535,13 +535,15 @@ class CorrLayerDownsample(BaseCorrLayer):
         
         # use fftshift and ifftshift to handle corners correctly    
         x_shifted = fft.fftshift(x_hat, dim=(-2, -1))
+     
+        pad_top = (M_new // 2) - (M // 2)
+        pad_bottom = (M_new - M) - pad_top  # Remaining diff goes here for odd sizes
         
-        # Calculate padding
-        pad_h = (M_new - M) // 2
-        pad_w = (N_new - N) // 2
-        # F.pad order: (left, right, top, bottom)
-        # Handle odd/even sizes carefully if needed, but usually power of 2
-        x_padded = torch.nn.functional.pad(x_shifted, (pad_w, pad_w, pad_h, pad_h))
+        pad_left = (N_new // 2) - (N // 2)
+        pad_right = (N_new - N) - pad_left  # Remaining diff goes here
         
+        # 3. Apply Pad
+        # F.pad order is (left, right, top, bottom)
+        x_padded = torch.nn.functional.pad(x_shifted, (pad_left, pad_right, pad_top, pad_bottom))
         return fft.ifftshift(x_padded, dim=(-2, -1)) * (M_new * N_new) / (M * N) 
         

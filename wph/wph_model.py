@@ -28,7 +28,7 @@ class WPHFeatureBase(nn.Module):
                 shift_mode: Literal["samec", "all", "strict"] = "samec",
                 mask_angles: int = 4,
                 mask_union_highpass: bool = True,
-                wavelets: Literal["morlet", "steer"] = 'morlet',):
+        ):
         super().__init__()
         self.J = J
         self.L = L
@@ -48,7 +48,6 @@ class WPHFeatureBase(nn.Module):
         self.shift_mode = shift_mode
         self.mask_angles = mask_angles
         self.mask_union_highpass = mask_union_highpass
-        self.wavelets = wavelets
         self.normalize_relu = normalize_relu
 
     def forward(self, x: torch.Tensor):
@@ -114,7 +113,6 @@ class WPHModel(WPHFeatureBase):
             J=self.J,
             M=self.M,
             N=self.N,
-            wavelets=self.wavelets,
             num_channels=self.num_channels,
             mask_angles=self.mask_angles,
             mask_union=self.mask_union,
@@ -155,8 +153,7 @@ class WPHModelDownsample(WPHFeatureBase):
         self.wave_conv = WaveConvLayerDownsample(J = self.J,
                                                        L = self.L,
                                                        A = self.A,
-                                                       M = self.M,
-                                                       N = self.N,
+                                                       T=self.T,
                                                        num_channels = self.num_channels,
                                                        share_rotations= self.share_rotations,
                                                        share_phases=self.share_phases,
@@ -166,7 +163,6 @@ class WPHModelDownsample(WPHFeatureBase):
         self.relu_center = ReluCenterLayerDownsample(J=self.J,
                                                           M=self.M,
                                                           N=self.N,
-                                                          num_channels=self.num_channels,
                                                           normalize=self.normalize_relu)
         
         self.corr = CorrLayerDownsample(J=self.J,
@@ -183,7 +179,6 @@ class WPHModelDownsample(WPHFeatureBase):
         self.highpass = HighpassLayer(J = self.J,
                                        M = self.M,
                                        N = self.N,
-                                       wavelets=self.wavelets,
                                        num_channels=self.num_channels,
                                        mask_angles=self.mask_angles,
                                        mask_union=False,
@@ -211,8 +206,8 @@ class WPHModelDownsample(WPHFeatureBase):
             return xcorr, xlow, xhigh
         
 
-class WPHClassifier(WPHFeatureBase):
-    def __init__(self, feature_extractor: nn.Module, num_classes: int, use_batch_norm: bool = False):
+class WPHClassifier(nn.Module):
+    def __init__(self, feature_extractor: WPHFeatureBase, num_classes: int, use_batch_norm: bool = False):
         """
         A wrapper class for classification using WPHModel as a feature extractor.
 
