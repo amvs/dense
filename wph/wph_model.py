@@ -8,31 +8,27 @@ from wph.layers.relu_center_layer import ReluCenterLayer
 from wph.layers.corr_layer import CorrLayer
 from wph.layers.lowpass_layer import LowpassLayer
 from wph.layers.highpass_layer import HighpassLayer
+from dense.helpers import LoggerManager
 
-
-class WPHModel(nn.Module):
-    def __init__(
-        self,
-        J: int,
-        L: int,
-        A: int,
-        A_prime: int,
-        M: int,
-        N: int,
-        filters: torch.Tensor,
-        num_channels: int = 1,
-        share_rotations: bool = False,
-        share_phases: bool = False,
-        share_channels: bool = True,
-        normalize_relu: bool = True,
-        delta_j: Optional[int] = None,
-        delta_l: Optional[int] = None,
-        shift_mode: Literal["samec", "all", "strict"] = "samec",
-        mask_union: bool = False,
-        mask_angles: int = 4,
-        mask_union_highpass: bool = True,
-        wavelets: Literal["morlet", "steer"] = 'morlet',
-    ):
+class WPHFeatureBase(nn.Module):
+    def __init__(self,
+                 J: int,
+                L: int,
+                A: int,
+                A_prime: int,
+                M: int,
+                N: int,
+                num_channels: int = 1,
+                share_rotations: bool = False,
+                share_phases: bool = False,
+                share_channels: bool = True,
+                normalize_relu: bool = True,
+                delta_j: Optional[int] = None,
+                delta_l: Optional[int] = None,
+                shift_mode: Literal["samec", "all", "strict"] = "samec",
+                mask_angles: int = 4,
+                mask_union_highpass: bool = True,
+                wavelets: Literal["morlet", "steer"] = 'morlet',):
         super().__init__()
         self.J = J
         self.L = L
@@ -44,62 +40,85 @@ class WPHModel(nn.Module):
         self.share_rotations = share_rotations
         self.share_phases = share_phases
         self.share_channels = share_channels
+        if self.share_channels:
+            logger = LoggerManager.get_logger()
+            logger.warning("share_channels=True is not implemented yet; defaulting to share_channels=False")
         self.delta_j = delta_j if delta_j is not None else J
         self.delta_l = delta_l if delta_l is not None else L
         self.shift_mode = shift_mode
-        self.mask_union = mask_union
         self.mask_angles = mask_angles
-        A_param = 1 if share_phases else A
-        
+        self.mask_union_highpass = mask_union_highpass
+        self.wavelets = wavelets
+        self.normalize_relu = normalize_relu
+
+    def forward(self, x: torch.Tensor):
+        raise NotImplementedError("Subclasses should implement this!")
+
+class WPHModel(WPHFeatureBase):
+    def __init__(
+        self,
+        filters: torch.Tensor,
+        share_scales: bool = False,
+        mask_union: bool = False,
+        mask_union_highpass: bool = False
+    ):
+        super().__init__()
+        self.mask_union = mask_union
+        self.mask_union_highpass = mask_union_highpass
+        self.share_scales = share_scales
+        if self.share_scales:
+            logger = LoggerManager.get_logger()
+            logger.warning("share_scales=True is not implemented; defaulting to share_scales=False")
+        A_param = 1 if self.share_phases else self.A
         assert filters['hatpsi'].shape[-3] == A_param, "filters['hatpsi'] must have A phase shifts (or shape 1 if sharing phase shifts), has shape {}".format(filters['hatpsi'].shape)
         if len(filters['hatpsi'].shape) == 5:
-            filters['hatpsi'] = filters['hatpsi'].unsqueeze(0).repeat(num_channels, 1, 1, 1, 1, 1)
+            filters['hatpsi'] = filters['hatpsi'].unsqueeze(0).repeat(self.num_channels, 1, 1, 1, 1, 1)
         
         self.wave_conv = WaveConvLayer(
-            J=J,
-            L=L,
-            A=A,
-            M=M,
-            N=N,
-            num_channels=num_channels,
+            J=self.J,
+            L=self.L,
+            A=self.A,
+            M=self.M,
+            N=self.N,
+            num_channels=self.num_channels,
             filters=filters['hatpsi'],
-            share_rotations=share_rotations,
-            share_phases=share_phases,
-            share_channels=share_channels,
+            share_rotations=self.share_rotations,
+            share_phases=self.share_phases,
+            share_channels=self.share_channels,
         )
-        self.relu_center = ReluCenterLayer(J=J, M=M, N=N, normalize=normalize_relu)
+        self.relu_center = ReluCenterLayer(J=self.J, M=self.M, N=self.N, normalize=self.normalize_relu)
         self.corr = CorrLayer(
-            J=J,
-            L=L,
-            A=A,
-            A_prime=A_prime,
-            M=M,
-            N=N,
-            num_channels=num_channels,
+            J=self.J,
+            L=self.L,
+            A=self.A,
+            A_prime=self.A_prime,
+            M=self.M,
+            N=self.N,
+            num_channels=self.num_channels,
             delta_j=self.delta_j,
             delta_l=self.delta_l,
-            shift_mode=shift_mode,
-            mask_union=mask_union,
-            mask_angles=mask_angles,
+            shift_mode=self.shift_mode,
+            mask_union=self.mask_union,
+            mask_angles=self.mask_angles,
         )
         self.lowpass = LowpassLayer(
-            J=J,
-            M=M,
-            N=N,
-            num_channels=num_channels,
+            J=self.J,
+            M=self.M,
+            N=self.N,
+            num_channels=self.num_channels,
             hatphi=filters["hatphi"],
-            mask_angles=mask_angles,
-            mask_union=mask_union,
+            mask_angles=self.mask_angles,
+            mask_union=self.mask_union,
         )
         self.highpass = HighpassLayer(
-            J=J,
-            M=M,
-            N=N,
-            wavelets=wavelets,
-            num_channels=num_channels,
-            mask_angles=mask_angles,
-            mask_union=mask_union,
-            mask_union_highpass=mask_union_highpass,
+            J=self.J,
+            M=self.M,
+            N=self.N,
+            wavelets=self.wavelets,
+            num_channels=self.num_channels,
+            mask_angles=self.mask_angles,
+            mask_union=self.mask_union,
+            mask_union_highpass=self.mask_union_highpass,
         )
         self.nb_moments = self.corr.nb_moments + self.lowpass.nb_moments + self.highpass.nb_moments
         
@@ -116,6 +135,7 @@ class WPHModel(nn.Module):
             return torch.cat([xcorr, xlow.flatten(start_dim=1), xhigh], dim=1)
         else:
             return xcorr, xlow, xhigh
+        
 
 class WPHClassifier(nn.Module):
     def __init__(self, feature_extractor: nn.Module, num_classes: int, use_batch_norm: bool = False):
