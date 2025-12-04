@@ -418,6 +418,8 @@ class CorrLayerDownsample(BaseCorrLayer):
         # 1. Pre-compute FFTs to save time
         hatx_list = []
         for x in xpsi:
+            if x.ndim == 6: # (nb, C, L, A, M, N)
+                x = x.flatten(start_dim=1, end_dim=-3)  # (nb, C * L *A, M, N)
             if not torch.is_complex(x):
                 x_c = torch.complex(x, torch.zeros_like(x))
             hatx_list.append(fft.fft2(x_c))

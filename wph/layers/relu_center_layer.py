@@ -114,7 +114,7 @@ class ReluCenterLayerDownsample(ReluCenterLayer):
         # Helper to retrieve buffer by name
         return getattr(self, f'mask_{idx}')
 
-    def forward(self, x):
+    def forward(self, x: list[torch.Tensor]) -> list[torch.Tensor]:
         """
         x: list of J tensors
         """

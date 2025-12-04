@@ -3,9 +3,9 @@ from torch import nn
 from typing import Optional, Literal
 from torch.fft import fft2, ifft2
 
-from wph.layers.wave_conv_layer import WaveConvLayer
-from wph.layers.relu_center_layer import ReluCenterLayer
-from wph.layers.corr_layer import CorrLayer
+from wph.layers.wave_conv_layer import WaveConvLayer, WaveConvLayerDownsample
+from wph.layers.relu_center_layer import ReluCenterLayer, ReluCenterLayerDownsample
+from wph.layers.corr_layer import CorrLayer, CorrLayerDownsample
 from wph.layers.lowpass_layer import LowpassLayer
 from wph.layers.highpass_layer import HighpassLayer
 from dense.helpers import LoggerManager
@@ -57,7 +57,7 @@ class WPHFeatureBase(nn.Module):
 class WPHModel(WPHFeatureBase):
     def __init__(
         self,
-        filters: torch.Tensor,
+        filters: dict[str, torch.Tensor],
         share_scales: bool = False,
         mask_union: bool = False,
         mask_union_highpass: bool = False
@@ -135,9 +135,83 @@ class WPHModel(WPHFeatureBase):
             return torch.cat([xcorr, xlow.flatten(start_dim=1), xhigh], dim=1)
         else:
             return xcorr, xlow, xhigh
+
+
+class WPHModelDownsample(WPHFeatureBase):
+    def __init__(
+            self,
+            T: int,
+            filters: dict[str, torch.Tensor],
+            hatphi: torch.Tensor = None,
+            *args,
+            **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.T = T
+        A_param = 1 if self.share_phases else self.A
+        L_param = 1 if self.share_rotations else self.L
+        assert filters['psi'].shape == (L_param, A_param, T, T), "filters['psi'] must have shape (L or 1, A or 1, T, T), has shape {}".format(filters['psi'].shape)
+        
+        self.wave_conv = WaveConvLayerDownsample(J = self.J,
+                                                       L = self.L,
+                                                       A = self.A,
+                                                       M = self.M,
+                                                       N = self.N,
+                                                       num_channels = self.num_channels,
+                                                       share_rotations= self.share_rotations,
+                                                       share_phases=self.share_phases,
+                                                       share_channels=self.share_channels,
+                                                       init_filters = filters['psi'])
+
+        self.relu_center = ReluCenterLayerDownsample(J=self.J,
+                                                          M=self.M,
+                                                          N=self.N,
+                                                          num_channels=self.num_channels,
+                                                          normalize=self.normalize_relu)
+        
+        self.corr = CorrLayerDownsample(J=self.J,
+                                                L=self.L,
+                                                A=self.A,
+                                                A_prime=self.A_prime,
+                                                M=self.M,
+                                                N=self.N,
+                                                num_channels=self.num_channels,
+                                                delta_j=self.delta_j,
+                                                delta_l=self.delta_l,
+                                                shift_mode=self.shift_mode,
+                                                mask_angles=self.mask_angles)
+        self.highpass = HighpassLayer(J = self.J,
+                                       M = self.M,
+                                       N = self.N,
+                                       wavelets=self.wavelets,
+                                       num_channels=self.num_channels,
+                                       mask_angles=self.mask_angles,
+                                       mask_union=False,
+                                       mask_union_highpass=self.mask_union_highpass)
+        self.lowpass = LowpassLayer(J = self.J,
+                                     M = self.M,
+                                     N = self.N,
+                                     num_channels=self.num_channels,
+                                     hatphi=filters["hatphi"],
+                                     mask_angles=self.mask_angles,
+                                     mask_union=False)
+        self.nb_moments = self.corr.nb_moments + self.lowpass.nb_moments + self.highpass.nb_moments
+            
+    def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> torch.Tensor:
+        xpsi = self.wave_conv(x)
+        xrelu = self.relu_center(xpsi)
+        xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
+        hatx_c = fft2(x)
+        xlow = self.lowpass(hatx_c)
+        xhigh = self.highpass(hatx_c)
+        
+        if flatten:
+            return torch.cat([xcorr, xlow.flatten(start_dim=1), xhigh], dim=1)
+        else:
+            return xcorr, xlow, xhigh
         
 
-class WPHClassifier(nn.Module):
+class WPHClassifier(WPHFeatureBase):
     def __init__(self, feature_extractor: nn.Module, num_classes: int, use_batch_norm: bool = False):
         """
         A wrapper class for classification using WPHModel as a feature extractor.
