@@ -29,7 +29,6 @@ def main():
     args = parse_args()
     config = load_config(args.config)
     config = apply_overrides(config, args.override)
-    config["lr_lambda"] = float(config["lr"]) * float(config["lambda_reg"])
 
     # Create output folder, divides by train ratio
     train_ratio = config["train_ratio"]
@@ -45,7 +44,7 @@ def main():
     # init logger
     logger = LoggerManager.get_logger(log_dir=exp_dir, 
                             wandb_project=args.wandb_project, 
-                            config=config, name=f"{train_ratio=}(run-{timestamp})")
+                            config=config, name=f"rand_{train_ratio=}(run-{timestamp})")
     
     # set up device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -54,13 +53,12 @@ def main():
     # get data loader
     dataset = config["dataset"]
     batch_size = config["batch_size"]
-    test_ratio = config["test_ratio"]
     train_ratio = config["train_ratio"]
-    train_val_ratio = config["train_val_ratio"]
+    train_ratio = config["train_ratio"]
     if dataset=="mnist":
         train_loader, test_loader, nb_class, image_shape = get_loaders(dataset=dataset, 
                                                 batch_size=batch_size, 
-                                                train_ratio=1-test_ratio)
+                                                train_ratio=train_ratio)
     else: # only kaggle dataset needs deeper path and resize
         resize = config["resize"]
         deeper_path = config["deeper_path"]
@@ -68,12 +66,11 @@ def main():
                                                 resize=resize,
                                                 deeper_path=deeper_path,
                                                 batch_size=batch_size, 
-                                                train_ratio=1-test_ratio)
+                                                train_ratio=train_ratio)
     train_loader, val_loader = split_train_val(
                                 train_loader.dataset,
                                 train_ratio=train_ratio,
-                                batch_size=batch_size,
-                                train_val_ratio=train_val_ratio)
+                                batch_size=batch_size)
     # init model
     max_scale = config["max_scale"]
     nb_orients = config["nb_orients"]
@@ -81,50 +78,42 @@ def main():
     efficient = config["efficient"]
     isShared = config.get("isShared", False)
     model = dense(max_scale, nb_orients, image_shape,
-                wavelet=wavelet, nb_class=nb_class, efficient=efficient, isShared=isShared).to(device)
+                wavelet=wavelet, nb_class=nb_class, 
+                efficient=efficient, isShared=isShared,
+                random=True).to(device)
     
     # Train classifier
     lr = float(config["lr"])
     lambda_reg = float(config["lambda_reg"])
     classifier_epochs = config["classifier_epochs"]
     conv_epochs = config["conv_epochs"]
-    optimizer = torch.optim.Adam([
-        {"params": model.linear.parameters(), "lr": lr},   # different lr
-        {"params": model.fine_tuned_params(), "lr": lr * 0.01}   # 
-    ])
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=lambda_reg)
 
     base_loss = nn.CrossEntropyLoss()
-    with torch.no_grad():
-        original_params = [p.clone().detach() for p in model.fine_tuned_params()]
-    #
-    logger.log("Training linear classifier...") 
-    model.train_classifier()
-    for classifier_epoch in range(classifier_epochs):  # Change number of epochs as needed
-        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, base_loss, device)
-        val_loss, val_acc = evaluate(model, val_loader, base_loss, device)
-        logger.log(f"Epoch={classifier_epoch} Train_Acc={train_acc:.4f} Train_Loss={train_loss:.4f} Val_Acc={val_acc:.4f} Val_Loss={val_loss:.4f}", data=True)
-    logger.log("Finish linear layer training task.")
-    ini_test_loss, ini_test_acc = evaluate(model, test_loader, base_loss, device)
 
-
+    # Save initialized model
     save_original = os.path.join(exp_dir, "origin.pt")
     torch.save(model.state_dict(), save_original)
-    logger.log(f"Save model to {save_original}")
+    logger.log(f"Save initialized model to {save_original}")
     #
-    logger.log("Fine tuning conv layers...")
-    model.train_conv()
-    for conv_epoch in range(conv_epochs):  # Change number of epochs as needed
-        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, base_loss, device, original_params, lambda_reg)
+    logger.log("Training a model from random initialization...") 
+    model.full_train()
+    for epoch in range(classifier_epochs + conv_epochs):  # Change number of epochs as needed
+        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, base_loss, device)
         val_loss, val_acc = evaluate(model, val_loader, base_loss, device)
-        logger.log(f"Epoch={conv_epoch + classifier_epoch + 1} Train_Acc={train_acc:.4f} Train_Loss={train_loss:.4f} Val_Acc={val_acc:.4f} Val_Loss={val_loss:.4f}", data=True)
+        logger.log(f"Epoch={epoch} Train_Acc={train_acc:.4f} Train_Loss={train_loss:.4f} Val_Acc={val_acc:.4f} Val_Loss={val_loss:.4f}", data=True)
+    logger.log("Finish training task.")
+
+    #
     test_loss, test_acc = evaluate(model, test_loader, base_loss, device)
-    logger.log(f"Finish conv fine tuning task.")
+    logger.log(f"Finish testing task.")
     logger.log(f"Test_Acc={test_acc:.4f} Ini_Test_Acc={ini_test_acc:.4f} Train_Ratio={train_ratio:.4f}"
+    f"Test_Loss={test_loss:.4f}"
     f" Lambda={lambda_reg:.4f} Out_dim={model.out_dim}", data=True)
     #
     save_fine_tuned = os.path.join(exp_dir, "trained.pt")
     torch.save(model.state_dict(), save_fine_tuned)
-    logger.log(f"Save model to {save_fine_tuned}")
+    logger.log(f"Save trained model to {save_fine_tuned}")
 
     # back up config
     config["nb_class"] = nb_class
@@ -132,7 +121,7 @@ def main():
     config["last_train_acc"] = train_acc
     config["last_val_acc"] = val_acc
     config["test_acc"] = test_acc
-    config["random"] = False
+    config["random"] = True
     save_config(exp_dir, config)
 
     # Plot kernels before and after training
