@@ -21,7 +21,7 @@ from training.datasets import get_loaders
 
 
 def visualize_main(exp_dir):
-    # create outpt folder
+    # create output folder
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     analyze_dir = os.path.join(exp_dir, f"analyze-{timestamp}")
     os.makedirs(analyze_dir, exist_ok=True)

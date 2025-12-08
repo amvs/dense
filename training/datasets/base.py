@@ -63,7 +63,7 @@ def split_train_val(train_dataset, train_ratio=0.1, batch_size=64, seed=123, tra
             generator=torch.Generator().manual_seed(seed)
         )
     else: # we discard some data to maintain the train:val ratio
-          # this mimiks the situation when dataset is small in practice
+          # this mimics the situation when dataset is small in practice
         used_dataset, _ = stratify_split(
             train_dataset, train_size=used_len,
             seed=seed

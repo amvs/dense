@@ -17,7 +17,7 @@ class MyConv2d(nn.Module):
     trainable parameters depending on whether all input channels share the
     same set of kernels or not.
 
-    Arrtibutes:
+    Attributes:
     param  -- nn.Parameter, the trainable parameters used to construct the kernels
     kernel -- torch.Tensor, the convolution kernels constructed from param depending
                 on whether all input channels share the same set of kernels or not.

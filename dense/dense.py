@@ -70,7 +70,7 @@ class dense(nn.Module):
         (3) Define an average-pooling layer and compute the flattened output
             dimension in `self.out_dim`. The average-pooling layer is used
             for spatial downsampling at every scale, and as data flow to last
-            layer, the culmulative effect also serves as a low-pass filter.
+            layer, the cumulative effect also serves as a low-pass filter.
 
         After calling this function:
             - `self.sequential_conv[j]` contains the j-th convolution.

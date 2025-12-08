@@ -78,7 +78,7 @@ class LoggerManager:
             '''
             Unified log method
             - If data=False, logs plain text message
-            - If data=True, logs text and parse key=vale pairs for wandb
+            - If data=True, logs text and parse key=value pairs for wandb
             example for data=True:
                 logger.log("epoch=1 loss=0.345 acc=0.89", data=True)
             '''
@@ -105,6 +105,16 @@ class LoggerManager:
         if config:
             logger.info(f"Config: {config}")
         return logger
+    
+    @staticmethod
+    def log_uncaught_exceptions(exctype, value, tb):
+        """
+        Logs uncaught exceptions to the error log.
+        """
+        if LoggerManager._logger is None:
+            raise RuntimeError("Logger must be initialized before logging exceptions.")
+        LoggerManager._logger.error("Unhandled exception", exc_info=(exctype, value, tb))
+
 
 def wandb_login():
     """
@@ -143,11 +153,4 @@ def wandb_login():
         LoggerManager._logger = logger
         return logger
 
-    @staticmethod
-    def log_uncaught_exceptions(exctype, value, tb):
-        """
-        Logs uncaught exceptions to the error log.
-        """
-        if LoggerManager._logger is None:
-            raise RuntimeError("Logger must be initialized before logging exceptions.")
-        LoggerManager._logger.error("Unhandled exception", exc_info=(exctype, value, tb))
+    
