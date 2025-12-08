@@ -1,23 +1,15 @@
 import os
 import yaml
 from dense.helpers import LoggerManager
-
-def float_range(start, stop, step):
-    """Generate a list of floats from start to stop (exclusive)"""
-    vals = []
-    v = start
-    while v < stop:
-        vals.append(round(v, 10))  # avoid floating-point accumulation errors
-        v += step
-    return vals
+import numpy as np
 
 def expand_param(val):
     """
     If val is a dict with start/stop/step -> create a list via range
     Else assume it's already a list
     """
-    if isinstance(val, dict) and {'start','stop','step'}.issubset(val.keys()):
-        return float_range(val['start'], val['stop'], val['step'])
+    if isinstance(val, dict) and {'start', 'stop', 'step'}.issubset(val.keys()):
+        return np.round(np.arange(val['start'], val['stop'], val['step']), 10).tolist()
     elif isinstance(val, list):
         return val
     else:
