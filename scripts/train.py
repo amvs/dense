@@ -99,8 +99,8 @@ def main():
     #
     logger.log("Training linear classifier...") 
     model.train_classifier()
-    for classifier_epoch in range(classifier_epochs):  # Change number of epochs as needed
-        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, base_loss, device)
+    for classifier_epoch in range(classifier_epochs):
+        train_metrics = train_one_epoch(model, train_loader, optimizer, base_loss, device)
         val_loss, val_acc = evaluate(model, val_loader, base_loss, device)
         logger.log(f"Epoch={classifier_epoch} Train_Acc={train_acc:.4f} Train_Loss={train_loss:.4f} Val_Acc={val_acc:.4f} Val_Loss={val_loss:.4f}", data=True)
     logger.log("Finish linear layer training task.")
@@ -129,7 +129,7 @@ def main():
     # back up config
     config["nb_class"] = nb_class
     config["image_shape"] = list(image_shape)
-    config["last_train_acc"] = train_acc
+    config["last_train_acc"] = train_metrics['accuracy']
     config["last_val_acc"] = val_acc
     config["test_acc"] = test_acc
     config["random"] = False
