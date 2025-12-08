@@ -34,6 +34,7 @@ def train_one_epoch(model, loader, optimizer, base_loss, device, original_params
         else:
             outputs = model.forward(inputs, vmap_chunk_size=vmap_chunk_size)
         base_loss_value = base_loss(outputs, targets) # Average loss in a batch
+        loss = base_loss_value
         reg_loss_value = torch.tensor(0.0)
         if original_params is not None:
             reg_loss_value = regularization_loss(model.fine_tuned_params(), original_params, lambda_reg)

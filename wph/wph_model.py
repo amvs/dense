@@ -179,3 +179,12 @@ class WPHClassifier(nn.Module):
         if 'classifier' in parts:
             for param in self.classifier.parameters():
                 param.requires_grad = parts['classifier']
+
+    def fine_tuned_params(self):
+        """
+        Get parameters of the feature extractor that are set to be trainable.
+
+        Returns:
+            list: List of trainable parameters from the feature extractor.
+        """
+        return [param for param in self.feature_extractor.parameters() if param.requires_grad]

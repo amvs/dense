@@ -70,7 +70,7 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
     """
     best_acc = 0.0  # Initialize best accuracy
     for epoch in range(epochs):
-        train_loss, train_acc = train_one_epoch(
+        train_metrics = train_one_epoch(
             model=model,
             loader=train_loader,
             optimizer=optimizer,
@@ -81,7 +81,7 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
             vmap_chunk_size=configs.get('vmap_chunk_size', None)
         )
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
-        logger.info(f"[{phase}] Epoch {epoch+1}/{epochs}: Train Loss={train_loss:.4f}, Train Acc={train_acc:.4f}, Val Loss={val_loss:.4f}, Val Acc={val_acc:.4f}")
+        logger.log(f"[{phase}] Epoch {epoch+1}/{epochs}: Train Acc={train_metrics['accuracy']:.4f}, Val Acc={val_acc:.4f}, Base Loss={train_metrics['base_loss']:.4e}, Reg Loss={train_metrics['reg_loss']:.4e}, Total Loss={train_metrics['total_loss']:.4e}", data=True)
 
         # Track best accuracy
         if val_acc > best_acc:
@@ -220,23 +220,24 @@ def main():
     # Get data loaders
     dataset = config["dataset"]
     batch_size = config["batch_size"]
-    train_ratio = config["train_ratio"]
-    val_ratio = config["val_ratio"]
+    train_ratio = config['train_ratio']
+    test_ratio = config["test_ratio"]
+    train_val_ratio = config.get("train_val_ratio", 4)
     # Create a worker_init_fn with seed bound using functools.partial
     worker_init_with_seed = partial(worker_init_fn, seed=seed)
     if dataset == "mnist":
         train_loader, test_loader, nb_class, image_shape = get_loaders(
-            dataset=dataset, batch_size=batch_size, train_ratio=train_ratio, worker_init_fn=worker_init_with_seed
+            dataset=dataset, batch_size=batch_size, train_ratio=1-test_ratio, worker_init_fn=worker_init_with_seed
         )
     else:
         resize = config["resize"]
         deeper_path = config["deeper_path"]
         train_loader, test_loader, nb_class, image_shape = get_loaders(
             dataset=dataset, resize=resize, deeper_path=deeper_path,
-            batch_size=batch_size, train_ratio=train_ratio, worker_init_fn=worker_init_with_seed
+            batch_size=batch_size, train_ratio=1-test_ratio, worker_init_fn=worker_init_with_seed
         )
     train_loader, val_loader = split_train_val(
-        train_loader.dataset, val_ratio=val_ratio, batch_size=batch_size, drop_last=True
+        train_loader.dataset, train_ratio=train_ratio, train_val_ratio=train_val_ratio, batch_size=batch_size, drop_last=True
     )
 
     # Initialize models
