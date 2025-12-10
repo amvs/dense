@@ -94,6 +94,11 @@ def main():
     save_original = os.path.join(exp_dir, "origin.pt")
     torch.save(model.state_dict(), save_original)
     logger.log(f"Save initialized model to {save_original}")
+    
+    # Evaluate initial test accuracy before training
+    ini_test_loss, ini_test_acc = evaluate(model, test_loader, base_loss, device)
+    logger.log(f"Initial test accuracy (before training): {ini_test_acc:.4f}")
+    
     #
     logger.log("Training a model from random initialization...") 
     model.full_train()
@@ -108,9 +113,9 @@ def main():
     #
     test_loss, test_acc = evaluate(model, test_loader, base_loss, device)
     logger.log(f"Finish testing task.")
-    logger.log(f"Test_Acc={test_acc:.4f} Ini_Test_Acc={ini_test_acc:.4f} Train_Ratio={train_ratio:.4f}"
+    logger.log(f"Test_Acc={test_acc:.4f} Ini_Test_Acc={ini_test_acc:.4f} Train_Ratio={train_ratio:.4f} "
     f"Test_Loss={test_loss:.4f} "
-    f" Lambda={lambda_reg:.4f} Out_dim={model.out_dim}", data=True)
+    f"Lambda={lambda_reg:.4f} Out_dim={model.out_dim}", data=True)
     #
     save_fine_tuned = os.path.join(exp_dir, "trained.pt")
     torch.save(model.state_dict(), save_fine_tuned)
