@@ -10,6 +10,10 @@ from dense import dense
 from dense.helpers import LoggerManager
 from plot_before_and_after import plot_kernels
 from visualize import visualize_main
+from dotenv import load_dotenv
+
+load_dotenv()
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a model with config")
     parser.add_argument(
@@ -102,7 +106,7 @@ def main():
     for classifier_epoch in range(classifier_epochs):
         train_metrics = train_one_epoch(model, train_loader, optimizer, base_loss, device)
         val_loss, val_acc = evaluate(model, val_loader, base_loss, device)
-        logger.log(f"Epoch={classifier_epoch} Train_Acc={train_acc:.4f} Train_Loss={train_loss:.4f} Val_Acc={val_acc:.4f} Val_Loss={val_loss:.4f}", data=True)
+        logger.log(f"Epoch {classifier_epoch+1}: Train_Acc={train_metrics['accuracy']:.4f} Val_Acc={val_acc:.4f} Base_Loss={train_metrics['base_loss']:.4e} Reg_Loss={train_metrics['reg_loss']:.4e} Total_Loss={train_metrics['total_loss']:.4e}", data=True)
     logger.log("Finish linear layer training task.")
     ini_test_loss, ini_test_acc = evaluate(model, test_loader, base_loss, device)
 
@@ -114,9 +118,9 @@ def main():
     logger.log("Fine tuning conv layers...")
     model.train_conv()
     for conv_epoch in range(conv_epochs):  # Change number of epochs as needed
-        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, base_loss, device, original_params, lambda_reg)
+        train_metrics = train_one_epoch(model, train_loader, optimizer, base_loss, device, original_params, lambda_reg)
         val_loss, val_acc = evaluate(model, val_loader, base_loss, device)
-        logger.log(f"Epoch={conv_epoch + classifier_epoch + 1} Train_Acc={train_acc:.4f} Train_Loss={train_loss:.4f} Val_Acc={val_acc:.4f} Val_Loss={val_loss:.4f}", data=True)
+        logger.log(f"Epoch={conv_epoch + classifier_epoch + 1} Train_Acc={train_metrics['accuracy']:.4f} Base_Loss={train_metrics['base_loss']:.4e} Val_Acc={val_acc:.4f} Val_Loss={val_loss:.4f} Reg_Loss={train_metrics['reg_loss']:.4e} Total_Loss={train_metrics['total_loss']:.4e}", data=True)
     test_loss, test_acc = evaluate(model, test_loader, base_loss, device)
     logger.log(f"Finish conv fine tuning task.")
     logger.log(f"Test_Acc={test_acc:.4f} Ini_Test_Acc={ini_test_acc:.4f} Train_Ratio={train_ratio:.4f}"
