@@ -49,6 +49,8 @@ class WPHModel(nn.Module):
         self.shift_mode = shift_mode
         self.mask_union = mask_union
         self.mask_angles = mask_angles
+        self.wavelets = wavelets
+        self.mask_union_highpass = mask_union_highpass
         A_param = 1 if share_phases else A
         
         assert filters['hatpsi'].shape[-3] == A_param, "filters['hatpsi'] must have A phase shifts (or shape 1 if sharing phase shifts), has shape {}".format(filters['hatpsi'].shape)
@@ -95,11 +97,11 @@ class WPHModel(nn.Module):
             J=J,
             M=M,
             N=N,
-            wavelets=wavelets,
+            wavelets=self.wavelets,
             num_channels=num_channels,
-            mask_angles=mask_angles,
-            mask_union=mask_union,
-            mask_union_highpass=mask_union_highpass,
+            mask_angles=self.mask_angles,
+            mask_union=self.mask_union,
+            mask_union_highpass=self.mask_union_highpass,
         )
         self.nb_moments = self.corr.nb_moments + self.lowpass.nb_moments + self.highpass.nb_moments
         
@@ -147,20 +149,17 @@ class WPHClassifier(nn.Module):
 
         Args:
             x (torch.Tensor): Input tensor.
-            logger (Logger, optional): Logger for logging tensor states.
             vmap_chunk_size (int, optional): Chunk size for vmap operations when computing correlations.
 
         Returns:
             torch.Tensor: Classification logits.
         """
-        # Extract features using the feature extractor
+        # Always flatten features for classifier
         features = self.feature_extractor(x, flatten=True, vmap_chunk_size=vmap_chunk_size)
 
         # Apply batch normalization if enabled
         if self.batch_norm is not None:
             features = self.batch_norm(features)
-
-        # Pass the features through the classifier
         logits = self.classifier(features)
         return logits
 
@@ -188,3 +187,58 @@ class WPHClassifier(nn.Module):
             list: List of trainable parameters from the feature extractor.
         """
         return [param for param in self.feature_extractor.parameters() if param.requires_grad]
+    
+    def save(self, filename):
+        """
+        Save the model, skipping the highpass layer in the feature extractor for TorchScript compatibility.
+        Also saves nb_moments of highpass for zero-padding during scripting.
+        """
+        highpass = None
+        nb_moments_highpass = None
+        if hasattr(self.feature_extractor, 'highpass'):
+            highpass = self.feature_extractor.highpass
+            if highpass is not None:
+                nb_moments_highpass = highpass.nb_moments
+                # Save as attribute for scripted model
+                self.feature_extractor._nb_moments_highpass = nb_moments_highpass
+            del self.feature_extractor.highpass  # Remove attribute entirely
+        breakpoint()
+        scripted = torch.jit.script(self)
+        torch.jit.save(scripted, filename)
+
+        # Restore highpass layer and remove temp attribute
+        if highpass is not None:
+            self.feature_extractor.highpass = highpass
+            if hasattr(self.feature_extractor, '_nb_moments_highpass'):
+                del self.feature_extractor._nb_moments_highpass
+
+    @classmethod
+    def load(cls, filename, highpass_layer=None):
+        """
+        Load the scripted model and re-attach the highpass layer. If highpass_layer is None, reconstruct it from feature_extractor's parameters.
+        """
+        scripted = torch.jit.load(filename)
+        model = scripted
+        fe = model.feature_extractor
+        if hasattr(fe, 'highpass'):
+            if highpass_layer is not None:
+                fe.highpass = highpass_layer
+            else:
+                # Try to reconstruct HighpassLayer from feature_extractor's params
+                # Assumes fe has attributes J, M, N, wavelets, num_channels, mask_angles, mask_union, mask_union_highpass
+                try:
+                    fe.highpass = HighpassLayer(
+                        J=fe.J,
+                        M=fe.M,
+                        N=fe.N,
+                        wavelets=getattr(fe, 'wavelets', 'morlet'),
+                        num_channels=fe.num_channels,
+                        mask_angles=getattr(fe, 'mask_angles', 4),
+                        mask_union=getattr(fe, 'mask_union', True),
+                        mask_union_highpass=getattr(fe, 'mask_union_highpass', True),
+                    )
+                except Exception as e:
+                    print(f"Warning: Could not reconstruct highpass layer: {e}")
+                    fe.highpass = None
+        return model
+    

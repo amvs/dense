@@ -10,6 +10,7 @@ from wph.wph_model import WPHModel, WPHClassifier
 from dense.helpers import LoggerManager
 from wph.layers.utils import apply_phase_shifts
 import sys
+import copy
 import random
 import numpy as np
 import time
@@ -321,9 +322,9 @@ def main():
     logger.log(f"Classifier Test Accuracy: {classifier_test_acc:.4f}")
 
     save_original = os.path.join(exp_dir, "origin.pt")
-    scripted_model = torch.jit.script(model)
-    torch.jit.save(scripted_model, save_original)
-    logger.log(f"Save model to {save_original}")
+    original_model = copy.deepcopy(model)
+    original_model.save(save_original)
+    logger.log(f"Saved original model to {save_original}")
 
     # Fine-tune feature extractor
     if not args.skip_finetuning:

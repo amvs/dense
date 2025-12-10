@@ -27,11 +27,10 @@ class HighpassLayer(nn.Module):
         self.num_channels = num_channels
         self.mask_union_highpass = mask_union_highpass
         self.build_haar(M=self.M, N=self.N)
-        masks_shift, factr_shift = create_masks_shift(
+        masks_shift, _ = create_masks_shift(
             J=self.J, M=self.M, N=self.N, mask_union=self.mask_union, mask_angles=self.mask_angles
         )
         self.register_buffer("masks_shift", masks_shift)
-        self.factr_shift = factr_shift
 
         masks = maskns(self.J, self.M, self.N)
         if self.num_channels == 1:
@@ -111,6 +110,7 @@ class HighpassLayer(nn.Module):
     def select_shifts(self, signal, mask = None):
         if mask is None:
             mask = self.masks_shift[-1, ...]
+        mask = mask.clone().contiguous().to(signal.device)
         shape = signal.shape
         nb = shape[0]
         signal = signal.reshape(nb, -1)
