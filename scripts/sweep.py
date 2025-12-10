@@ -45,10 +45,6 @@ timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 sweep_dir = os.path.join("experiments", dataset_name, f"{short_name}sweeps-{timestamp}")
 os.makedirs(sweep_dir, exist_ok=True)
 
-# Read config
-args = parse_args()
-sweep = load_config(args.config)
-base = sweep["base_config"]
 params = sweep["sweep"]  # dict of lists
 
 random_flag = args.random
