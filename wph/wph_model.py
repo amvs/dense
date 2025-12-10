@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from typing import Optional, Literal
+from typing import Optional, Literal, Union, Tuple
 from torch.fft import fft2, ifft2
 
 from wph.layers.wave_conv_layer import WaveConvLayer
@@ -103,7 +103,7 @@ class WPHModel(nn.Module):
         )
         self.nb_moments = self.corr.nb_moments + self.lowpass.nb_moments + self.highpass.nb_moments
         
-    def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         nb = x.shape[0]
         xpsi = self.wave_conv(x)
         xrelu = self.relu_center(xpsi)

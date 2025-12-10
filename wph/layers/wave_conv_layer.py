@@ -105,10 +105,15 @@ class WaveConvLayer(nn.Module):
                 expanded_filters[:, :, :, a, :, :] = expanded_filters[:, :, :, a, :, :] * phase_shift
             filters = expanded_filters
 
-        # Cache the computed full filters
+        # Cache the computed full filters only in eager mode
+        if not torch.jit.is_scripting():
+            self._cache_full_filters(filters)
+        return filters
+
+    @torch.jit.ignore
+    def _cache_full_filters(self, filters):
         self.full_filters = filters
         self.filters_cached = True
-        return filters
 
     def forward(self, x):
         """
