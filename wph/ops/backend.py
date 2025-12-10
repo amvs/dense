@@ -72,18 +72,18 @@ class DivInitStd(nn.Module):
             stdinput = input.clone().detach()  # input size:(...,M,N)
             m = torch.mean(torch.mean(stdinput, -1, True), -2, True)
             stdinput = stdinput - m
-            d = torch.tensor(input.shape[-1]*input.shape[-2])
+            d = input.shape[-1]*input.shape[-2]
             stdinput = torch.norm(stdinput, dim=(-2,-1), keepdim=True)
-            self.stdinput = stdinput  / torch.sqrt(d)
+            self.stdinput = stdinput / torch.sqrt(torch.tensor(d, dtype=stdinput.dtype, device=stdinput.device))
             self.stdinput = self.stdinput + self.eps
         elif self.stdinput.shape != input.shape:
             warnings.warn('overwriting stdinput')
             stdinput = input.clone().detach()  # input size:(...,M,N)
             m = torch.mean(torch.mean(stdinput, -1, True), -2, True)
             stdinput = stdinput - m
-            d = torch.tensor(input.shape[-1]*input.shape[-2])
+            d = input.shape[-1]*input.shape[-2]
             stdinput = torch.norm(stdinput, dim=(-2,-1), keepdim=True)
-            self.stdinput = stdinput  / torch.sqrt(d)
+            self.stdinput = stdinput / torch.sqrt(torch.tensor(d, dtype=stdinput.dtype, device=stdinput.device))
             self.stdinput = self.stdinput + self.eps
 
         output = input/self.stdinput
