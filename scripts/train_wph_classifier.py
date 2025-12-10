@@ -10,7 +10,6 @@ from wph.wph_model import WPHModel, WPHClassifier
 from dense.helpers import LoggerManager
 from wph.layers.utils import apply_phase_shifts
 import sys
-import copy
 import random
 import numpy as np
 import time
@@ -371,21 +370,22 @@ def main():
     # Plotting and visualization (similar to train.py)
     from plot_before_and_after import plot_kernels_wph_base_filters
     from visualize import visualize_main
-    logger.log("Plotting kernels before and after training...")
-    img_file_names = plot_kernels_wph_base_filters(exp_dir, trained_filename='best_feature_extractor_model_state.pt')
-    # Log kernel image if available
-    for f in img_file_names:
-        kernel_img_path = os.path.join(exp_dir, f)
-        if os.path.exists(kernel_img_path):
-            logger.send_file("kernels_before_after", kernel_img_path, "image")
-    logger.log("Visualizing filters and activations...")
-    visualize_main(exp_dir, tuned_filename='best_feature_extractor_model_state.pt', model_type='wph', filters=filters)
-    # Log activation image if available
-    activation_img_path = os.path.join(exp_dir, "activations.png")
-    if os.path.exists(activation_img_path):
-        logger.send_file("activations", activation_img_path, "image")
-    # except Exception as e:
-    #     logger.log(f"Plotting/visualization failed: {e}")
+    try:
+        logger.log("Plotting kernels before and after training...")
+        img_file_names = plot_kernels_wph_base_filters(exp_dir, trained_filename='best_feature_extractor_model_state.pt')
+        # Log kernel image if available
+        for f in img_file_names:
+            kernel_img_path = os.path.join(exp_dir, f)
+            if os.path.exists(kernel_img_path):
+                logger.send_file("kernels_before_after", kernel_img_path, "image")
+        logger.log("Visualizing filters and activations...")
+        visualize_main(exp_dir, tuned_filename='best_feature_extractor_model_state.pt', model_type='wph', filters=filters)
+        # Log activation image if available
+        activation_img_path = os.path.join(exp_dir, "activations.png")
+        if os.path.exists(activation_img_path):
+            logger.send_file("activations", activation_img_path, "image")
+    except Exception as e:
+        logger.log(f"Plotting/visualization failed: {e}")
 
 
   

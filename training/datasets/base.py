@@ -78,7 +78,7 @@ def split_train_val(train_dataset, train_ratio=0.1, batch_size=64, seed=123, tra
     logger = LoggerManager.get_logger()
     logger.info(f"Split train dataset into train and val subsets...")
     logger.info(f"[Train Ratio: {train_ratio}] Train size: {train_len}, "
-                 f"Val size: {val_len}, Used Size: {used_len}, Discard Size: {discard_len},"
+                 f"Val size: {val_len}, Used Size: {used_len}, Discard Size: {discard_len}, "
                  f"Train:Val={train_val_ratio}:1")
 
     return train_loader, val_loader

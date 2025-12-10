@@ -1,7 +1,7 @@
 """
 Plotting scheme for the output of the training.
 visualize the most changed kernels before and after training.
-Put the "fine_tuned.pt , origin.pt, config.yaml" files in the same directory as this code
+Put the "trained.pt , origin.pt, config.yaml" files in the same directory as this code
 """
 
 import os

@@ -33,8 +33,6 @@ def main():
     args = parse_args()
     config = load_config(args.config)
     config = apply_overrides(config, args.override)
-    config["lr_lambda"] = float(config["lr"]) * float(config["lambda_reg"])
-
     # Create output folder, divides by train ratio
     train_ratio = config["train_ratio"]
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")

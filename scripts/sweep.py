@@ -6,7 +6,6 @@ import argparse
 from configs import load_config, expand_param
 import pandas as pd
 import matplotlib.pyplot as plt
-import wandb
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a model with config")
     parser.add_argument(
@@ -93,12 +92,14 @@ for run_idx, values in enumerate(all_combinations, 1):
     with open(temp_config_path, "w") as f:
         yaml.dump(merged_config, f)
 
-    result = subprocess.run(
-        ["python", file, 
-        "--config", temp_config_path, 
-        "--sweep_dir", sweep_dir,
-        "--wandb_project", wandb_project
-        ])
+    cmd = [
+        "python", file,
+        "--config", temp_config_path,
+        "--sweep_dir", sweep_dir
+    ]
+    if wandb_project is not None:
+        cmd.extend(["--wandb_project", wandb_project])
+    result = subprocess.run(cmd)
     if result.returncode == 0:
         logger.info(f"Finished run.")
     else:

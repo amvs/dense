@@ -37,6 +37,10 @@ def train_one_epoch(model, loader, optimizer, base_loss, device, original_params
         loss = base_loss_value
         reg_loss_value = torch.tensor(0.0)
         if original_params is not None:
+            if not hasattr(model, "fine_tuned_params") or not callable(getattr(model, "fine_tuned_params")):
+                raise NotImplementedError(
+                    "Model passed to train_one_epoch must implement a callable fine_tuned_params() method for regularization."
+                )
             reg_loss_value = regularization_loss(model.fine_tuned_params(), original_params, lambda_reg)
             loss += reg_loss_value
         loss.backward()

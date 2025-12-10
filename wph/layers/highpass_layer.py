@@ -114,5 +114,5 @@ class HighpassLayer(nn.Module):
         shape = signal.shape
         nb = shape[0]
         signal = signal.reshape(nb, -1)
-        mask_flat = mask.expand(shape).reshape(nb, -1).to(torch.bool)
+        mask_flat = mask.expand(shape).reshape(nb, -1).to(dtype=torch.bool)
         return signal[mask_flat].reshape(nb, -1)

@@ -54,7 +54,6 @@ def main():
     dataset = config["dataset"]
     batch_size = config["batch_size"]
     train_ratio = config["train_ratio"]
-    train_ratio = config["train_ratio"]
     if dataset=="mnist":
         train_loader, test_loader, nb_class, image_shape = get_loaders(dataset=dataset, 
                                                 batch_size=batch_size, 
@@ -99,7 +98,9 @@ def main():
     logger.log("Training a model from random initialization...") 
     model.full_train()
     for epoch in range(classifier_epochs + conv_epochs):  # Change number of epochs as needed
-        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, base_loss, device)
+        train_metrics = train_one_epoch(model, train_loader, optimizer, base_loss, device)
+        train_loss = train_metrics['total_loss']
+        train_acc = train_metrics['accuracy']
         val_loss, val_acc = evaluate(model, val_loader, base_loss, device)
         logger.log(f"Epoch={epoch} Train_Acc={train_acc:.4f} Train_Loss={train_loss:.4f} Val_Acc={val_acc:.4f} Val_Loss={val_loss:.4f}", data=True)
     logger.log("Finish training task.")
@@ -108,7 +109,7 @@ def main():
     test_loss, test_acc = evaluate(model, test_loader, base_loss, device)
     logger.log(f"Finish testing task.")
     logger.log(f"Test_Acc={test_acc:.4f} Ini_Test_Acc={ini_test_acc:.4f} Train_Ratio={train_ratio:.4f}"
-    f"Test_Loss={test_loss:.4f}"
+    f"Test_Loss={test_loss:.4f} "
     f" Lambda={lambda_reg:.4f} Out_dim={model.out_dim}", data=True)
     #
     save_fine_tuned = os.path.join(exp_dir, "trained.pt")
