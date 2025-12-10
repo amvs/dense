@@ -94,6 +94,11 @@ def main():
     save_original = os.path.join(exp_dir, "origin.pt")
     torch.save(model.state_dict(), save_original)
     logger.log(f"Save initialized model to {save_original}")
+    
+    # Evaluate initial test accuracy before training
+    ini_test_loss, ini_test_acc = evaluate(model, test_loader, base_loss, device)
+    logger.log(f"Initial test accuracy (before training): {ini_test_acc:.4f}")
+    
     #
     logger.log("Training a model from random initialization...") 
     model.full_train()
