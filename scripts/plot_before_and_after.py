@@ -11,14 +11,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from dense.helpers import LoggerManager
 
-def plot_kernels(exp_dir):
-    logger = LoggerManager.get_logger(log_dir=exp_dir)
-    origin_path = os.path.join(exp_dir, "origin.pt")
-    trained_path = os.path.join(exp_dir, "trained.pt")
-    orig = torch.load(origin_path, map_location="cpu", weights_only=True)
-    tune = torch.load(trained_path, map_location="cpu", weights_only=True)
-
-
+def extract_kernels_dense(orig):
     def conv_index(k: str):
         # expects "sequential_conv.{j}.weight"
         m = re.search(r"sequential_conv\.(\d+)\.weight$", k)
@@ -30,6 +23,88 @@ def plot_kernels(exp_dir):
         key=conv_index
     )
 
+    return conv_keys, conv_index
+
+def extract_kernels_wph(orig):
+    def conv_index(k: str):
+        # expects "feature_extractor.base_filters.{j}.weight"
+        m = re.search(r"feature_extractor\.base_filters", k)
+        return int(m.group(1)) if m else 10**9
+    
+    conv_keys = sorted(
+        [k for k in orig.keys() if 'base_filters' in k],
+        key=conv_index
+    )
+    return conv_keys, conv_index
+
+def plot_kernels_wph_base_filters(exp_dir, trained_filename='trained.pt', origin_filename='origin.pt', base_filters_key='feature_extractor.wave_conv.base_filters'):
+    origin_path = os.path.join(exp_dir, origin_filename)
+    trained_path = os.path.join(exp_dir, trained_filename)
+    orig = torch.load(origin_path, map_location="cpu", weights_only=True)
+    tune = torch.load(trained_path, map_location="cpu", weights_only=True)
+
+    # Get base_filters from state dict
+    W_o = orig[base_filters_key].detach().cpu().numpy()
+    W_t = tune[base_filters_key].detach().cpu().numpy()
+
+    # Determine dimensions
+    shape = W_o.shape
+    dims = len(shape)
+    assert dims in (5, 6), f"Unexpected base_filters shape: {shape}"
+
+    # Get indices to loop over (all except last two dims)
+    loop_dims = shape[:-2]
+    out_root = os.path.join(exp_dir, "kernel_plots_wph")
+    os.makedirs(out_root, exist_ok=True)
+    filenames = []
+
+    # Iterate over all combinations of indices except M,N
+    for idx in np.ndindex(*loop_dims):
+        o = W_o[idx]  # shape (M, N)
+        t = W_t[idx]
+        d = t - o
+
+        # L1 norm of difference
+        l1 = float(np.sum(np.abs(d)))
+
+        # Plot real/imag before/after/delta
+        o_r, t_r, d_r = o.real, t.real, d.real
+        o_i, t_i, d_i = o.imag, t.imag, d.imag
+        vmax_r = float(np.max(np.abs([o_r, t_r, d_r])))
+        vmax_i = float(np.max(np.abs([o_i, t_i, d_i])))
+
+        fig, axes = plt.subplots(2, 3, figsize=(9, 6))
+        im00 = axes[0,0].imshow(o_r, vmin=-vmax_r, vmax=+vmax_r, interpolation="nearest"); axes[0,0].set_title("Real — Before"); axes[0,0].axis("off")
+        im01 = axes[0,1].imshow(t_r, vmin=-vmax_r, vmax=+vmax_r, interpolation="nearest"); axes[0,1].set_title("Real — After");  axes[0,1].axis("off")
+        im02 = axes[0,2].imshow(d_r, vmin=-vmax_r, vmax=+vmax_r, interpolation="nearest"); axes[0,2].set_title("Real Δ");        axes[0,2].axis("off")
+
+        im10 = axes[1,0].imshow(o_i, vmin=-vmax_i, vmax=+vmax_i, interpolation="nearest"); axes[1,0].set_title("Imag — Before"); axes[1,0].axis("off")
+        im11 = axes[1,1].imshow(t_i, vmin=-vmax_i, vmax=+vmax_i, interpolation="nearest"); axes[1,1].set_title("Imag — After");  axes[1,1].axis("off")
+        im12 = axes[1,2].imshow(d_i, vmin=-vmax_i, vmax=+vmax_i, interpolation="nearest"); axes[1,2].set_title("Imag Δ");        axes[1,2].axis("off")
+
+        for ax, im in zip(axes.flatten(), [im00, im01, im02, im10, im11, im12]):
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+        idx_str = "_".join([f"{i}" for i in idx])
+        fig.suptitle(f"base_filters idx={idx_str} | L1(Δ)={l1:.3e}")
+        fig.tight_layout()
+        fname = f"base_filters_{idx_str}.png"
+        plot_path = os.path.join(out_root, fname)
+        fig.savefig(plot_path, dpi=150)
+        plt.close(fig)
+        filenames.append(fname)
+
+    print("[done] WPH base_filters plots saved under", out_root)
+    return(filenames)
+
+def plot_kernels(exp_dir, trained_filename='trained.pt', origin_filename='origin.pt', model_type='dense',):
+    logger = LoggerManager.get_logger(log_dir=exp_dir)
+    origin_path = os.path.join(exp_dir, origin_filename)
+    trained_path = os.path.join(exp_dir, trained_filename)
+    orig = torch.load(origin_path, map_location="cpu", weights_only=True)
+    tune = torch.load(trained_path, map_location="cpu", weights_only=True)
+    conv_keys, conv_index = extract_kernels_dense(orig)
+    
     out_root = os.path.join(exp_dir, "kernel_plots")
     os.makedirs(out_root, exist_ok=True)
 
