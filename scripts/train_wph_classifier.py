@@ -89,18 +89,17 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
         logger.log("Phase: {} Epoch: {}".format(phase, epoch+1))
         logger.log(f"Epoch={epoch+1} Train_Acc={train_metrics['accuracy']:.4f} Val_Acc={val_acc:.4f} Base_Loss={train_metrics['base_loss']:.4e} Reg_Loss={train_metrics['reg_loss']:.4e} Total_Loss={train_metrics['total_loss']:.4e}", data=True)
 
-        # Track best accuracy
+        # Track best accuracy and save state_dicts
         if val_acc > best_acc:
             best_acc = val_acc
-            best_model_path = os.path.join(exp_dir, f"best_{phase}_model.pt")
-            scripted_best_model = torch.jit.script(model)
-            torch.jit.save(scripted_best_model, best_model_path)
-            logger.log(f"Saved best {phase} model to {best_model_path}")
+            best_model_path = os.path.join(exp_dir, f"best_{phase}_model_state.pt")
+            torch.save(model.state_dict(), best_model_path)
+            logger.log(f"Saved best {phase} model state_dict to {best_model_path}")
 
-        # Save most recent model
-        recent_model_path = os.path.join(exp_dir, f"recent_{phase}_model.pt")
-        scripted_recent_model = torch.jit.script(model)
-        torch.jit.save(scripted_recent_model, recent_model_path)
+        # Save most recent model state_dict
+        recent_model_path = os.path.join(exp_dir, f"recent_{phase}_model_state.pt")
+        torch.save(model.state_dict(), recent_model_path)
+        logger.log(f"Saved recent {phase} model state_dict to {recent_model_path}")
 
         # Log L2 norm distance for feature extractor phase
         if phase == 'feature_extractor' and original_params is not None:
@@ -322,9 +321,8 @@ def main():
     logger.log(f"Classifier Test Accuracy: {classifier_test_acc:.4f}")
 
     save_original = os.path.join(exp_dir, "origin.pt")
-    original_model = copy.deepcopy(model)
-    original_model.save(save_original)
-    logger.log(f"Saved original model to {save_original}")
+    torch.save(model.state_dict(), save_original)
+    logger.log(f"Saved original model state_dict to {save_original}")
 
     # Fine-tune feature extractor
     if not args.skip_finetuning:
@@ -370,6 +368,28 @@ def main():
     # Save updated config
     save_config(exp_dir, config)
 
+    # Plotting and visualization (similar to train.py)
+    from plot_before_and_after import plot_kernels_wph_base_filters
+    from visualize import visualize_main
+    logger.log("Plotting kernels before and after training...")
+    img_file_names = plot_kernels_wph_base_filters(exp_dir, trained_filename='best_feature_extractor_model_state.pt')
+    # Log kernel image if available
+    for f in img_file_names:
+        kernel_img_path = os.path.join(exp_dir, f)
+        if os.path.exists(kernel_img_path):
+            logger.send_file("kernels_before_after", kernel_img_path, "image")
+    logger.log("Visualizing filters and activations...")
+    visualize_main(exp_dir, tuned_filename='best_feature_extractor_model_state.pt', model_type='wph', filters=filters)
+    # Log activation image if available
+    activation_img_path = os.path.join(exp_dir, "activations.png")
+    if os.path.exists(activation_img_path):
+        logger.send_file("activations", activation_img_path, "image")
+    # except Exception as e:
+    #     logger.log(f"Plotting/visualization failed: {e}")
+
+
+  
+    logger.finish()
 
 if __name__ == "__main__":
     main()
