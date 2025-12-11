@@ -3,15 +3,21 @@ from dense.helpers import LoggerManager
 from datetime import datetime
 import os
 import argparse
-from configs import load_config
+from configs import load_config, expand_param
 import pandas as pd
 import matplotlib.pyplot as plt
-
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a model with config")
     parser.add_argument(
         "--config", type=str, required=True,
         help="Path to YAML config file (e.g. configs/mnist_sweep.yaml)"
+    )
+    parser.add_argument(
+        "--wandb_project", type=str, default=None,
+        help="Weights and Biases project name for logging")
+    parser.add_argument(
+        "--random", action="store_true",
+        help="If set, use random filters"
     )
     parser.add_argument('--model-type', type=str, choices=['wph', 'scat'], default='scat',
                         help='Type of model to train (default: scat (dense))')
@@ -39,15 +45,25 @@ timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 sweep_dir = os.path.join("experiments", dataset_name, f"{short_name}sweeps-{timestamp}")
 os.makedirs(sweep_dir, exist_ok=True)
 
-# init logger
-logger = LoggerManager.get_logger(log_dir=sweep_dir)
-logger.info("Start log:")
-
 params = sweep["sweep"]  # dict of lists
 
+random_flag = args.random
+if random_flag:
+    script = "scripts/train_random.py"
+else:
+    script = "scripts/train.py"
+
+
+# init logger
+wandb_project = args.wandb_project
+sweep_name = os.path.splitext(os.path.basename(args.config))[0]
+logger = LoggerManager.get_logger(log_dir=sweep_dir, wandb_project=wandb_project, name=f"{sweep_name}-{timestamp}")
+
+
 # All parameter names
+expanded_values = [expand_param(v) for v in params.values()]
 keys = list(params.keys())
-all_combinations = list(itertools.product(*params.values()))
+all_combinations = list(itertools.product(*expanded_values))
 total_runs = len(all_combinations)
 
 # All combinations of values
@@ -72,7 +88,14 @@ for run_idx, values in enumerate(all_combinations, 1):
     with open(temp_config_path, "w") as f:
         yaml.dump(merged_config, f)
 
-    result = subprocess.run(["python", file, "--config", temp_config_path, "--sweep_dir", sweep_dir])
+    cmd = [
+        "python", file,
+        "--config", temp_config_path,
+        "--sweep_dir", sweep_dir
+    ]
+    if wandb_project is not None:
+        cmd.extend(["--wandb_project", wandb_project])
+    result = subprocess.run(cmd)
     if result.returncode == 0:
         logger.info(f"Finished run.")
     else:
@@ -83,10 +106,10 @@ logger.info("Analyzing results...")
 rows = []
 for ratio_folder in os.listdir(sweep_dir):
     ratio_path = os.path.join(sweep_dir, ratio_folder)
-    if not os.path.isdir(ratio_path) or not ratio_folder.startswith("val_ratio="):
+    if not os.path.isdir(ratio_path) or not ratio_folder.startswith("train_ratio="):
         continue
 
-    val_ratio = float(ratio_folder.split("=")[1])  # extract the number
+    train_ratio = float(ratio_folder.split("=")[1])  # extract the number
     for run_folder in os.listdir(ratio_path):
         run_path = os.path.join(ratio_path, run_folder)
         config_path = os.path.join(run_path, "config.yaml")
@@ -101,24 +124,26 @@ results_path = os.path.join(sweep_dir, "results")
 os.makedirs(results_path, exist_ok=True)
 
 df = pd.DataFrame(rows)
-logger.info("df head:\n%s", df.head())
+logger.info(f"df head:\n {df.head()}")
 df.to_csv(os.path.join(results_path, "all_runs.csv"), index=False)
 logger.info(f"Saved all runs to {os.path.join(results_path, 'all_runs.csv')}")
+logger.send_file("all_runs_data", os.path.join(results_path, "all_runs.csv"), "table")
 
-
-# Step 1: Plot validation accuracy per run per val_ratio, sorted decreasingly
-for val_ratio, group in df.groupby("val_ratio"):
+# Step 1: Plot validation accuracy per run per train_ratio, sorted decreasingly
+for train_ratio, group in df.groupby("train_ratio"):
     # Sort runs by last_val_acc descending
     group_sorted = group.sort_values("last_val_acc", ascending=False)
     
     plt.figure(figsize=(8, 5))
-    plt.title(f"Validation Accuracy per Run (val_ratio={val_ratio})")
-    plt.bar(group_sorted["run"], group_sorted["last_val_acc"], color="skyblue")
+    plt.title(f"Validation Error per Run (train_ratio={train_ratio})")
+    plt.bar(group_sorted["run"], 1.0 - group_sorted["last_val_acc"], color="skyblue")
     plt.xticks(rotation=90)
-    plt.ylabel("Validation Accuracy")
+    plt.ylabel("Validation Error(1-val_acc)")
     plt.tight_layout()
-    plt.savefig(os.path.join(results_path, f"val_acc_val_ratio_{val_ratio}.png"))
+    plot_path = os.path.join(results_path, f"val_err_train_ratio_{train_ratio}.png")
+    plt.savefig(plot_path)
     plt.close()
+    logger.send_file("val_err_plot", plot_path, "image")
 logger.info(f"Saved results summary plot to {results_path}")
 
 topN = 3
@@ -141,18 +166,20 @@ for val_ratio, group in top_runs.groupby("val_ratio"):
     # sort by val_acc descending within this val_ratio
     group_sorted = group.sort_values("last_val_acc", ascending=False).reset_index()
     for rank, row in enumerate(group_sorted.itertuples(), 1):
-        labels.append(f"{val_ratio:.2f}--{rank}")
-        heights.append(row.test_acc)  # or row.test_acc if that's the column name
+        labels.append(f"{train_ratio:.2f}--{rank}")
+        heights.append(1.0 - row.test_acc)  # or row.test_acc if that's the column name
 
 # Plot
 plt.figure(figsize=(max(10, len(labels)*0.6), 6))
 plt.bar(range(len(heights)), heights, color="skyblue")
 plt.xticks(range(len(labels)), labels, rotation=90)
-plt.xlabel("val_ratio | rank")
-plt.ylabel("Test Accuracy")
-plt.title(f"Test Accuracy of Top {topN} Runs per val_ratio")
+plt.xlabel("train_ratio | rank")
+plt.ylabel("Test Error(1 - test_acc)")
+plt.title(f"Test Error of Top {topN} Runs per train_ratio")
 plt.tight_layout()
-plt.savefig(os.path.join(results_path, f"top{topN}_test_acc_all_val_ratios.png"))
+plot_path = os.path.join(results_path, f"top{topN}_test_err_all_train_ratios.png")
+plt.savefig(plot_path)
 plt.close()
-
-logger.info(f"Saved top-{topN} test accuracy plot across all val_ratios to {results_path}")
+logger.send_file("topN_test_err_plot", plot_path, "image")
+logger.info(f"Saved top-{topN} test accuracy plot across all train_ratios to {results_path}")
+logger.finish()

@@ -1,6 +1,20 @@
 import os
 import yaml
 from dense.helpers import LoggerManager
+import numpy as np
+
+def expand_param(val):
+    """
+    If val is a dict with start/stop/step -> create a list via range
+    Else assume it's already a list
+    """
+    if isinstance(val, dict) and {'start', 'stop', 'step'}.issubset(val.keys()):
+        return np.round(np.arange(val['start'], val['stop'], val['step']), 10).tolist()
+    elif isinstance(val, list):
+        return val
+    else:
+        # Single value -> wrap in list
+        return [val]
 
 def load_config(filename: str):
     if not os.path.exists(filename):
@@ -53,4 +67,4 @@ def save_config(folder:str, config):
     except Exception as e:
         raise OSError(f"Failed to save config to {file_path}: {e}")
     logger = LoggerManager.get_logger()
-    logger.info(f"Saving config file {file_path}")
+    logger.log(f"Saving config file {file_path}")

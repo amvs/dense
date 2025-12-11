@@ -2,69 +2,60 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class SharedConv2d(nn.Module):
-    def __init__(self, weight, groups):
+class MyConv2d(nn.Module):
+    '''
+    A custom convolution layer that decouples the trainable parameters
+    and the kernels used in convolution operation.
+
+    The convolution is performed as group convolution: 
+    Given an input signal composed of multiple channels, each channel
+    is convolved separately with a set of kernels. No bias is used and 
+    padding is set to maintain the same size.
+
+    When initialized, the trainable parameters are constructed from the
+    provided filters. Then, the convolution kernels are constructed from the
+    trainable parameters depending on whether all input channels share the
+    same set of kernels or not.
+
+    Attributes:
+    param  -- nn.Parameter, the trainable parameters used to construct the kernels
+    kernel -- torch.Tensor, the convolution kernels constructed from param depending
+                on whether all input channels share the same set of kernels or not.
+
+    Arguments:
+    filters -- tensor of shape [nb_orients, S, S], the set of convolution kernels
+    in_channel -- int, number of input channels
+    share_channels 
+        -- bool, if True, all input channels share the same set of kernels.
+           param will have shape [1, nb_orients, S, S]
+        -- if False, each input channel has its own set of kernels.
+           param will have shape [in_channel * nb_orients, 1, S, S]
+
+    '''
+    def __init__(self, filters, in_channel, share_channels: bool = False):
         super().__init__()
-        self.weight = nn.Parameter(weight, requires_grad=False)
-        self.groups = groups
+        nb_orients, S, _ = filters.shape
+        self.S = S
+        self.in_channel = in_channel
+        self.share_channels = share_channels
+        self.out_channel = nb_orients * in_channel
+        if share_channels:
+            weight = filters.unsqueeze(0)
+            self.param = nn.Parameter(weight) # shape [1, nb_orients, S, S]
+        else:
+            weight = filters.unsqueeze(1).repeat_interleave(in_channel, dim=0)
+            self.param = nn.Parameter(weight) # shape [in_channel * nb_orients, 1, S, S]
 
     def forward(self, x):
+        if self.share_channels:
+            kernel = self.param.expand(self.in_channel, -1, -1, -1).reshape(self.out_channel, 1, self.S, self.S)
+        else:
+            kernel = self.param
+
         return F.conv2d(
             x,
-            self.weight,
+            kernel,
             bias = None,
             padding = 'same',
-            groups = self.groups
+            groups = self.in_channel
         )
-
-def wavelet2d(filters: torch.Tensor, 
-              in_channels: int, 
-              stride: int = 1, 
-              dilation: int = 1, 
-              kernel_dtype = torch.complex64,
-              share_channels: bool = False) -> nn.Conv2d:
-    '''
-    Create nn.Conv2d with
-    - bias = False
-    - weights set to `filters`
-    - padding to same size
-    - group convolution: each image channel is convolved separately 
-        with each oriented filter.
-    
-    Arguments:
-    share_channels -- if True, all in_channels share the same set of filters.
-                if False, each in_channel has its own set of filters in the memory.
-
-    filters must have shape [C_filter, S, S]
-    for band pass filter, C_filter = nb_orients
-
-    Example:
-    image <-- tensor of shape [1, 3, 128, 128], one color image of size 128*128
-    filters <-- tensor of shape [4, 3, 3], 4 oriented wavelet filters of size 3*3
-    conv2d = wavelet2d(filters, image.shape[1])
-    result = conv2d(image) -> shape [1, 12, 128, 128]
-    '''
-    nb_orients, S, _ = filters.shape
-    if share_channels:
-        weight = filters.unsqueeze(0).expand(in_channels, -1, -1, -1).reshape(nb_orients * in_channels, 1, S, S)
-        conv = SharedConv2d(weight, groups=in_channels)
-    else:
-        weight = filters.unsqueeze(1).repeat_interleave(in_channels, dim=0)
-        out_channels = weight.shape[0] # in_channels * nb_orients
-        size = filters.shape[-1]
-        padding = dilation*(size-1)//2 # always same size padding
-        conv = nn.Conv2d(
-            in_channels = in_channels,
-            out_channels = out_channels,
-            kernel_size = size,
-            stride = stride,
-            padding = padding,
-            padding_mode = 'circular',
-            dilation = dilation,
-            groups = in_channels,
-            dtype = kernel_dtype,
-            bias = False
-        )
-        with torch.no_grad():
-            conv.weight.copy_(weight)
-    return conv

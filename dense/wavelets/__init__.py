@@ -2,7 +2,6 @@ from .morlet import morlet
 from .yang import yang
 from .meyer import meyer
 
-
 def filter_bank(wavelet_name, max_scale, nb_orients, *args):
     """
     Returns a list of tensors, one per scale, for the selected wavelet.

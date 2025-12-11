@@ -11,7 +11,9 @@ class HighpassBase(nn.Module):
         N: int,
         mask_angles: int = 4,
         mask_union: bool = True,
-        num_channels: int = 3,):
+        num_channels: int = 1,
+        mask_union_highpass: bool = True,
+    ):
         super().__init__()
         self.J = J
         self.M = M
@@ -70,7 +72,7 @@ class HighpassLayer(HighpassBase):
         self.mask_union_highpass = mask_union_highpass
         hathaar2d = self.build_haar(M=self.M, N=self.N)
         self.register_buffer("hathaar2d", hathaar2d)
-        masks_shift, factr_shift = create_masks_shift(
+        masks_shift, _ = create_masks_shift(
             J=self.J,
             M=self.M,
             N=self.N,
@@ -78,7 +80,6 @@ class HighpassLayer(HighpassBase):
             mask_angles=self.mask_angles,
         )
         self.register_buffer("masks_shift", masks_shift)
-        self.factr_shift = factr_shift
 
         masks = maskns(self.J, self.M, self.N)
         if self.num_channels == 1:
@@ -90,7 +91,7 @@ class HighpassLayer(HighpassBase):
             mask = (self.masks_shift.sum(dim=0) > 0).to(dtype=torch.int32)
         else:
             mask = self.masks_shift[-1, ...]
-        self.nb_moments = mask.sum().item() * self.num_channels**2
+        self.nb_moments = mask.sum().item() * self.num_channels * 3 # three haar filters per channel
 
     def forward(self, hatx_c: torch.Tensor, flatten: bool = True) -> torch.Tensor:
         """
@@ -101,29 +102,28 @@ class HighpassLayer(HighpassBase):
         nb, nc = hatx_c.shape[:2]
         assert nc == self.num_channels
         out = []
-        for hid1 in range(nc):
-            for hid2 in range(nc):
-                hatpsih_c = hatx_c[:, hid1, ...] * self.hathaar2d[hid2, ...].expand(
-                    nb, -1, -1
-                )
-                xpsih_c = fft.ifft2(hatpsih_c)
-                xpsih_c = self.divinitstdH[3 * hid1 + hid2](xpsih_c)
-                xpsih_c = xpsih_c * self.masks[0, 0, ...].squeeze().expand(nb, -1, -1)
-                xpsih_c = torch.complex(xpsih_c.abs(), torch.zeros_like(xpsih_c.real))
-                xpsih_c = fft.fft2(xpsih_c)
-                xpsih_c = fft.ifft2(xpsih_c * torch.conj(xpsih_c))
-                xpsih_c = torch.real(xpsih_c) * self.masks_shift[-1].expand(nb, -1, -1)
+        # TorchScript-compatible: enumerate self.divinitstdH and calculate hid1, hid2
+        for idx, divinitstd in enumerate(self.divinitstdH):
+            hid1 = idx // 3
+            hid2 = idx % 3
+            hatpsih_c = hatx_c[:, hid1, ...] * self.hathaar2d[hid2, ...].expand(nb, -1, -1)
+            xpsih_c = fft.ifft2(hatpsih_c)
+            xpsih_c = divinitstd(xpsih_c)
+            xpsih_c = xpsih_c * self.masks[0, 0, ...].squeeze().expand(nb, -1, -1)
+            xpsih_c = torch.complex(xpsih_c.abs(), torch.zeros_like(xpsih_c.real))
+            xpsih_c = fft.fft2(xpsih_c)
+            xpsih_c = fft.ifft2(xpsih_c * torch.conj(xpsih_c))
+            xpsih_c = torch.real(xpsih_c) * self.masks_shift[-1].expand(nb, -1, -1)
 
-                if self.mask_union_highpass:
-                    mask = (self.masks_shift.sum(dim=0) > 0).to(dtype=torch.int32)
-                else:
-                    mask = self.masks_shift[-1, ...]
-                if flatten:
-                    out.append(self.select_shifts(xpsih_c.real, mask=mask))
-                else:
-
-                    xpsih_c = torch.real(xpsih_c) * mask.expand(nb, -1, -1)
-                    out.append(xpsih_c)
+            if self.mask_union_highpass:
+                mask = (self.masks_shift.sum(dim=0) > 0).to(dtype=torch.int32)
+            else:
+                mask = self.masks_shift[-1, ...]
+            if flatten:
+                out.append(self.select_shifts(xpsih_c.real, mask=mask))
+            else:
+                xpsih_c = torch.real(xpsih_c) * mask.expand(nb, -1, -1)
+                out.append(xpsih_c)
 
         if flatten:
             xpsih_c = torch.cat(out, dim=1)

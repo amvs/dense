@@ -1,5 +1,5 @@
 from .checkpoint import checkpoint
-from .utils import wavelet2d
+from .utils import MyConv2d
 from .logger import LoggerManager
 
-__all__ = ["checkpoint", "wavelet2d", "LoggerManager"]
+__all__ = ["checkpoint", "MyConv2d", "LoggerManager"]

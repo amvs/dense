@@ -51,7 +51,7 @@ def rotation_matrix(angle_degrees, batch_size, device):
     return rot_mat.unsqueeze(0).repeat(batch_size, 1, 1)
 
 
-def periodic_rotate(spatial_filters, angle_degrees):
+def periodic_rotate(spatial_filters: torch.Tensor, angle_degrees: float):
     """
     Rotates spatial filters with periodic boundary conditions.
 

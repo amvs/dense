@@ -6,7 +6,7 @@ import torch
 from dense.helpers import LoggerManager
 import kagglehub
 import os
-
+from training.datasets.base import stratify_split
 def get_kaggle_dataset(dataset: str) -> str:
     """
     Download (or reuse cached) Kaggle dataset via kagglehub.
@@ -84,9 +84,9 @@ def get_kaggle_loaders(dataset_name, resize, deeper_path, batch_size=64, train_r
     test_len = total_len - train_len
 
     # split dataset
-    train_dataset, test_dataset = torch.utils.data.random_split(
-        dataset, [train_len, test_len],
-        generator=torch.Generator().manual_seed(42)
+    train_dataset, test_dataset = stratify_split(
+        dataset, train_size=train_len,
+        seed=42
     )
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn, drop_last=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=True)

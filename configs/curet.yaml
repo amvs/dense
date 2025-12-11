@@ -1,8 +1,9 @@
 # model setting
-wavelet: morlet
+wavelet: meyer
 max_scale: 2
 nb_orients: 4
 efficient: true
+share_channels: true
 
 # training setting
 dataset: smohsensadeghi/curet-dataset
@@ -10,9 +11,11 @@ deeper_path: CUReT/curetgrey/
 resize: 200
 classifier_epochs: 1
 conv_epochs: 1
-batch_size: 200
-lr: 0.001
+batch_size: 32
+lr: 0.05
 lambda_reg: 1.0e-5
-train_ratio: 0.9
-val_ratio: 0.1
+test_ratio: 0.15    # used to split train_set and test_set from full dataset
+train_ratio: 0.85   # used to further split train and val set from train_set
+train_val_ratio: 4  # train:val = 4:1, keep a fixed ratio between train and val set
+
 
