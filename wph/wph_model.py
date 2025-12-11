@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from typing import Optional, Literal
+from typing import Optional, Literal, Union, Tuple
 from torch.fft import fft2, ifft2
 
 from wph.layers.wave_conv_layer import WaveConvLayer
@@ -49,6 +49,8 @@ class WPHModel(nn.Module):
         self.shift_mode = shift_mode
         self.mask_union = mask_union
         self.mask_angles = mask_angles
+        self.wavelets = wavelets
+        self.mask_union_highpass = mask_union_highpass
         A_param = 1 if share_phases else A
         
         assert filters['hatpsi'].shape[-3] == A_param, "filters['hatpsi'] must have A phase shifts (or shape 1 if sharing phase shifts), has shape {}".format(filters['hatpsi'].shape)
@@ -95,15 +97,15 @@ class WPHModel(nn.Module):
             J=J,
             M=M,
             N=N,
-            wavelets=wavelets,
+            wavelets=self.wavelets,
             num_channels=num_channels,
-            mask_angles=mask_angles,
-            mask_union=mask_union,
-            mask_union_highpass=mask_union_highpass,
+            mask_angles=self.mask_angles,
+            mask_union=self.mask_union,
+            mask_union_highpass=self.mask_union_highpass,
         )
         self.nb_moments = self.corr.nb_moments + self.lowpass.nb_moments + self.highpass.nb_moments
         
-    def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         nb = x.shape[0]
         xpsi = self.wave_conv(x)
         xrelu = self.relu_center(xpsi)
@@ -147,20 +149,17 @@ class WPHClassifier(nn.Module):
 
         Args:
             x (torch.Tensor): Input tensor.
-            logger (Logger, optional): Logger for logging tensor states.
             vmap_chunk_size (int, optional): Chunk size for vmap operations when computing correlations.
 
         Returns:
             torch.Tensor: Classification logits.
         """
-        # Extract features using the feature extractor
+        # Always flatten features for classifier
         features = self.feature_extractor(x, flatten=True, vmap_chunk_size=vmap_chunk_size)
 
         # Apply batch normalization if enabled
         if self.batch_norm is not None:
             features = self.batch_norm(features)
-
-        # Pass the features through the classifier
         logits = self.classifier(features)
         return logits
 
@@ -179,3 +178,12 @@ class WPHClassifier(nn.Module):
         if 'classifier' in parts:
             for param in self.classifier.parameters():
                 param.requires_grad = parts['classifier']
+
+    def fine_tuned_params(self):
+        """
+        Get parameters of the feature extractor that are set to be trainable.
+
+        Returns:
+            list: List of trainable parameters from the feature extractor.
+        """
+        return [param for param in self.feature_extractor.parameters() if param.requires_grad]

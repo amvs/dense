@@ -15,6 +15,9 @@ import numpy as np
 import time
 import platform
 from functools import partial
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train WPHClassifier with config")
@@ -30,6 +33,7 @@ def parse_args():
                         help="If set, skip the initial classifier training phase")
     parser.add_argument("--skip-finetuning", action='store_true',
                         help="If set, skip the fine-tuning feature extractor phase")
+    parser.add_argument("--wandb_project", type=str, default="WPHWavelet",)
     return parser.parse_args()
 
 def set_seed(seed):
@@ -70,7 +74,7 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
     """
     best_acc = 0.0  # Initialize best accuracy
     for epoch in range(epochs):
-        train_loss, train_acc = train_one_epoch(
+        train_metrics = train_one_epoch(
             model=model,
             loader=train_loader,
             optimizer=optimizer,
@@ -81,23 +85,25 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
             vmap_chunk_size=configs.get('vmap_chunk_size', None)
         )
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
-        logger.info(f"[{phase}] Epoch {epoch+1}/{epochs}: Train Loss={train_loss:.4f}, Train Acc={train_acc:.4f}, Val Loss={val_loss:.4f}, Val Acc={val_acc:.4f}")
+        logger.log("Phase: {} Epoch: {}".format(phase, epoch+1))
+        logger.log(f"Epoch={epoch+1} Train_Acc={train_metrics['accuracy']:.4f} Val_Acc={val_acc:.4f} Base_Loss={train_metrics['base_loss']:.4e} Reg_Loss={train_metrics['reg_loss']:.4e} Total_Loss={train_metrics['total_loss']:.4e}", data=True)
 
-        # Track best accuracy
+        # Track best accuracy and save state_dicts
         if val_acc > best_acc:
             best_acc = val_acc
-            best_model_path = os.path.join(exp_dir, f"best_{phase}_model.pt")
+            best_model_path = os.path.join(exp_dir, f"best_{phase}_model_state.pt")
             torch.save(model.state_dict(), best_model_path)
-            logger.info(f"Saved best {phase} model to {best_model_path}")
+            logger.log(f"Saved best {phase} model state_dict to {best_model_path}")
 
-        # Save most recent model
-        recent_model_path = os.path.join(exp_dir, f"recent_{phase}_model.pt")
+        # Save most recent model state_dict
+        recent_model_path = os.path.join(exp_dir, f"recent_{phase}_model_state.pt")
         torch.save(model.state_dict(), recent_model_path)
+        logger.log(f"Saved recent {phase} model state_dict to {recent_model_path}")
 
         # Log L2 norm distance for feature extractor phase
         if phase == 'feature_extractor' and original_params is not None:
             l2_norm = sum((p - o).norm().item() for p, o in zip(model.feature_extractor.parameters(), original_params))
-            logger.info(f"[{phase}] Epoch {epoch+1}/{epochs}: L2 Norm Distance={l2_norm:.4f}")
+            logger.log(f"Epoch={epoch+1} L2_Norm_Distance={l2_norm:.4f}", data=True)
         else:
             l2_norm = 0.0
 
@@ -169,9 +175,9 @@ def log_model_parameters(model, logger):
     classifier_params = sum(p.numel() for p in model.classifier.parameters() if p.requires_grad)
     total_params = feature_extractor_params + classifier_params
 
-    logger.info(f"Feature Extractor Trainable Parameters: {feature_extractor_params}")
-    logger.info(f"Classifier Trainable Parameters: {classifier_params}")
-    logger.info(f"Total Trainable Parameters: {total_params}")
+    logger.log(f"Feature_Extractor_Params={feature_extractor_params}", data=True)
+    logger.log(f"Classifier_Params={classifier_params}", data=True)
+    logger.log(f"Total_Params={total_params}", data=True)
 
 def main():
     # Parse arguments
@@ -184,59 +190,54 @@ def main():
     set_seed(seed)
 
     # Create output folder
-    val_ratio = config["val_ratio"]
+    train_ratio = config["train_ratio"]
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     if args.sweep_dir is not None:
         if not os.path.exists(args.sweep_dir):
             raise ValueError(f"Sweep dir {args.sweep_dir} does not exist!")
-        exp_dir = os.path.join(args.sweep_dir, f"{val_ratio=}", f"run-{timestamp}")
+        exp_dir = os.path.join(args.sweep_dir, f"{train_ratio=}", f"run-{timestamp}")
     else:
-        exp_dir = os.path.join("experiments", f"{val_ratio=}", f"run-{timestamp}")
+        exp_dir = os.path.join("experiments", f"{train_ratio=}", f"run-{timestamp}")
     os.makedirs(exp_dir, exist_ok=True)
 
     # Initialize logger
-    logger = LoggerManager.get_logger(log_dir=exp_dir)
+    logger = LoggerManager.get_logger(log_dir=exp_dir,
+                                      wandb_project=args.wandb_project,
+                                      config=config, name=f"{train_ratio=}(run-{timestamp})")
     sys.excepthook = LoggerManager.log_uncaught_exceptions
-    logger.info("===== Start log =====")
-
-    # Log all relevant configuration details
-    logger.info("Configuration:")
-    for key, value in config.items():
-        logger.info(f"{key}: {value}")
+    logger.log("===== Start log =====")
 
     # Log environment details
-    logger.info("Environment Details:")
-    logger.info(f"Python Version: {platform.python_version()}")
-    logger.info(f"PyTorch Version: {torch.__version__}")
-    logger.info(f"CUDA Available: {torch.cuda.is_available()}")
+    logger.log(f"Python_Version={platform.python_version()}")
+    logger.log(f"PyTorch_Version={torch.__version__}")
+    logger.log(f"CUDA_Available={torch.cuda.is_available()}")
     if torch.cuda.is_available():
-        logger.info(f"CUDA Version: {torch.version.cuda}")
-        logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
-
+        logger.log(f"CUDA_Version={torch.version.cuda}")
+        logger.log(f"GPU={torch.cuda.get_device_name(0)}")
     # Set up device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
+    logger.log(f"Using_Device={device}")
 
     # Get data loaders
     dataset = config["dataset"]
     batch_size = config["batch_size"]
-    train_ratio = config["train_ratio"]
-    val_ratio = config["val_ratio"]
+    test_ratio = config["test_ratio"]
+    train_val_ratio = config.get("train_val_ratio", 4)
     # Create a worker_init_fn with seed bound using functools.partial
     worker_init_with_seed = partial(worker_init_fn, seed=seed)
     if dataset == "mnist":
         train_loader, test_loader, nb_class, image_shape = get_loaders(
-            dataset=dataset, batch_size=batch_size, train_ratio=train_ratio, worker_init_fn=worker_init_with_seed
+            dataset=dataset, batch_size=batch_size, train_ratio=1-test_ratio, worker_init_fn=worker_init_with_seed
         )
     else:
         resize = config["resize"]
         deeper_path = config["deeper_path"]
         train_loader, test_loader, nb_class, image_shape = get_loaders(
             dataset=dataset, resize=resize, deeper_path=deeper_path,
-            batch_size=batch_size, train_ratio=train_ratio, worker_init_fn=worker_init_with_seed
+            batch_size=batch_size, train_ratio=1-test_ratio, worker_init_fn=worker_init_with_seed
         )
     train_loader, val_loader = split_train_val(
-        train_loader.dataset, val_ratio=val_ratio, batch_size=batch_size, drop_last=True
+        train_loader.dataset, train_ratio=train_ratio, train_val_ratio=train_val_ratio, batch_size=batch_size, drop_last=True
     )
 
     # Initialize models
@@ -269,8 +270,8 @@ def main():
     ).to(device)
 
     # Log model architecture
-    logger.info("Model Architecture:")
-    logger.info(str(model))
+    logger.log("Model_Architecture:")
+    logger.log(str(model))
 
     # Log model parameters
     log_model_parameters(model, logger)
@@ -289,7 +290,7 @@ def main():
         key: value.resolve_conj() if value.is_conj() else value
         for key, value in filters.items()
     }
-    logger.info("Resolved filters for training:")
+    logger.log("Resolved filters for training:")
     optimizer.add_param_group({"params": resolved_filters.values(), "lr": lr * 0.001})
     filters.update(resolved_filters)
 
@@ -301,7 +302,7 @@ def main():
 
     # Train classifier
     if not args.skip_classifier_training:
-        logger.info("Training classifier...")
+        logger.log("Training classifier...")
         model.set_trainable({"feature_extractor": False, "classifier": True})
         start_time = time.time()
         best_acc_classifier, _ = train_model(model=model, train_loader=train_loader,
@@ -309,36 +310,41 @@ def main():
                                           criterion=criterion, device=device, epochs=classifier_epochs,
                                           logger=logger, phase='classifier', configs=config, exp_dir=exp_dir)
         elapsed_time = time.time() - start_time
-        logger.info(f"Classifier training completed in {elapsed_time:.2f} seconds.")
+        logger.log(f"Classifier training completed in {elapsed_time:.2f} seconds.")
     else:
-        logger.info("Skipping classifier training phase.")
+        logger.log("Skipping classifier training phase.")
         best_acc_classifier = 0.0
 
     # Evaluate classifier phase
     test_loss, classifier_test_acc = evaluate(model, test_loader, criterion, device)
-    logger.info(f"Classifier Test Accuracy: {classifier_test_acc:.4f}")
+    logger.log(f"Classifier Test Accuracy: {classifier_test_acc:.4f}")
+
+    save_original = os.path.join(exp_dir, "origin.pt")
+    torch.save(model.state_dict(), save_original)
+    logger.log(f"Saved original model state_dict to {save_original}")
 
     # Fine-tune feature extractor
     if not args.skip_finetuning:
-        logger.info("Fine-tuning feature extractor...")
+        logger.log("Fine-tuning feature extractor...")
         model.set_trainable({"feature_extractor": True, "classifier": False})
         start_time = time.time()
         best_acc_feature_extractor, l2_norm = train_model(model=model, train_loader=train_loader, val_loader=val_loader, optimizer=optimizer, criterion=criterion, device=device, epochs=conv_epochs, logger=logger, phase='feature_extractor', configs=config, exp_dir=exp_dir, original_params=original_params)
         elapsed_time = time.time() - start_time
-        logger.info(f"Feature extractor fine-tuning completed in {elapsed_time:.2f} seconds.")
+        logger.log(f"Feature extractor fine-tuning completed in {elapsed_time:.2f} seconds.")
     else:
-        logger.info("Skipping fine-tuning phase.")
+        logger.log("Skipping fine-tuning phase.")
         best_acc_feature_extractor = 0.0
 
     # Evaluate feature extractor phase
     test_loss, feature_extractor_test_acc = evaluate(model, test_loader, criterion, device)
-    logger.info(f"Feature Extractor Test Accuracy: {feature_extractor_test_acc:.4f}")
+    logger.log(f"Feature Extractor Test Accuracy={feature_extractor_test_acc:.4f}", data=True)
 
     # Repeat test accuracies at the end of the log
-    logger.info("===== Final Test Accuracies =====")
-    logger.info(f"Classifier Test Accuracy: {classifier_test_acc:.4f}")
-    logger.info(f"Feature Extractor Test Accuracy: {feature_extractor_test_acc:.4f}")
+    logger.log("===== Final Test Accuracies =====")
+    logger.log(f"Classifier_Test_Accuracy={classifier_test_acc:.4f}", data=True)
+    logger.log(f"Feature_Extractor_Test_Accuracy={feature_extractor_test_acc:.4f}", data=True)
 
+    
     # Update config with final accuracies
     config["nb_class"] = nb_class
     config["image_shape"] = list(image_shape)
@@ -352,16 +358,38 @@ def main():
     config["feature_extractor_best_acc"] = best_acc_feature_extractor
     config["feature_extractor_params"] = sum(p.numel() for p in model.feature_extractor.parameters())
     config["classifier_params"] = sum(p.numel() for p in model.classifier.parameters())
-    # Save updated config
-    save_config(exp_dir, config)
-
-    # Save additional information to the config file
     config["device"] = str(device)
     filter_dir = os.path.join(os.path.dirname(__file__), "../filters")
     config["filters"] = {
         "hatpsi": os.path.join(filter_dir, f"morlet_N{image_shape[1]}_J{config['max_scale']}_L{config['nb_orients']}.pt"),
         "hatphi": os.path.join(filter_dir, f"morlet_lp_N{image_shape[1]}_J{config['max_scale']}_L{config['nb_orients']}.pt")
     }
+    # Save updated config
+    save_config(exp_dir, config)
+
+    # Plotting and visualization (similar to train.py)
+    from plot_before_and_after import plot_kernels_wph_base_filters
+    from visualize import visualize_main
+    try:
+        logger.log("Plotting kernels before and after training...")
+        img_file_names = plot_kernels_wph_base_filters(exp_dir, trained_filename='best_feature_extractor_model_state.pt')
+        # Log kernel image if available
+        for f in img_file_names:
+            kernel_img_path = os.path.join(exp_dir, f)
+            if os.path.exists(kernel_img_path):
+                logger.send_file("kernels_before_after", kernel_img_path, "image")
+        logger.log("Visualizing filters and activations...")
+        visualize_main(exp_dir, tuned_filename='best_feature_extractor_model_state.pt', model_type='wph', filters=filters)
+        # Log activation image if available
+        activation_img_path = os.path.join(exp_dir, "activations.png")
+        if os.path.exists(activation_img_path):
+            logger.send_file("activations", activation_img_path, "image")
+    except Exception as e:
+        logger.log(f"Plotting/visualization failed: {e}")
+
+
+  
+    logger.finish()
 
 if __name__ == "__main__":
     main()

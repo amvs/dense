@@ -12,3 +12,5 @@
 **/.DS_Store
 notes.txt
 profile*
+**/wandb
+.env

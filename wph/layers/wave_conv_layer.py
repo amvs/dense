@@ -100,15 +100,20 @@ class WaveConvLayer(nn.Module):
         if self.share_phases:
             expanded_filters = filters.expand(-1, -1, -1, self.A, -1, -1).clone()  # Clone to avoid in-place operations
             for a in range(self.A):
-                i = torch.complex(torch.tensor(0.0), torch.tensor(1.0), device=filters.device)
+                i = torch.tensor(1j, device=filters.device, dtype=filters.dtype)
                 phase_shift = torch.exp(i * a * (2 * math.pi / self.A))
                 expanded_filters[:, :, :, a, :, :] = expanded_filters[:, :, :, a, :, :] * phase_shift
             filters = expanded_filters
 
-        # Cache the computed full filters
+        # Cache the computed full filters only in eager mode
+        if not torch.jit.is_scripting():
+            self._cache_full_filters(filters)
+        return filters
+
+    @torch.jit.ignore
+    def _cache_full_filters(self, filters):
         self.full_filters = filters
         self.filters_cached = True
-        return filters
 
     def forward(self, x):
         """

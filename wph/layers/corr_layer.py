@@ -34,8 +34,8 @@ class CorrLayer(nn.Module):
         self.A = A
         self.A_prime = A_prime
         self.num_channels = num_channels
-        self.delta_j = delta_j
-        self.delta_l = delta_l
+        self.delta_j = delta_j if delta_j is not None else J
+        self.delta_l = delta_l if delta_l is not None else L
         self.shift_mode = shift_mode
         self.mask_union = mask_union
         self.mask_angles = mask_angles
@@ -96,7 +96,7 @@ class CorrLayer(nn.Module):
         A = self.A
         A_prime = self.A_prime
         dj = self.delta_j
-        dl = self.delta_l if self.delta_l is not None else L  # default to all rotations
+        dl = self.delta_l
 
         idx_la1 = []
         idx_la2 = []
@@ -174,7 +174,7 @@ class CorrLayer(nn.Module):
 
     # per-pair function: compute correlation and apply mask
     def _pair_corr(
-        self, hatx_shared, masks_shared, i_idx, j_idx, shift_idx, flatten: bool = True
+        self, hatx_shared: torch.Tensor, masks_shared: torch.Tensor, i_idx: torch.Tensor, j_idx: torch.Tensor, shift_idx: torch.Tensor, flatten: bool
     ):
         idx1 = i_idx.unsqueeze(0).to(torch.long)
         idx2 = j_idx.unsqueeze(0).to(torch.long)
@@ -188,12 +188,54 @@ class CorrLayer(nn.Module):
         # apply mask (zeros outside mask)
         mask = masks_shared.index_select(0, shift_idx_1d).squeeze(0)  # (M, N)
         corr_masked = corr * mask  # (nb, M, N)
-        mask_downsample = masks_shared.sum(dim=0).bool()
+        mask_downsample = masks_shared.sum(dim=0).to(torch.bool)
         if flatten:
             return corr_masked[:, mask_downsample]  # (nb, n_masked)
         else:
             return corr_masked  # (nb, M, N)
 
+    def _compute_correlations_scripting(self, xpsi: torch.Tensor, flatten: bool):
+        """
+        Compute cross-correlations using FFT with vmapped per-pair computation.
+
+        Args:
+            xpsi: real tensor (nb, C, M, N) where C = num_channels * J * L * A
+            flatten: if True, extract only masked values; if False, return full spatial grid
+            vmap_chunk_size: optional int for vmap memory control
+
+        Returns:
+            (nb, n_corrs) with only masked correlation values if flatten=True
+            (nb, n_pairs, M, N) with zeros outside masks if flatten=False
+        """
+        la1 = self.idx_wph["la1"].to(xpsi.device)
+        la2 = self.idx_wph["la2"].to(xpsi.device)
+        shifted = self.idx_wph["shifted"].to(xpsi.device)
+
+        x_c = torch.complex(xpsi, torch.zeros_like(xpsi))
+        hatx = fft.fft2(x_c)  # (nb, C, M, N)
+
+        n_pairs = la1.shape[0]
+
+        # Manual loop instead of torch.vmap for TorchScript compatibility
+        outs = []
+        for p in range(n_pairs):
+            out_p = self._pair_corr(
+                hatx, self.masks_shift, la1[p], la2[p], shifted[p], flatten
+            )
+            outs.append(out_p)
+        out = torch.stack(outs, dim=0)  # (n_pairs, nb, n_union) or (n_pairs, nb, M, N)
+        if flatten:
+            out = out.permute(1, 0, 2)
+            out_list = []
+            for p in range(n_pairs):
+                shift_idx = shifted[p].item()
+                mask_indices = self.mask_to_union[shift_idx]
+                out_list.append(out[:, p, mask_indices])
+            return torch.cat(out_list, dim=1)
+        else:
+            return out.permute(1, 0, 2, 3)
+
+    @torch.jit.ignore
     def compute_correlations(
         self, xpsi, flatten: bool = True, vmap_chunk_size: Optional[int] = None
     ):
@@ -259,6 +301,11 @@ class CorrLayer(nn.Module):
         Returns:
             Masked correlations (flattened or sparse)
         """
-        return self.compute_correlations(
-            xpsi, flatten=flatten, vmap_chunk_size=vmap_chunk_size
-        )
+        if torch.jit.is_scripting():
+            return self._compute_correlations_scripting(
+                xpsi, flatten
+            )
+        else:
+            return self.compute_correlations(
+                xpsi, flatten=flatten, vmap_chunk_size=vmap_chunk_size
+            )

@@ -3,7 +3,6 @@ Adapted from https://github.com/abrochar/wavelet-texture-synthesis/
 """
 
 import torch
-import numpy as np
 import warnings
 
 def maskns(J, M, N):
@@ -23,7 +22,7 @@ def masks_subsample_shift(J,M,N, alpha=4, mask_union=True):
     m = torch.zeros(J,M,N).type(torch.float)
     m[:,0,0] = 1.
     angles = torch.arange(2*alpha).type(torch.float)
-    angles = angles/(2*alpha)*2*np.pi
+    angles = angles/(2*alpha)*2*torch.pi
     for j in range(J):
         for theta in range(len(angles)):
             x = int(torch.round((2**j)*torch.cos(angles[theta])))
@@ -36,12 +35,16 @@ def masks_subsample_shift(J,M,N, alpha=4, mask_union=True):
     return m
 
 
-class SubInitSpatialMean(object):
-    def __init__(self):
-        self.minput = None
+from torch import nn
 
-    def __call__(self, input):
-        if self.minput is None:
+class SubInitSpatialMean(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # Use an empty tensor as initial value
+        self.register_buffer('minput', torch.empty(0), persistent=False)
+
+    def forward(self, input):
+        if self.minput.numel() == 0:
             minput = input.clone().detach()
             minput = torch.mean(minput, -1, True)
             minput = torch.mean(minput, -2, True)
@@ -56,19 +59,22 @@ class SubInitSpatialMean(object):
         return output
 
 
-class DivInitStd(object):
-    def __init__(self,stdcut=1e-9):
-        self.stdinput = None
+
+class DivInitStd(nn.Module):
+    def __init__(self, stdcut=1e-9):
+        super().__init__()
+        # Use an empty tensor as initial value
+        self.register_buffer('stdinput', torch.empty(0), persistent=False)
         self.eps = stdcut
 
-    def __call__(self, input):
-        if self.stdinput is None:
+    def forward(self, input):
+        if self.stdinput.numel() == 0:
             stdinput = input.clone().detach()  # input size:(...,M,N)
             m = torch.mean(torch.mean(stdinput, -1, True), -2, True)
             stdinput = stdinput - m
             d = input.shape[-1]*input.shape[-2]
             stdinput = torch.norm(stdinput, dim=(-2,-1), keepdim=True)
-            self.stdinput = stdinput  / np.sqrt(d)
+            self.stdinput = stdinput / torch.sqrt(torch.tensor(d, dtype=stdinput.dtype, device=stdinput.device))
             self.stdinput = self.stdinput + self.eps
         elif self.stdinput.shape != input.shape:
             warnings.warn('overwriting stdinput')
@@ -77,7 +83,7 @@ class DivInitStd(object):
             stdinput = stdinput - m
             d = input.shape[-1]*input.shape[-2]
             stdinput = torch.norm(stdinput, dim=(-2,-1), keepdim=True)
-            self.stdinput = stdinput  / np.sqrt(d)
+            self.stdinput = stdinput / torch.sqrt(torch.tensor(d, dtype=stdinput.dtype, device=stdinput.device))
             self.stdinput = self.stdinput + self.eps
 
         output = input/self.stdinput
