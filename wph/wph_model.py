@@ -8,6 +8,7 @@ from wph.layers.relu_center_layer import ReluCenterLayer
 from wph.layers.corr_layer import CorrLayer
 from wph.layers.lowpass_layer import LowpassLayer
 from wph.layers.highpass_layer import HighpassLayer
+from wph.layers.linear_dim_red import PCALinearDimReducer, RandomProjLinearDimReducer
 
 
 class WPHModel(nn.Module):
@@ -120,7 +121,7 @@ class WPHModel(nn.Module):
             return xcorr, xlow, xhigh
 
 class WPHClassifier(nn.Module):
-    def __init__(self, feature_extractor: nn.Module, num_classes: int, use_batch_norm: bool = False):
+    def __init__(self, feature_extractor: nn.Module, num_classes: int, use_batch_norm: bool = False, dim_reducer: Literal['pca', 'random_proj', None]=None, dim_reducer_params: Optional[dict]=None):
         """
         A wrapper class for classification using WPHModel as a feature extractor.
 
@@ -139,6 +140,13 @@ class WPHClassifier(nn.Module):
             self.batch_norm = nn.BatchNorm1d(self.feature_extractor.nb_moments)
         else:
             self.batch_norm = None
+
+        if dim_reducer == 'pca':
+            self.dim_reducer = PCALinearDimReducer(in_dim=self.feature_extractor.nb_moments, **(dim_reducer_params or {}))
+        elif dim_reducer == 'random_proj':
+            self.dim_reducer = RandomProjLinearDimReducer(in_dim=self.feature_extractor.nb_moments, **(dim_reducer_params or {}))
+        else:
+            self.dim_reducer = None
 
         # Define the classifier layer
         self.classifier = nn.Linear(self.feature_extractor.nb_moments, num_classes)
@@ -160,6 +168,8 @@ class WPHClassifier(nn.Module):
         # Apply batch normalization if enabled
         if self.batch_norm is not None:
             features = self.batch_norm(features)
+        if self.dim_reducer is not None:
+            features = self.dim_reducer(features)
         logits = self.classifier(features)
         return logits
 
@@ -187,3 +197,13 @@ class WPHClassifier(nn.Module):
             list: List of trainable parameters from the feature extractor.
         """
         return [param for param in self.feature_extractor.parameters() if param.requires_grad]
+    
+    def initialize_dim_reducer(self, data: torch.Tensor):
+        """
+        Fit the dimension reducer using provided data.
+
+        Args:
+            data (torch.Tensor): Data to fit the dimension reducer.
+        """
+        if self.dim_reducer is not None:
+            self.dim_reducer.fit(data)
