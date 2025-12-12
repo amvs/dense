@@ -5,6 +5,46 @@ import math
 import pytest
 from wph.layers.wave_conv_layer import WaveConvLayer, WaveConvLayerDownsample
 
+import matplotlib.pyplot as plt
+from scripts.visualize import colorize
+
+def plot_fft_spatial_comparison(fft_out_j, spatial_out_j, fft_out_j_down, j, save_path=None):
+    """
+    Visualizes and compares FFT, downsampled FFT, and spatial outputs for all rotations (L).
+    Uses colorize for complex tensors, otherwise plots real tensors as-is.
+    """
+    L = fft_out_j.shape[2]
+    fig, axs = plt.subplots(4, L, figsize=(4*L, 12))
+    for l in range(L):
+        fft_img = fft_out_j[0, 0, l, 0].detach().cpu()
+        spatial_img = spatial_out_j[0, 0, l, 0].detach().cpu()
+        down_img = fft_out_j_down[0, 0, l, 0].detach().cpu()
+
+        def _maybe_colorize(img):
+            if torch.is_complex(img):
+                return colorize(img)
+            return img
+
+        fft_img_col = _maybe_colorize(fft_img)
+        spatial_img_col = _maybe_colorize(spatial_img)
+        down_img_col = _maybe_colorize(down_img)
+
+        axs[0, l].imshow(fft_img_col)
+        axs[0, l].set_title(f'FFT Fullsize (scale {j}, L={l})')
+        axs[1, l].imshow(down_img_col)
+        axs[1, l].set_title(f'FFT Downsampled (scale {j}, L={l})')
+        axs[2, l].imshow(spatial_img_col)
+        axs[2, l].set_title(f'Spatial Downsample (scale {j}, L={l})')
+        axs[3, l].imshow(torch.abs(spatial_img - down_img), cmap='hot', vmin=0, vmax=1)
+        axs[3, l].set_title(f'Difference (scale {j}, L={l})')
+        for row in range(4):
+            axs[row, l].axis('off')
+    plt.tight_layout()
+    if save_path is None:
+        save_path = f'wph_compare_scale{j}.png'
+    plt.savefig(save_path)
+    plt.close(fig)
+
 def test_wave_conv_layer_gradients_share_rotations():
     J, L, A, M, N = 3, 4, 2, 8, 8
     layer = WaveConvLayer(J=J, L=L, A=A, M=M, N=N, num_channels=1, share_rotations=True)
@@ -130,10 +170,17 @@ def create_compatible_filters(J, L, A, M, N, kernel_size=7):
     full-sized filters to ensure we are testing the architecture, 
     not the randomness of initialization.
     """
-    # 1. Create one random small spatial kernel (The "Mother Wavelet")
-    # Shape: (1, 1, 1, 1, K, K) -> (nb, nc, J, L, A, H, W) logic
-    # Real-valued for simplicity of generation, casting to complex
-    small_k = torch.randn(1, 1, 1, 1, kernel_size, kernel_size, dtype=torch.complex64)
+    # 1. Create a sine wave kernel and L rotated versions
+    # Shape: (1, 1, 1, L, kernel_size, kernel_size)
+    small_k = torch.zeros(1, 1, L, A, kernel_size, kernel_size, dtype=torch.complex64)
+    x = torch.linspace(-math.pi, math.pi, kernel_size)
+    y = torch.linspace(-math.pi, math.pi, kernel_size)
+    X, Y = torch.meshgrid(x, y, indexing='ij')
+    for l in range(L):
+        theta = l * math.pi / L
+        X_rot = X * math.cos(theta) - Y * math.sin(theta)
+        Y_rot = X * math.sin(theta) + Y * math.cos(theta)
+        small_k[0, 0, l,] = torch.sin(X_rot + Y_rot + l * math.pi / 8) + 0.2j * torch.sin(X_rot + Y_rot + l * math.pi / 8)
     
     # 2. Create the "Pyramid" filters (Constant small size)
     # The downsample model uses the SAME filter repeatedly
@@ -145,56 +192,25 @@ def create_compatible_filters(J, L, A, M, N, kernel_size=7):
     # We simulate this by padding the small kernel with zeros to size M,N 
     # BUT complying with the stride logic.
     
-    fft_filters_list = []
-    
+    filters_tensor = torch.zeros(1, J, L, A, M, N, dtype=torch.complex64)
     for j in range(J):
-        # In the Pyramid approach: We downsample image, keep filter fixed.
-        # In the FFT approach: We keep image fixed, dilate filter.
-        
-        # Mathematical Equivalence:
-        # A small filter on a downsampled grid (factor 2^j) is equivalent
-        # to a dilated filter (factor 2^j) on the full grid.
-        
-        # Construct the dilated filter on the NxN grid
-        dilated_h = M 
-        dilated_w = N 
-        
-        # Create an empty large grid
-        large_filter = torch.zeros((dilated_h, dilated_w), dtype=torch.complex64)
-        
-        # Calculate center offsets
-        center_l = dilated_h // 2
-        center_w = dilated_w // 2
-        k_half = kernel_size // 2
-        
-        # Place the small kernel pixels onto the large grid with dilation
-        dilation = 2**j
-        
-        # Naive dilation embedding (placing pixels 2^j apart)
-        # Note: This checks 'a trous' logic. 
-        # If your downsampling includes antialiasing, exact numerical match 
-        # is impossible without matching the antialiasing filter in the FFT domain.
-        # For this test, we assume NO antialiasing to verify the core convolution logic first.
-        
-        # We only test scale 0 and 1 strictly or accept tolerance due to antialiasing.
-        # Here we embed without dilation for Scale 0 match, which is the most critical sanity check.
-        if j == 0:
-            # Center crop placement
-            start_row = center_l - k_half
-            start_col = center_w - k_half
-            large_filter[start_row:start_row+kernel_size, start_col:start_col+kernel_size] = small_k[0,0,0,0]
-        
-        # Reshape for the FFT Layer: (1, J, L, A, M, N)
-        # We just fill the j-th slot
-        fft_filters_list.append(large_filter)
-
-    # Stack and reshape for the original WaveConvLayer
-    # (1, J, 1, 1, M, N) -> Assuming L=1, A=1 for basic test
-    fft_filters = torch.stack(fft_filters_list).view(1, J, 1, 1, M, N)
-    
-    # Transform to Fourier domain as expected by WaveConvLayer
-    hat_filters = fft.fft2(fft.ifftshift(fft_filters, dim=(-2,-1)))
-    
+        for l in range(L):
+            for a in range(A):
+                large_filter = torch.zeros((M, N), dtype=torch.complex64)
+                center_l = M // 2
+                center_w = N // 2
+                k_half = kernel_size // 2
+                dilation = 2 ** j
+                start_row = center_l - k_half * dilation
+                start_col = center_w - k_half * dilation
+                for ki in range(kernel_size):
+                    for kj in range(kernel_size):
+                        row = start_row + ki * dilation
+                        col = start_col + kj * dilation
+                        if 0 <= row < M and 0 <= col < N:
+                            large_filter[row, col] = small_k[0, 0, l, a, ki, kj]
+                filters_tensor[0, j, l, a] = large_filter
+    hat_filters = fft.fft2(fft.ifftshift(filters_tensor, dim=(-2,-1)))
     return small_k, hat_filters
 
 # --- Tests ---
@@ -281,8 +297,6 @@ def test_scale_zero_equivalence():
     # We must construct the full hat_filters correctly for L orientations
     # For this simple test, let's assume L=1 in the helper or manually replicate
     # shape hat_filters: (1, J, L, A, M, N)
-    hat_filters = hat_filters.repeat(1, 1, L, 1, 1, 1) 
-    
     fft_model = WaveConvLayer(J=J, L=L, A=A, M=N, N=N, filters=hat_filters, 
                               share_rotations=False, share_phases=True)
     
@@ -296,15 +310,13 @@ def test_scale_zero_equivalence():
     # PATCHING THE WEIGHTS
     # small_k is (1, 1, 1, 1, T, T). 
     # spatial_model.base_real expects (L, T, T) since share_rotations=False
-    
-    # We replicate small_k L times so both models do the exact same convolution L times
-    target_k = small_k[0,0,0,0].view(1, T, T).repeat(L, 1, 1) # (L, T, T)
-    
+
     # need to flip filters because torch conv2d computes cross-correlation
     # not mathematical convolution
     # but flipping filters fixes this
-    spatial_model.base_real.data = torch.flip(target_k.real, [1,2])
-    spatial_model.base_imag.data = torch.flip(target_k.imag, [1,2])
+    
+    spatial_model.base_real.data = torch.flip(small_k[0, 0, 0].real, [1, 2])
+    spatial_model.base_imag.data = torch.flip(small_k[0, 0, 0].imag, [1, 2])
     
     # Run Inference
     out_fft = fft_model(x) 
@@ -323,6 +335,67 @@ def test_scale_zero_equivalence():
     # Since we manually forced weights to be identical (no rotation applied inside model for this test config),
     # it should match exactly.
     assert torch.allclose(res_fft, res_spatial, atol=1e-5)
+
+def test_multiscale_rotation_equivalence():
+    """
+    Compares outputs of FFT (fullsize) and Downsample (spatial) models at all scales and rotations.
+    Downsamples FFT output to match spatial output shape for fair comparison.
+    """
+    N = 32
+    J = 3
+    L = 4
+    A = 1
+    T = 7
+
+    x = torch.zeros(1, 1, N, N)
+    x[0, 0, N//2, N//2] = 1.0  # Impulse in center
+
+    # Create matched filters
+    small_k, hat_filters = create_compatible_filters(J, L, A, N, N, kernel_size=T)
+
+    fft_model = WaveConvLayer(J=J, L=L, A=A, M=N, N=N, filters=hat_filters,
+                             share_rotations=False, share_phases=False)
+    spatial_model = WaveConvLayerDownsample(J=J, L=L, A=A, T=T,
+                                            share_rotations=False, share_phases=False)
+
+    # need to flip filters because torch conv2d computes cross-correlation
+    # not mathematical convolution
+    # but flipping filters fixes this
+    
+    spatial_model.base_real.data = torch.flip(small_k[0, 0, 0].real, [-1, -2])
+    spatial_model.base_imag.data = torch.flip(small_k[0, 0, 0].imag, [-1, -2])
+
+    out_fft = fft_model(x)  # (B, C, J, L, A, H, W)
+    out_spatial = spatial_model(x)  # List of (B, C, L, A, H, W)
+    for j in range(J):
+        # Downsample FFT output to match spatial output shape
+        fft_out_j = out_fft[..., j, :, :, :, :]  # (B, C, L, A, H, W)
+        spatial_out_j = out_spatial[j]           # (B, C, L, A, H', W')
+        H, W = spatial_out_j.shape[-2:]
+        # Use average pooling for downsampling
+        fft_out_j_real_down = torch.nn.functional.avg_pool2d(
+            fft_out_j.real.view(-1, H * 2 ** j, W * 2 ** j), kernel_size=2 ** j
+        ).view_as(spatial_out_j)
+        fft_out_j_imag_down = torch.nn.functional.avg_pool2d(
+            fft_out_j.imag.view(-1, H * 2 ** j, W * 2 ** j), kernel_size=2 ** j
+        ).view_as(spatial_out_j)
+        fft_out_j_down = torch.complex(fft_out_j_real_down, fft_out_j_imag_down)
+
+        plot_fft_spatial_comparison(fft_out_j, spatial_out_j, fft_out_j_down, j)
+
+        # Compare norms first
+        norm_fft = torch.linalg.norm(fft_out_j_down)
+        norm_spatial = torch.linalg.norm(spatial_out_j)
+
+        rel_diff = abs(norm_fft - norm_spatial) / max(norm_fft, norm_spatial)
+        # norm discrepancy increases with scale 
+        assert rel_diff < 0.1 * j + 1e-6, f"Norms differ by more than 10%*{j}: {norm_fft} vs {norm_spatial} at scale {j}"
+
+        # Compare normalized outputs
+        fft_out_j_down_norm = fft_out_j_down / (norm_fft + 1e-12)
+        spatial_out_j_norm = spatial_out_j / (norm_spatial + 1e-12)
+        assert torch.allclose(fft_out_j_down_norm, spatial_out_j_norm, atol=1e-4), f"Normalized outputs mismatch at scale {j}"
+
 
 def test_gradient_sharing_rotations():
     """
