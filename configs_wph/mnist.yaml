@@ -7,7 +7,7 @@ num_phases_prime: 1
 random_filters: false
 share_rotations: false
 share_channels: true
-share_phases: true
+share_phases: false
 normalize_relu: true
 delta_j: null
 delta_l: null
@@ -23,10 +23,11 @@ conv_epochs: 10
 batch_size: 200
 lr: 0.0001
 lambda_reg: 1.0e-4
+test_ratio: 0.15
 train_ratio: 0.85
-val_ratio: 0.1
+train_val_ratio: 4
 seed: 42
 
 # Classifier settings
 num_classes: 10
-use_batch_norm: false
+use_batch_norm: true
