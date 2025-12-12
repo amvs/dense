@@ -490,7 +490,7 @@ class CorrLayerDownsample(BaseCorrLayer):
 
         # 2. Iterate groups
         for (j1, j2), global_idxs in self.grouped_indices.items():
-            global_idxs = global_idxs.to(device)
+            global_idxs = global_idxs
             
             # We filter by the rows in global_idxs
             la1_batch = self.idx_wph["la1"][global_idxs, 1].to(device)

@@ -3,13 +3,6 @@ import os
 from datetime import datetime
 import torch
 import torch.nn as nn
-from configs import load_config, save_config, apply_overrides
-from training.datasets import get_loaders, split_train_val
-from training import train_one_epoch, evaluate
-from wph.wph_model import WPHModel, WPHModelDownsample, WPHClassifier
-from dense.helpers import LoggerManager
-from dense.wavelets import filter_bank
-from wph.layers.utils import apply_phase_shifts
 import sys
 import random
 import numpy as np
@@ -17,8 +10,17 @@ import time
 import platform
 from functools import partial
 from dotenv import load_dotenv
-
 load_dotenv()
+
+from configs import load_config, save_config, apply_overrides
+from training.datasets import get_loaders, split_train_val
+from training import train_one_epoch, evaluate
+from wph.wph_model import WPHModel, WPHModelDownsample, WPHClassifier
+from dense.helpers import LoggerManager
+from dense.wavelets import filter_bank
+from wph.layers.utils import apply_phase_shifts
+
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train WPHClassifier with config")
@@ -34,7 +36,6 @@ def parse_args():
                         help="If set, skip the initial classifier training phase")
     parser.add_argument("--skip-finetuning", action='store_true',
                         help="If set, skip the fine-tuning feature extractor phase")
-    parser.add_argument("--downsample", action='store_true', help = "If set, use WPH model that downsamples image and applies small filter repeatedly, instead of model that uses large filters on full-size images.")
     parser.add_argument("--wandb_project", type=str, default="WPHWavelet",)
     return parser.parse_args()
 
@@ -171,7 +172,7 @@ def construct_filters_fullsize(config, image_shape):
     filters["hatpsi"] = apply_phase_shifts(filters["hatpsi"], A=param_A)
     return filters
 
-def construct_filters_downsample(config, image_shape):
+def construct_filters_downsample(config, image_shape, T: int = 3):
     """
     Constructs the filters for the downsampled WPH model based on the configuration.
 
@@ -198,8 +199,8 @@ def construct_filters_downsample(config, image_shape):
         logger.info("Initializing filters randomly.")
         filters = {
             "psi": torch.complex(
-                torch.randn(param_L, image_shape[1], image_shape[2]),
-                torch.randn(param_L, image_shape[1], image_shape[2])
+                torch.randn(param_L, param_A, T, T),
+                torch.randn(param_L, param_A, T, T)
             ),
             "hatphi": torch.complex(
                 torch.randn(1, image_shape[1], image_shape[2]),
@@ -224,7 +225,7 @@ def construct_filters_downsample(config, image_shape):
         # Load precomputed filters
         filters["hatphi"] = torch.load(hatphi_path, weights_only=True)
         filters["psi"] = apply_phase_shifts(filters["psi"], A=param_A).squeeze(0) # squeeze J dim
-        return(filters)
+    return(filters)
 
 
 
@@ -301,7 +302,8 @@ def main():
     )
 
     # Initialize models
-    if args.downsample:
+    downsample = config.get("downsample", False)
+    if downsample:
         filters = construct_filters_downsample(config, image_shape)
         T = filters['psi'].shape[-1]
         logger.info(f"Using downsampled WPH model with filter size T={T}")
@@ -362,13 +364,16 @@ def main():
     # Log model parameters
     log_model_parameters(model, logger)
 
+
     # Training setup
-    lr = float(config["lr"])
+    # Support separate learning rates for classifier and conv (feature extractor) phases
+    lr_classifier = float(config.get("lr_classifier", config.get("lr", 1e-3)))
+    lr_conv = float(config.get("lr_conv", config.get("lr", 1e-3) * 0.01))
     classifier_epochs = config["classifier_epochs"]
     conv_epochs = config["conv_epochs"]
     optimizer = torch.optim.Adam([
-        {"params": model.classifier.parameters(), "lr": lr},
-        {"params": model.feature_extractor.parameters(), "lr": lr * 0.01}
+        {"params": model.classifier.parameters(), "lr": lr_classifier},
+        {"params": model.feature_extractor.parameters(), "lr": lr_conv}
     ])
 
     # Ensure filters remain complex-valued and updates propagate correctly
@@ -377,7 +382,7 @@ def main():
         for key, value in filters.items()
     }
     logger.log("Resolved filters for training:")
-    optimizer.add_param_group({"params": resolved_filters.values(), "lr": lr * 0.001})
+    optimizer.add_param_group({"params": resolved_filters.values(), "lr": float(config.get("lr_filters", lr_conv * 0.1))})
     filters.update(resolved_filters)
 
     criterion = nn.CrossEntropyLoss()
@@ -445,6 +450,7 @@ def main():
     config["feature_extractor_params"] = sum(p.numel() for p in model.feature_extractor.parameters())
     config["classifier_params"] = sum(p.numel() for p in model.classifier.parameters())
     config["device"] = str(device)
+    config["model_type"] = "wph"
     filter_dir = os.path.join(os.path.dirname(__file__), "../filters")
     config["filters"] = {
         "hatpsi": os.path.join(filter_dir, f"morlet_N{image_shape[1]}_J{config['max_scale']}_L{config['nb_orients']}.pt"),

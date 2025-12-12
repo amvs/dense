@@ -59,9 +59,10 @@ class WPHModel(WPHFeatureBase):
         filters: dict[str, torch.Tensor],
         share_scales: bool = False,
         mask_union: bool = False,
-        mask_union_highpass: bool = False
+        mask_union_highpass: bool = False,
+        *args, **kwargs,
     ):
-        super().__init__()
+        super().__init__(*args, **kwargs)
         self.mask_union = mask_union
         self.mask_union_highpass = mask_union_highpass
         self.share_scales = share_scales

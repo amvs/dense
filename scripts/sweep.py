@@ -6,6 +6,10 @@ import argparse
 from configs import load_config, expand_param
 import pandas as pd
 import matplotlib.pyplot as plt
+import dotenv
+
+dotenv.load_dotenv()
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a model with config")
     parser.add_argument(
