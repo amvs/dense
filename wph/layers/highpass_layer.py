@@ -4,31 +4,80 @@ from torch import nn
 from wph.layers.utils import create_masks_shift
 from wph.ops.backend import DivInitStd, maskns
 
-
-class HighpassLayer(nn.Module):
-    def __init__(
-        self,
+class HighpassBase(nn.Module):
+    def __init__(self,
         J: int,
         M: int,
         N: int,
-        wavelets: str = "morlet",
         mask_angles: int = 4,
         mask_union: bool = True,
         num_channels: int = 1,
         mask_union_highpass: bool = True,
     ):
         super().__init__()
-        self.wavelets = wavelets
         self.J = J
         self.M = M
         self.N = N
         self.mask_angles = mask_angles
         self.mask_union = mask_union
         self.num_channels = num_channels
+
+    def build_haar(self, M, N):
+        # add haar filters for high frequencies
+        hathaar2d = torch.zeros(3, M, N, dtype=torch.cfloat)
+        psi = torch.zeros(M, N, 2)
+        psi[1, 1, 1] = 1 / 4
+        psi[1, 2, 1] = -1 / 4
+        psi[2, 1, 1] = 1 / 4
+        psi[2, 2, 1] = -1 / 4
+        hathaar2d[0, :, :] = fft.fft2(torch.view_as_complex(psi))
+
+        psi[1, 1, 1] = 1 / 4
+        psi[1, 2, 1] = 1 / 4
+        psi[2, 1, 1] = -1 / 4
+        psi[2, 2, 1] = -1 / 4
+        hathaar2d[1, :, :] = fft.fft2(torch.view_as_complex(psi))
+
+        psi[1, 1, 1] = 1 / 4
+        psi[1, 2, 1] = -1 / 4
+        psi[2, 1, 1] = -1 / 4
+        psi[2, 2, 1] = 1 / 4
+        hathaar2d[2, :, :] = fft.fft2(torch.view_as_complex(psi))
+
+        self.divinitstdH = [None] * 3 * self.num_channels
+        for hid in range(3 * self.num_channels):
+            self.divinitstdH[hid] = DivInitStd()
+        
+        return(hathaar2d)
+    
+
+    def select_shifts(self, signal, mask=None):
+        if mask is None:
+            mask = self.masks_shift[-1, ...]
+        shape = signal.shape
+        nb = shape[0]
+        signal = signal.reshape(nb, -1)
+        mask_flat = mask.expand(shape).reshape(nb, -1).bool()
+
+        return signal[mask_flat].reshape(nb, -1)
+
+class HighpassLayer(HighpassBase):
+    def __init__(
+        self,
+        mask_union_highpass: bool = True,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
         self.mask_union_highpass = mask_union_highpass
-        self.build_haar(M=self.M, N=self.N)
+        hathaar2d = self.build_haar(M=self.M, N=self.N)
+        self.register_buffer("hathaar2d", hathaar2d)
         masks_shift, _ = create_masks_shift(
-            J=self.J, M=self.M, N=self.N, mask_union=self.mask_union, mask_angles=self.mask_angles
+            J=self.J,
+            M=self.M,
+            N=self.N,
+            mask_union=self.mask_union,
+            mask_angles=self.mask_angles,
         )
         self.register_buffer("masks_shift", masks_shift)
 
@@ -81,38 +130,3 @@ class HighpassLayer(nn.Module):
         else:
             xpsih_c = torch.cat(out, dim=0)
         return xpsih_c
-
-    def build_haar(self, M, N):
-        # add haar filters for high frequencies
-        hathaar2d = torch.zeros(3, M, N, dtype=torch.cfloat)
-        psi = torch.zeros(M, N, 2)
-        psi[1, 1, 1] = 1 / 4
-        psi[1, 2, 1] = -1 / 4
-        psi[2, 1, 1] = 1 / 4
-        psi[2, 2, 1] = -1 / 4
-        hathaar2d[0, :, :] = fft.fft2(torch.view_as_complex(psi))
-
-        psi[1, 1, 1] = 1 / 4
-        psi[1, 2, 1] = 1 / 4
-        psi[2, 1, 1] = -1 / 4
-        psi[2, 2, 1] = -1 / 4
-        hathaar2d[1, :, :] = fft.fft2(torch.view_as_complex(psi))
-
-        psi[1, 1, 1] = 1 / 4
-        psi[1, 2, 1] = -1 / 4
-        psi[2, 1, 1] = -1 / 4
-        psi[2, 2, 1] = 1 / 4
-        hathaar2d[2, :, :] = fft.fft2(torch.view_as_complex(psi))
-        self.register_buffer("hathaar2d", hathaar2d)
-
-        self.divinitstdH = nn.ModuleList([DivInitStd() for _ in range(3 * self.num_channels)])
-
-    def select_shifts(self, signal, mask = None):
-        if mask is None:
-            mask = self.masks_shift[-1, ...]
-        mask = mask.clone().contiguous().to(signal.device)
-        shape = signal.shape
-        nb = shape[0]
-        signal = signal.reshape(nb, -1)
-        mask_flat = mask.expand(shape).reshape(nb, -1).to(dtype=torch.bool)
-        return signal[mask_flat].reshape(nb, -1)

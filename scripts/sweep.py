@@ -6,6 +6,10 @@ import argparse
 from configs import load_config, expand_param
 import pandas as pd
 import matplotlib.pyplot as plt
+import dotenv
+
+dotenv.load_dotenv()
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a model with config")
     parser.add_argument(
@@ -81,7 +85,7 @@ for run_idx, values in enumerate(all_combinations, 1):
     if args.model_type == 'scat':
         file = "scripts/train.py"
     elif args.model_type == 'wph':
-        file = "scripts/train_wph_classifier.py"
+        file = "scripts/train_wph.py"
 
     # Save merged config to a temporary file
     temp_config_path = os.path.join(sweep_dir, f"temp_config_{run_idx}.yaml")
