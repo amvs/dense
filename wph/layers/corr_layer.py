@@ -216,7 +216,7 @@ class CorrLayer(BaseCorrLayer):
         if flatten:
             return corr_masked[:, mask_downsample]  # (nb, n_masked)
         else:
-            return corr_masked, corr  # (nb, M, N)
+            return corr_masked  # (nb, M, N)
 
     def _compute_correlations_scripting(self, xpsi: torch.Tensor, flatten: bool):
         """
@@ -290,55 +290,14 @@ class CorrLayer(BaseCorrLayer):
             out_dims=0,
             chunk_size=vmap_chunk_size,
         )
-        out, corr_unmasked = vmapped(
+        out = vmapped(
             hatx, self.masks_shift, la1, la2, shifted, flatten
         )  # (n_pairs, nb, n_union) if flatten else (n_pairs, nb, M, N)
         if flatten:
             out = out.permute(1, 0, 2)  # (nb, n_pairs, n_union) or (nb, n_pairs, M, N)
         else:
             out = out.permute(1, 0, 2, 3)  # (nb, n_pairs, M, N)
-            fig, axs = plt.subplots(2,2)
-            axs[0,1].imshow(colorize(hatx[0,10].detach().numpy()))
-            axs[0,1].set_title('h2 before downsampling')
-            x10_down_real = nn.functional.adaptive_avg_pool2d(fft.ifft2(hatx[0,10].unsqueeze(0)).real, output_size=(8,8))
-            x10_down_imag = nn.functional.adaptive_avg_pool2d(fft.ifft2(hatx[0,10].unsqueeze(0)).imag, output_size=(8,8))
-            x10_down = torch.complex(x10_down_real, x10_down_imag)
-            hatx10_down = fft.fft2(x10_down.squeeze(0))
-            axs[0,0].imshow(colorize(hatx10_down.detach().numpy()))
-            axs[0,0].set_title('h2 after downsampling')
-            axs[1,0].imshow(colorize(hatx[0,0].detach().numpy()))
-            axs[1,0].set_title('h1')
-            axs[1,1].imshow(colorize(corr_unmasked[16,0].detach().numpy()), vmin=0, vmax=1)
-            axs[1,1].set_title('corr_unmasked')
-            # axs[2,0].imshow(colorize(out[0,16].detach().numpy()), vmin=0, vmax=1)
-            # axs[2,0].set_title('corr masked')
-            # axs[2,1].imshow(colorize(nn.functional.adaptive_avg_pool2d(corr_unmasked[16,0].unsqueeze(0), output_size=(8,8)).squeeze(0).detach().numpy()), vmin=0, vmax=1)
-            # axs[2,1].set_title('corr_unmasked after downsampling')
-            fig.savefig('tst_compare_0_10_fft.png')
-            plt.close()
-
-            fig, axs = plt.subplots(3,2)
-            axs[0,1].imshow(colorize(hatx[0,8].detach().numpy()))
-            axs[0,1].set_title('h2 before downsampling')
-            x8_down_real = nn.functional.adaptive_avg_pool2d(fft.ifft2(hatx[0,8].unsqueeze(0)).real, output_size=(8,8))
-            x8_down_imag = nn.functional.adaptive_avg_pool2d(fft.ifft2(hatx[0,8].unsqueeze(0)).imag, output_size=(8,8))
-            x8_down = torch.complex(x8_down_real, x8_down_imag)
-            hatx8_down = fft.fft2(x8_down.squeeze(0))
-            axs[0,0].imshow(colorize(hatx8_down.detach().numpy()))
-            axs[0,0].set_title('h2 after downsampling')
-            axs[1,0].imshow(colorize(hatx[0,8].detach().numpy()))
-            axs[1,0].set_title('h1')
-            axs[1,1].imshow(colorize(corr_unmasked[28,0].detach().numpy()), vmin=0, vmax=1)
-            axs[1,1].set_title('corr_unmasked')
-            axs[2,0].imshow(colorize(out[0,28].detach().numpy()), vmin=0, vmax=1)
-            axs[2,0].set_title('corr masked')
-            axs[2,1].imshow(colorize(nn.functional.adaptive_avg_pool2d(corr_unmasked[28,0].unsqueeze(0), output_size=(8,8)).squeeze(0).detach().numpy()), vmin=0, vmax=1)
-            axs[2,1].set_title('corr_unmasked after downsampling')
-            fig.savefig('tst_compare_8_8_fft.png')
-            plt.close()
-                            
-
-
+            
         if flatten:
             # extract values for each pair's specific mask from union
             out_list = []
@@ -565,35 +524,7 @@ class CorrLayerDownsample(BaseCorrLayer):
             # out_batch shape:
             # flatten=True:  (Batch_Pairs, nb, Union_Pixels)
             # flatten=False: (Batch_Pairs, nb, M, N)
-            out_batch, corr_unmasked = vmapped(h1, h2, masks_current, la1_batch, la2_batch, shifted_batch, flatten)
-            if j1 == 0 and j2 == 1 and not flatten:
-                fig, axs = plt.subplots(2, 2, figsize=(10, 10))
-                axs[0,0].imshow(colorize(hatx_list[j2][0,2].detach().numpy()))
-                axs[0,0].set_title('h2 before upsampling')
-                axs[0,1].imshow(colorize(h2[0,2].detach().numpy()))
-                axs[0,1].set_title('h2 after upsampling')
-                axs[1,0].imshow(colorize(h1[0,0].detach().numpy()))
-                axs[1,0].set_title('h1')
-                axs[1,1].imshow(colorize(corr_unmasked[2,0].detach().numpy()), vmin=0, vmax=1)
-                axs[1,1].set_title('corr_unmasked')
-                fig.savefig('tst_compare_0_10_spatial.png')
-                plt.close()
-
-            if j1 == 1 and j2 == 1 and not flatten:
-                fig, axs = plt.subplots(3, 2, figsize=(10, 10))
-                axs[0,0].imshow(colorize(hatx_list[j2][0,0].detach().numpy()))
-                axs[0,0].set_title('h2 before upsampling')
-                axs[0,1].imshow(colorize(h2[0,0].detach().numpy()))
-                axs[0,1].set_title('h2 after upsampling')
-                axs[1,0].imshow(colorize(h1[0,0].detach().numpy()))
-                axs[1,0].set_title('h1')
-                axs[1,1].imshow(colorize(corr_unmasked[0,0].detach().numpy()), vmin=0, vmax=1)
-                axs[1,1].set_title('corr_unmasked')
-                axs[2,0].imshow(colorize(out_batch[0,0].detach().numpy()), vmin=0, vmax=1)
-                axs[2,0].set_title('out_batch')
-                fig.savefig('tst_compare_8_8_spatial.png')
-                plt.close()
-
+            out_batch = vmapped(h1, h2, masks_current, la1_batch, la2_batch, shifted_batch, flatten)
             if not flatten:
                 # out_batch contains full spatial maps. 
                 # Just save the whole batch to the correct scale bucket.
@@ -646,7 +577,7 @@ class CorrLayerDownsample(BaseCorrLayer):
         if flatten:
             return corr_masked[:, mask_downsample]  # (nb, n_masked)
         else:
-            return corr_masked, corr  # (nb, M, N)
+            return corr_masked  # (nb, M, N)
 
 
     def spectral_pad(self, x_hat, target_shape):
