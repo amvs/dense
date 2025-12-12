@@ -4,8 +4,6 @@ from torch import nn
 import math
 from typing import Optional
 from wph.layers.utils import periodic_rotate
-from dense.wavelets import filter_bank
-from dense.helpers.utils import wavelet2d
 
 class WaveConvLayer(nn.Module):
     def __init__(
