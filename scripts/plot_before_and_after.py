@@ -37,15 +37,19 @@ def extract_kernels_wph(orig):
     )
     return conv_keys, conv_index
 
-def plot_kernels_wph_base_filters(exp_dir, trained_filename='trained.pt', origin_filename='origin.pt', base_filters_key='feature_extractor.wave_conv.base_filters'):
+def plot_kernels_wph_base_filters(exp_dir, trained_filename='trained.pt', origin_filename='origin.pt', base_filters_key:list[str]=['feature_extractor.wave_conv.base_filters']):
     origin_path = os.path.join(exp_dir, origin_filename)
     trained_path = os.path.join(exp_dir, trained_filename)
     orig = torch.load(origin_path, map_location="cpu", weights_only=True)
     tune = torch.load(trained_path, map_location="cpu", weights_only=True)
 
     # Get base_filters from state dict
-    W_o = orig[base_filters_key].detach().cpu().numpy()
-    W_t = tune[base_filters_key].detach().cpu().numpy()
+    if len(base_filters_key) != 1:
+        W_o = torch.complex(orig[base_filters_key[0]], orig[base_filters_key[1]]).detach().cpu().numpy()
+        W_t = torch.complex(tune[base_filters_key[0]], tune[base_filters_key[1]]).detach().cpu().numpy()
+    else:
+        W_o = orig[base_filters_key[0]].detach().cpu().numpy()
+        W_t = tune[base_filters_key[0]].detach().cpu().numpy()
 
     # Determine dimensions
     shape = W_o.shape

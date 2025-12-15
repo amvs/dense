@@ -106,9 +106,9 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
         # Log L2 norm distance for feature extractor phase
         if phase == 'feature_extractor' and original_params is not None:
             l2_norm = sum((p - o).norm().item() for p, o in zip(model.feature_extractor.parameters(), original_params))
-            logger.log(f"Epoch={epoch+1} L2_Norm_Distance={l2_norm:.4f}", data=True)
         else:
             l2_norm = 0.0
+        logger.log(f"Epoch={epoch+1} L2_Norm_Distance={l2_norm:.4f}", data=True)
 
     return best_acc, l2_norm
 
@@ -384,15 +384,6 @@ def main():
         {"params": model.feature_extractor.parameters(), "lr": lr_conv}
     ])
 
-    # Ensure filters remain complex-valued and updates propagate correctly
-    resolved_filters = {
-        key: value.resolve_conj() if value.is_conj() else value
-        for key, value in filters.items()
-    }
-    logger.log("Resolved filters for training:")
-    optimizer.add_param_group({"params": resolved_filters.values(), "lr": float(config.get("lr_filters", lr_conv * 0.1))})
-    filters.update(resolved_filters)
-
     criterion = nn.CrossEntropyLoss()
 
     # Clone original parameters for regularization during fine-tuning
@@ -472,7 +463,8 @@ def main():
     from visualize import visualize_main
     try:
         logger.log("Plotting kernels before and after training...")
-        img_file_names = plot_kernels_wph_base_filters(exp_dir, trained_filename='best_feature_extractor_model_state.pt')
+        base_filter_names = ['feature_extractor.wave_conv.base_real', 'feature_extractor.wave_conv.base_imag'] if config['downsample'] else ['feature_extractor.wave_conv.base_filters']
+        img_file_names = plot_kernels_wph_base_filters(exp_dir, trained_filename='best_feature_extractor_model_state.pt', base_filters_key=base_filter_names)
         # Log kernel image if available
         for f in img_file_names:
             kernel_img_path = os.path.join(exp_dir, f)
