@@ -185,22 +185,25 @@ def construct_filters_downsample(config, image_shape, T: int = 3):
     logger = LoggerManager.get_logger()
     nb_orients = config["nb_orients"]
     num_phases = config["num_phases"]
+    max_scale = config['max_scale']
     share_rotations = config.get("share_rotations", False)
     share_channels = config.get("share_channels", True)
     share_phases = config.get("share_phases", False)
+    share_scales = config.get("share_scales", True)
     num_channels = image_shape[0]
 
     # Determine parameter shape based on sharing
     param_nc = 1 if share_channels else num_channels
     param_L = 1 if share_rotations else nb_orients
     param_A = 1 if share_phases else num_phases
+    param_J = 1 if share_scales else max_scale
 
     if config.get("random_filters", False):
         logger.info("Initializing filters randomly.")
         filters = {
             "psi": torch.complex(
-                torch.randn(param_L, param_A, T, T),
-                torch.randn(param_L, param_A, T, T)
+                torch.randn(param_J, param_L, param_A, T, T),
+                torch.randn(param_J, param_L, param_A, T, T)
             ),
             "hatphi": torch.complex(
                 torch.randn(1, image_shape[1], image_shape[2]),
@@ -225,6 +228,10 @@ def construct_filters_downsample(config, image_shape, T: int = 3):
         # Load precomputed filters
         filters["hatphi"] = torch.load(hatphi_path, weights_only=True)
         filters["psi"] = apply_phase_shifts(filters["psi"], A=param_A).squeeze(0) # squeeze J dim
+        if share_scales:
+            filters['psi'] = filters['psi'].unsqueeze(0)  # Add J dim
+        else:
+            filters['psi'] = torch.stack([filters['psi'].clone() for _ in range(max_scale)], dim=0)
     return(filters)
 
 
@@ -319,6 +326,7 @@ def main():
             share_rotations=config["share_rotations"],
             share_phases=config["share_phases"],
             share_channels=config["share_channels"],
+            share_scales=config.get("share_scales", True),
             normalize_relu=config["normalize_relu"],
             delta_j=config.get("delta_j"),
             delta_l=config.get("delta_l"),

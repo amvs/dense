@@ -158,6 +158,7 @@ class WaveConvLayerDownsample(nn.Module):
         share_rotations=False,
         share_channels=False,
         share_phases=False,
+        share_scales=False,
         init_filters=None, # optional: pass pre-computed base filters
     ):
         super().__init__()
@@ -169,6 +170,7 @@ class WaveConvLayerDownsample(nn.Module):
         self.share_rotations = share_rotations
         self.share_channels = share_channels
         self.share_phases = share_phases
+        self.share_scales = share_scales
 
         # 1. Setup Base Parameters
         # We store the MINIMUM necessary parameters to allow gradient sharing.
@@ -177,15 +179,18 @@ class WaveConvLayerDownsample(nn.Module):
         # If sharing rotations, we only need 1 orientation. Else L.
         param_L = 1 if share_rotations else L
         param_A = 1 if share_phases else A
+        param_J = 1 if share_scales else J
 
         # For the Pyramid model, we assume filter size T is CONSTANT.
         if init_filters is None:
             # Random complex initialization
-            # Shape: (param_L, 1, T, T) (1 input channel per filter, usually)
-            base_real = torch.randn(param_L, param_A, T, T)
-            base_imag = torch.randn(param_L, param_A, T, T)
+            # Shape: (param_J, param_L, param_A, T, T) (1 input channel per filter, usually)
+            base_real = torch.randn(param_J, param_L, param_A, T, T)
+            base_imag = torch.randn(param_J, param_L, param_A, T, T)
         else:
-            # Ensure init_filters matches (param_L, 1, T, T)
+            # Ensure init_filters matches (param_J, param_L, param_A, T, T)
+            assert init_filters.shape == (param_J, param_L, param_A, T, T), \
+                f"init_filters shape {init_filters.shape} does not match expected shape {(param_J, param_L, param_A, T, T)}"
             base_real = init_filters.real
             base_imag = init_filters.imag
 
@@ -219,10 +224,14 @@ class WaveConvLayerDownsample(nn.Module):
         Constructs the full filter bank (L*A filters) from the base parameters.
         """
         # 1. Combine to complex for rotation/phase math
-        # Shape: (param_L, param_A, T, T)
+        # Shape: (param_J, param_L, param_A, T, T)
+        # if sharing scales, don't need to expand, just use scale=0 filter
+        # multiple times on progressively downsampled inputs
+        # if not sharing scales, we have J filters already
         if self.filters_cached and self.full_filters_real is not None and self.full_filters_imag is not None:
             return torch.complex(self.full_filters_real, self.full_filters_imag)
         
+        param_J = 1 if self.share_scales else self.J
         filters = torch.complex(self.base_real, self.base_imag)
 
         # 2. Handle Rotation Expansion
@@ -233,9 +242,9 @@ class WaveConvLayerDownsample(nn.Module):
             for l in range(self.L):
                 angle = l * (180.0 / self.L)
                 # Ensure your rotation function supports gradients!
-                rot_f = periodic_rotate(filters.flatten(end_dim=-3), angle)
+                rot_f = periodic_rotate(filters.flatten(start_dim=1, end_dim=-3), angle)
                 rotated_list.append(rot_f.view_as(filters))
-            filters = torch.cat(rotated_list, dim=0)  # (L, 1, T, T)
+            filters = torch.cat(rotated_list, dim=1)  # (param_J, L, param_A, T, T)
 
         # 3. Handle Phase Expansion
         if self.share_phases:
@@ -255,9 +264,9 @@ class WaveConvLayerDownsample(nn.Module):
             filters = filters * phase_shift
 
             # Flatten to (L*A, 1, T, T)
-            filters = filters.view(self.L * self.A, 1, self.T, self.T)
+            filters = filters.view(param_J, self.L * self.A, 1, self.T, self.T)
 
-        filters = filters.reshape(self.L * self.A, 1, self.T, self.T)
+        filters = filters.reshape(param_J, self.L * self.A, 1, self.T, self.T)
         self.full_filters_real = filters.real
         self.full_filters_imag = filters.imag
         self.filters_cached = True
@@ -277,24 +286,31 @@ class WaveConvLayerDownsample(nn.Module):
         w_real = filters_c.real
         w_imag = filters_c.imag
 
-        # Expand for Grouped Convolution
-        # We want to apply the bank of (L*A) filters to EACH input channel.
-        # Standard trick: Repeat weights nc times
-        # Shape: (nc * L * A, 1, T, T)
-        w_real = w_real.repeat(nc, 1, 1, 1)
-        w_imag = w_imag.repeat(nc, 1, 1, 1)
-
         pad_amt = self.T // 2
         # F.pad format is (left, right, top, bottom)
         padding = (pad_amt, pad_amt, pad_amt, pad_amt)
 
         for j in range(self.J):
+            # select filter for scale j
+            if self.share_scales:
+                j_real = w_real[0,...]
+                j_imag = w_imag[0,...]
+            else:
+                j_real = w_real[j,...]
+                j_imag = w_imag[j,...]
+
+            # Expand for Grouped Convolution
+            # We want to apply the bank of (L*A) filters to EACH input channel.
+            # Standard trick: Repeat weights nc times
+            # Shape: (nc * L * A, 1, T, T)
+            j_real = j_real.repeat(nc, 1, 1, 1)
+            j_imag = j_imag.repeat(nc, 1, 1, 1)
             # 1. Explicit Circular Padding
             x_pad = nn.functional.pad(current_x, padding, mode="circular")
 
             # 2. Convolution (Grouped)
-            y_real = nn.functional.conv2d(x_pad, w_real, groups=nc)
-            y_imag = nn.functional.conv2d(x_pad, w_imag, groups=nc)
+            y_real = nn.functional.conv2d(x_pad, j_real, groups=nc)
+            y_imag = nn.functional.conv2d(x_pad, j_imag, groups=nc)
             
             # 3. Reshape and Store
             # Output is (B, nc*L*A, H, W) -> (B, nc, L, A, H, W)

@@ -22,6 +22,7 @@ class WPHFeatureBase(nn.Module):
                 share_rotations: bool = False,
                 share_phases: bool = False,
                 share_channels: bool = True,
+                share_scales: bool = False,
                 normalize_relu: bool = True,
                 delta_j: Optional[int] = None,
                 delta_l: Optional[int] = None,
@@ -40,6 +41,7 @@ class WPHFeatureBase(nn.Module):
         self.share_rotations = share_rotations
         self.share_phases = share_phases
         self.share_channels = share_channels
+        self.share_scales = share_scales
         if self.share_channels:
             logger = LoggerManager.get_logger()
             logger.warning("share_channels=True is not implemented yet; defaulting to share_channels=False")
@@ -57,7 +59,6 @@ class WPHModel(WPHFeatureBase):
     def __init__(
         self,
         filters: dict[str, torch.Tensor],
-        share_scales: bool = False,
         mask_union: bool = False,
         mask_union_highpass: bool = False,
         *args, **kwargs,
@@ -65,7 +66,6 @@ class WPHModel(WPHFeatureBase):
         super().__init__(*args, **kwargs)
         self.mask_union = mask_union
         self.mask_union_highpass = mask_union_highpass
-        self.share_scales = share_scales
         if self.share_scales:
             logger = LoggerManager.get_logger()
             logger.warning("share_scales=True is not implemented; defaulting to share_scales=False")
@@ -149,7 +149,8 @@ class WPHModelDownsample(WPHFeatureBase):
         self.T = T
         A_param = 1 if self.share_phases else self.A
         L_param = 1 if self.share_rotations else self.L
-        assert filters['psi'].shape == (L_param, A_param, T, T), "filters['psi'] must have shape (L or 1, A or 1, T, T), has shape {}".format(filters['psi'].shape)
+        J_param = 1 if self.share_scales else self.J
+        assert filters['psi'].shape == (J_param, L_param, A_param, T, T), "filters['psi'] must have shape (L or 1, A or 1, T, T), has shape {}".format(filters['psi'].shape)
         
         self.wave_conv = WaveConvLayerDownsample(J = self.J,
                                                        L = self.L,
@@ -159,6 +160,7 @@ class WPHModelDownsample(WPHFeatureBase):
                                                        share_rotations= self.share_rotations,
                                                        share_phases=self.share_phases,
                                                        share_channels=self.share_channels,
+                                                       share_scales=self.share_scales,
                                                        init_filters = filters['psi'])
 
         self.relu_center = ReluCenterLayerDownsample(J=self.J,
