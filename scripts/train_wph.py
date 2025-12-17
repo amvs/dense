@@ -447,6 +447,7 @@ def main():
     config["feature_extractor_last_acc"] = feature_extractor_test_acc
     config["feature_extractor_best_acc"] = best_acc_feature_extractor
     config["feature_extractor_params"] = sum(p.numel() for p in model.feature_extractor.parameters())
+    config["finetuning_gain"] = feature_extractor_test_acc - classifier_test_acc
     config["classifier_params"] = sum(p.numel() for p in model.classifier.parameters())
     config["device"] = str(device)
     config["model_type"] = "wph"

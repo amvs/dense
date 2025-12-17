@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
+import math
 from wph.ops.backend import SubInitSpatialMean, DivInitStd
 
 
@@ -85,8 +86,8 @@ class ReluCenterLayerDownsample(ReluCenterLayer):
         _masks_list = []
         
         for j in range(self.J):
-            h_j = self.M // (2**j)
-            w_j = self.N // (2**j)
+            h_j = math.ceil(self.M / (2 ** j))
+            w_j = math.ceil(self.N / (2 ** j))
             
             # differnt mask logic for downsampled feature maps
             # On the full grid, border is 2^j // 2.
@@ -120,9 +121,13 @@ class ReluCenterLayerDownsample(ReluCenterLayer):
         """
         out = []
         for idx, feature_map in enumerate(x):
-            # Checks
-            expected_h = self.M // (2 ** idx)
-            assert feature_map.shape[-2] == expected_h
+            # Checks — use ceiling division because downsampled sizes may round up
+            expected_h = math.ceil(self.M / (2 ** idx))
+            expected_w = math.ceil(self.N / (2 ** idx))
+            assert feature_map.shape[-2:] == (expected_h, expected_w), (
+                f"Expected spatial dims {(expected_h, expected_w)} for scale {idx}, "
+                f"but got {feature_map.shape[-2:]}"
+            )
             
             # 1. Norm
             feature_map = self.mean(feature_map)

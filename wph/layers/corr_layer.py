@@ -6,6 +6,7 @@ from typing import Optional, Literal
 from .utils import create_masks_shift
 import matplotlib.pyplot as plt
 from scripts.visualize import colorize
+import math
 
 
 class BaseCorrLayer(nn.Module):
@@ -336,7 +337,8 @@ class CorrLayerDownsample(BaseCorrLayer):
         _factr_temp = [] # <--- FIX: Need to store these too
         
         for j in range(self.J):
-            h_j, w_j = self.M // (2 ** j), self.N // (2 ** j)
+            h_j = math.ceil(self.M / (2 ** j))
+            w_j = math.ceil(self.N / (2 ** j))
             m_shift, factr_shift_j = create_masks_shift(
                 J=1, M=h_j, N=w_j,
                 mask_union=self.uses_mask_union(),
@@ -578,31 +580,3 @@ class CorrLayerDownsample(BaseCorrLayer):
             return corr_masked[:, mask_downsample]  # (nb, n_masked)
         else:
             return corr_masked  # (nb, M, N)
-
-
-    def spectral_pad(self, x_hat, target_shape):
-        """
-        Zero-pads a Fourier representation to a larger size (Spectral Upsampling).
-        x_hat: (..., M, N)
-        target_shape: (M_new, N_new)
-        """
-        M, N = x_hat.shape[-2:]
-        M_new, N_new = target_shape
-        
-        if M == M_new and N == N_new:
-            return x_hat
-        
-        # use fftshift and ifftshift to handle corners correctly    
-        x_shifted = fft.fftshift(x_hat, dim=(-2, -1))
-     
-        pad_top = (M_new // 2) - (M // 2)
-        pad_bottom = (M_new - M) - pad_top  # Remaining diff goes here for odd sizes
-        
-        pad_left = (N_new // 2) - (N // 2)
-        pad_right = (N_new - N) - pad_left  # Remaining diff goes here
-        
-        # 3. Apply Pad
-        # F.pad order is (left, right, top, bottom)
-        x_padded = torch.nn.functional.pad(x_shifted, (pad_left, pad_right, pad_top, pad_bottom))
-        return fft.ifftshift(x_padded, dim=(-2, -1)) * (M_new * N_new) / (M * N) 
-    
