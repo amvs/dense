@@ -2,8 +2,8 @@
 # It uses the base configuration from mnist.yaml and overrides specific parameters for the sweep
 base_config: configs_wph/mnist.yaml
 sweep:
-  downsample: [true, false]
-  lr_conv: [0.01, 0.001, 0.0001, 0.00001]
-  lr: [0.01, 0.001, 0.0001, 0.00001]
+  downsample: [true]
+  train_ratio: [0.05, 0.85]
+  lr_conv: [1.0e-12, 1.0e-11, 1.0e-10,1.0e-9, 1.0e-8,]
 
 
