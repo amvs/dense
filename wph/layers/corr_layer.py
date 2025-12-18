@@ -80,6 +80,31 @@ class BaseCorrLayer(nn.Module):
         """Override in child classes to define correlation computation."""
         raise NotImplementedError("compute_correlations must be implemented in child classes")
 
+    
+    def _pair_corr(self, hatx1_shared, hatx2_shared, masks_shared, i_idx, j_idx, shift_idx, flatten = True):
+        """
+        Shared between two downsample child classes
+        Full size child class has its own version
+        """
+        idx1 = i_idx.unsqueeze(0).to(torch.long)
+        idx2 = j_idx.unsqueeze(0).to(torch.long)
+        shift_idx_1d = shift_idx.unsqueeze(0).to(torch.long)
+
+        hatx1 = hatx1_shared.index_select(1, idx1).squeeze(1)  # (nb, M, N)
+        hatx2 = hatx2_shared.index_select(1, idx2).squeeze(1)
+        prod = hatx1 * torch.conj(hatx2)
+        corr = fft.ifft2(prod).real  # (nb, M, N)
+
+        # apply mask (zeros outside mask)
+        mask = masks_shared.index_select(0, shift_idx_1d).squeeze(0)  # (M, N)
+        corr_masked = corr * mask  # (nb, M, N)
+        mask_downsample = masks_shared.sum(dim=0).bool()
+        if flatten:
+            return corr_masked[:, mask_downsample]  # (nb, n_masked)
+        else:
+            return corr_masked  # (nb, M, N)
+
+
 
 class CorrLayer(BaseCorrLayer):
     def __init__(self, mask_union: bool = False, *args, **kwargs):
@@ -559,24 +584,208 @@ class CorrLayerDownsample(BaseCorrLayer):
             return final_output
         
 
-    def _pair_corr(self, hatx1_shared, hatx2_shared, masks_shared, i_idx, j_idx, shift_idx, flatten = True):
-        """
 
-        """
-        idx1 = i_idx.unsqueeze(0).to(torch.long)
-        idx2 = j_idx.unsqueeze(0).to(torch.long)
-        shift_idx_1d = shift_idx.unsqueeze(0).to(torch.long)
+class CorrLayerDownsamplePairs(BaseCorrLayer):
+    """Pair-specific downsample correlation layer.
 
-        hatx1 = hatx1_shared.index_select(1, idx1).squeeze(1)  # (nb, M, N)
-        hatx2 = hatx2_shared.index_select(1, idx2).squeeze(1)
-        prod = hatx1 * torch.conj(hatx2)
-        corr = fft.ifft2(prod).real  # (nb, M, N)
+    Expects inputs as a nested list: outer index is current scale j, inner index is partner scale j2.
+    Each element should be a tensor of shape (nb, C, L, A, M_j, N_j) or flattened (nb, C*L*A, M_j, N_j).
+    Only pairs required by the layer's indexing need to be present; missing entries can be None.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
-        # apply mask (zeros outside mask)
-        mask = masks_shared.index_select(0, shift_idx_1d).squeeze(0)  # (M, N)
-        corr_masked = corr * mask  # (nb, M, N)
-        mask_downsample = masks_shared.sum(dim=0).bool()
-        if flatten:
-            return corr_masked[:, mask_downsample]  # (nb, n_masked)
+        # Remove parent full-resolution buffers
+        if hasattr(self, 'masks_shift'): del self.masks_shift
+        if hasattr(self, 'factr_shift'): del self.factr_shift
+
+        # Create per-scale masks for downsampled grids
+        _masks_temp = []
+        _factr_temp = []
+        for j in range(self.J):
+            h_j = math.ceil(self.M / (2 ** j))
+            w_j = math.ceil(self.N / (2 ** j))
+            m_shift, factr_shift_j = create_masks_shift(
+                J=1, M=h_j, N=w_j,
+                mask_union=self.uses_mask_union(),
+                mask_angles=self.mask_angles
+            )
+            _masks_temp.append(m_shift)
+            _factr_temp.append(factr_shift_j)
+
+        for i, (m, f) in enumerate(zip(_masks_temp, _factr_temp)):
+            self.register_buffer(f'mask_scale_{i}', m)
+            self.register_buffer(f'factr_scale_{i}', f)
+
+        # Build union index maps per shift type for slicing flattened outputs
+        ref_masks, _ = self.get_mask_for_scale(0)
+        union_mask = ref_masks.sum(dim=0).bool()
+        union_indices = torch.nonzero(union_mask.flatten(), as_tuple=True)[0]
+        self.mask_indices_map = {}
+        grid_to_union_map = torch.full((ref_masks[0].numel(),), -1, dtype=torch.long)
+        grid_to_union_map[union_indices] = torch.arange(len(union_indices))
+        for k in range(ref_masks.shape[0]):
+            k_mask = ref_masks[k].flatten().bool()
+            k_indices = torch.nonzero(k_mask, as_tuple=True)[0]
+            mapped_indices = grid_to_union_map[k_indices]
+            self.mask_indices_map[k] = mapped_indices
+        for k, idxs in self.mask_indices_map.items():
+            self.register_buffer(f'mask_idx_map_{k}', idxs)
+
+        # Recompute indices with correct downsampled masks
+        self.idx_wph = self.compute_idx()
+
+    def get_mask_for_scale(self, j):
+        if hasattr(self, f'mask_scale_{j}'):
+            return getattr(self, f'mask_scale_{j}'), getattr(self, f'factr_scale_{j}')
+        elif hasattr(self, 'masks_shift') and hasattr(self, 'factr_shift'):
+            return self.masks_shift, self.factr_shift
         else:
-            return corr_masked  # (nb, M, N)
+            raise ValueError(f"No masks found for scale {j}")
+
+    def compute_idx(self):
+        # Same indexing logic as CorrLayerDownsample, but stored locally
+        L = self.L
+        J = self.J
+        A = self.A
+        A_prime = self.A_prime
+        dj = self.delta_j
+        dl = self.delta_l
+
+        idx_la1 = []
+        idx_la2 = []
+        shifted = []
+        pair_metadata = []
+        params_la1 = []
+        params_la2 = []
+        nb_moments = 0
+
+        for c1 in range(self.num_channels):
+            for c2 in range(self.num_channels):
+                for j1 in range(J):
+                    for j2 in range(j1, min(j1 + 1 + dj, J)):
+                        for l1 in range(L):
+                            for l2 in range(max(0, l1 + 1 - dl), min(L, l1 + 1 + dl)):
+                                for a1 in range(A):
+                                    for a2 in range(A_prime):
+                                        if self.to_shift_color(c1, c2, j1, j2, l1, l2):
+                                            idx_la1.append((j1, A * L * c1 + A * l1 + a1))
+                                            idx_la2.append((j2, A * L * c2 + A * l2 + a2))
+                                            shifted.append(1)
+                                            _, factr_shift_j2 = self.get_mask_for_scale(j2)
+                                            nb_moments += int(factr_shift_j2[1])
+                                        else:
+                                            idx_la1.append((j1, A * L * c1 + A * l1 + a1))
+                                            idx_la2.append((j2, A * L * c2 + A * l2 + a2))
+                                            shifted.append(0)
+                                            nb_moments += 1
+                                        params_la1.append({"j": j1, "l": l1, "a": a1, "c": c1})
+                                        params_la2.append({"j": j2, "l": l2, "a": a2, "c": c2})
+                                        pair_metadata.append((j1, j2))
+
+        print("number of moments (without low-pass and harr): ", nb_moments)
+
+        idx_wph = dict()
+        idx_wph["la1"] = torch.tensor(idx_la1).long()
+        idx_wph["la2"] = torch.tensor(idx_la2).long()
+        idx_wph["shifted"] = torch.tensor(shifted).long()
+        self.params_la1 = params_la1
+        self.params_la2 = params_la2
+        self.nb_moments = nb_moments
+        grouped_indices = {}
+        for global_idx, (j1, j2) in enumerate(pair_metadata):
+            if (j1, j2) not in grouped_indices:
+                grouped_indices[(j1, j2)] = []
+            grouped_indices[(j1, j2)].append(global_idx)
+        self.grouped_indices = {k: torch.tensor(v).long() for k, v in grouped_indices.items()}
+        return idx_wph
+
+    def compute_correlations(self, xpsi_nested, flatten: bool = True, vmap_chunk_size: Optional[int] = None):
+        # Accept sparse nested inputs; do not assume full JxJ grid
+        nb = None
+        device = None
+
+        # Determine batch size and device from first available tensor
+        if isinstance(xpsi_nested, (list, tuple)):
+            for j, inner in enumerate(xpsi_nested):
+                if inner is None:
+                    continue
+                if isinstance(inner, (list, tuple)):
+                    for x in inner:
+                        if x is not None:
+                            nb = x.shape[0]
+                            device = x.device
+                            break
+                if nb is not None:
+                    break
+
+        # Containers
+        if flatten:
+            results_flat = []
+        else:
+            scale_accumulators = [[] for _ in range(self.J)]
+
+        # Iterate grouped pairs
+        for (j1, j2), global_idxs in self.grouped_indices.items():
+            # Get spatial domain features and upsample before FFT if needed
+            x1 = xpsi_nested[j1][j2]  # features at j1 resolution with W[j1,j2]
+            x2 = xpsi_nested[j2][j1]  # features at j2 resolution with W[j2,j1]
+            
+            if x1 is None or x2 is None:
+                warnings.warn(f"Missing pair features for (j1={j1}, j2={j2}); skipping.")
+                continue
+            
+            # Flatten if needed
+            if x1.ndim == 6:
+                x1 = x1.flatten(start_dim=1, end_dim=-3)
+            if x2.ndim == 6:
+                x2 = x2.flatten(start_dim=1, end_dim=-3)
+            
+            # Upsample x2 to j1's resolution if j2 > j1 (coarser to finer)
+            target_size = x1.shape[-2:]
+            if j2 > j1 and x2.shape[-2:] != target_size:
+                x2 = nn.functional.interpolate(x2, size=target_size, mode="nearest")
+            
+            # Now compute FFTs
+            if not torch.is_complex(x1):
+                x1 = torch.complex(x1, torch.zeros_like(x1))
+            if not torch.is_complex(x2):
+                x2 = torch.complex(x2, torch.zeros_like(x2))
+            
+            h1 = fft.fft2(x1)
+            h2 = fft.fft2(x2)
+
+            la1_batch = self.idx_wph["la1"][global_idxs, 1].to(device)
+            la2_batch = self.idx_wph["la2"][global_idxs, 1].to(device)
+            shifted_batch = self.idx_wph["shifted"][global_idxs].to(device)
+
+            masks_current, _ = self.get_mask_for_scale(j1)
+
+            vmapped = torch.vmap(
+                self._pair_corr,
+                in_dims=(None, None, None, 0, 0, 0, None),
+                out_dims=0,
+                chunk_size=vmap_chunk_size,
+            )
+            out_batch = vmapped(h1, h2, masks_current, la1_batch, la2_batch, shifted_batch, flatten)
+
+            if not flatten:
+                scale_accumulators[j1].append(out_batch.permute(1, 0, 2, 3))
+                continue
+
+            for i, _ in enumerate(global_idxs):
+                shift_type = shifted_batch[i].item()
+                valid_indices = getattr(self, f"mask_idx_map_{shift_type}")
+                results_flat.append(out_batch[i][:, valid_indices])
+
+        if flatten:
+            return torch.cat(results_flat, dim=1) if results_flat else torch.empty(nb, 0, device=device)
+        else:
+            final_output = []
+            for j in range(self.J):
+                batches = scale_accumulators[j]
+                if not batches:
+                    continue
+                combined = torch.cat(batches, dim=1)
+                final_output.append(combined)
+            return final_output

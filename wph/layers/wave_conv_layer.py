@@ -4,6 +4,7 @@ from torch import nn
 import math
 from typing import Optional
 from wph.layers.utils import periodic_rotate
+import warnings
 
 class WaveConvLayer(nn.Module):
     def __init__(
@@ -159,6 +160,7 @@ class WaveConvLayerDownsample(nn.Module):
         share_channels=False,
         share_phases=False,
         share_scales=False,
+        share_scale_pairs=True,
         init_filters=None, # optional: pass pre-computed base filters
     ):
         super().__init__()
@@ -171,6 +173,10 @@ class WaveConvLayerDownsample(nn.Module):
         self.share_channels = share_channels
         self.share_phases = share_phases
         self.share_scales = share_scales
+        # If share_scales=True, it overrides and implies sharing across scale pairs
+        self.share_scale_pairs = True if share_scales else share_scale_pairs
+        if share_scales:
+            warnings.warn('overriding share_scale_pairs to True because share_scales=True')
 
         # 1. Setup Base Parameters
         # We store the MINIMUM necessary parameters to allow gradient sharing.
@@ -179,20 +185,26 @@ class WaveConvLayerDownsample(nn.Module):
         # If sharing rotations, we only need 1 orientation. Else L.
         param_L = 1 if share_rotations else L
         param_A = 1 if share_phases else A
-        param_J = 1 if share_scales else J
+        # if not sharing scale pairs, create a parameter per (j_partner, j_current)
+        # we flatten pairs into a single leading dimension of size J*J
+        param_J = 1 if self.share_scales else (J if self.share_scale_pairs else J * J)
 
         # For the Pyramid model, we assume filter size T is CONSTANT.
         if init_filters is None:
             # Random complex initialization
-            # Shape: (param_J, param_L, param_A, T, T) (1 input channel per filter, usually)
+            # Shape: (param_J, param_L, param_A, T, T)
             base_real = torch.randn(param_J, param_L, param_A, T, T)
             base_imag = torch.randn(param_J, param_L, param_A, T, T)
         else:
             # Ensure init_filters matches (param_J, param_L, param_A, T, T)
-            assert init_filters.shape == (param_J, param_L, param_A, T, T), \
-                f"init_filters shape {init_filters.shape} does not match expected shape {(param_J, param_L, param_A, T, T)}"
-            base_real = init_filters.real
-            base_imag = init_filters.imag
+            try:
+                assert init_filters.shape == (param_J, param_L, param_A, T, T), \
+                    f"init_filters shape {init_filters.shape} does not match expected shape {(param_J, param_L, param_A, T, T)}"
+                base_real = init_filters.real
+                base_imag = init_filters.imag
+            except AssertionError as e:
+                breakpoint()
+                print(e)
 
         self.base_real = nn.Parameter(base_real)
         self.base_imag = nn.Parameter(base_imag)
@@ -231,35 +243,35 @@ class WaveConvLayerDownsample(nn.Module):
         if self.filters_cached and self.full_filters_real is not None and self.full_filters_imag is not None:
             return torch.complex(self.full_filters_real, self.full_filters_imag)
         
-        param_J = 1 if self.share_scales else self.J
+        param_J = 1 if self.share_scales else (self.J if self.share_scale_pairs else self.J * self.J)
         filters = torch.complex(self.base_real, self.base_imag)
 
         # 2. Handle Rotation Expansion
         if self.share_rotations:
             # We have 1 filter, we need L
-            # filters: (1, 1, T, T) -> (L, 1, T, T)
+            # filters: (param_J, 1, param_A, T, T) -> (param_J, L, param_A, T, T)
             rotated_list = []
             for l in range(self.L):
                 angle = l * (180.0 / self.L)
-                # Ensure your rotation function supports gradients!
-                rot_f = periodic_rotate(filters.flatten(start_dim=1, end_dim=-3), angle)
+                # Flatten all channel dims to get (param_J*1*param_A, T, T) for periodic_rotate
+                rot_f = periodic_rotate(filters.flatten(end_dim=-3), angle)
                 rotated_list.append(rot_f.view_as(filters))
             filters = torch.cat(rotated_list, dim=1)  # (param_J, L, param_A, T, T)
 
         # 3. Handle Phase Expansion
         if self.share_phases:
             # We have L filters, we need L*A
-            # filters: (L, 1, T, T) -> (L, A, T, T)
+            # filters: (param_J, L, 1, T, T) -> (param_J, L, A, T, T)
             # Ensure flexibility: only unsqueeze if the A dimension does not already exist
-            if filters.dim() < 4:
-                filters = filters.unsqueeze(1)
-            filters = filters.repeat(1, self.A, 1, 1)
+            if filters.dim() < 5:
+                filters = filters.unsqueeze(2)
+            filters = filters.repeat(1, 1, self.A, 1, 1)
 
             # Create phase shifts
             phases = torch.arange(self.A, device=filters.device) * (
                 2 * math.pi / self.A
             )
-            phase_shift = torch.exp(1j * phases).view(1, self.A, 1, 1)
+            phase_shift = torch.exp(1j * phases).view(1,1, self.A, 1, 1)
 
             filters = filters * phase_shift
 
@@ -272,9 +284,11 @@ class WaveConvLayerDownsample(nn.Module):
         self.filters_cached = True
         return filters
 
-    def forward(self, x):
+    def forward(self, x, scale_pairs: Optional[list[tuple[int,int]]] = None):
         """
         x: (B, C, H, W)
+        scale_pairs: optional list of (j1, j2) indicating which pairs to compute.
+                      If None and share_scale_pairs=False, computes all JxJ.
         """
         nb, nc, m, n = x.shape
         results = []
@@ -290,36 +304,68 @@ class WaveConvLayerDownsample(nn.Module):
         # F.pad format is (left, right, top, bottom)
         padding = (pad_amt, pad_amt, pad_amt, pad_amt)
 
+        # Prepare per-scale pair lists if requested
+        pairs_by_j = None
+        if not self.share_scale_pairs:
+            pairs_by_j = {j: list(range(self.J)) for j in range(self.J)}
+            if scale_pairs is not None:
+                # reduce to only requested pairs (need both directions for cross-corr)
+                pairs_by_j = {j: [] for j in range(self.J)}
+                for (j1, j2) in scale_pairs:
+                    if 0 <= j1 < self.J and 0 <= j2 < self.J:
+                        pairs_by_j[j1].append(j2)
+                        pairs_by_j[j2].append(j1)
+                # ensure deterministic order
+                for j in range(self.J):
+                    pairs_by_j[j] = sorted(set(pairs_by_j[j]))
+
         for j in range(self.J):
             # select filter for scale j
             if self.share_scales:
-                j_real = w_real[0,...]
-                j_imag = w_imag[0,...]
-            else:
-                j_real = w_real[j,...]
-                j_imag = w_imag[j,...]
+                j_real = w_real[0, ...]
+                j_imag = w_imag[0, ...]
 
             # Expand for Grouped Convolution
             # We want to apply the bank of (L*A) filters to EACH input channel.
             # Standard trick: Repeat weights nc times
             # Shape: (nc * L * A, 1, T, T)
-            j_real = j_real.repeat(nc, 1, 1, 1)
-            j_imag = j_imag.repeat(nc, 1, 1, 1)
             # 1. Explicit Circular Padding
             x_pad = nn.functional.pad(current_x, padding, mode="circular")
+            if self.share_scale_pairs:
+                # original behavior: one set of filters per scale
+                j_real = w_real[j, ...] if not self.share_scales else j_real
+                j_imag = w_imag[j, ...] if not self.share_scales else j_imag
 
-            # 2. Convolution (Grouped)
-            y_real = nn.functional.conv2d(x_pad, j_real, groups=nc)
-            y_imag = nn.functional.conv2d(x_pad, j_imag, groups=nc)
-            
-            # 3. Reshape and Store
-            # Output is (B, nc*L*A, H, W) -> (B, nc, L, A, H, W)
-            m_j, n_j = y_real.shape[-2:]
-            out = torch.complex(
-                y_real.view(nb, nc, self.L, self.A, m_j, n_j),
-                y_imag.view(nb, nc, self.L, self.A, m_j, n_j),
-            )
-            results.append(out)
+                j_real = j_real.repeat(nc, 1, 1, 1)
+                j_imag = j_imag.repeat(nc, 1, 1, 1)
+                y_real = nn.functional.conv2d(x_pad, j_real, groups=nc)
+                y_imag = nn.functional.conv2d(x_pad, j_imag, groups=nc)
+                m_j, n_j = y_real.shape[-2:]
+                out = torch.complex(
+                    y_real.view(nb, nc, self.L, self.A, m_j, n_j),
+                    y_imag.view(nb, nc, self.L, self.A, m_j, n_j),
+                )
+                results.append(out)
+            else:
+                # pair-specific behavior: compute outputs for each requested partner j2
+                inner_list = [None] * self.J
+                partners = pairs_by_j[j]
+                for j2 in partners:
+                    # map (j_partner=j2, j_current=j) to flattened pair index
+                    pair_index = 0 if self.share_scales else (j2 * self.J + j)
+                    p_real = w_real[pair_index, ...]
+                    p_imag = w_imag[pair_index, ...]
+                    p_real = p_real.repeat(nc, 1, 1, 1)
+                    p_imag = p_imag.repeat(nc, 1, 1, 1)
+                    y_real = nn.functional.conv2d(x_pad, p_real, groups=nc)
+                    y_imag = nn.functional.conv2d(x_pad, p_imag, groups=nc)
+                    m_j, n_j = y_real.shape[-2:]
+                    out = torch.complex(
+                        y_real.view(nb, nc, self.L, self.A, m_j, n_j),
+                        y_imag.view(nb, nc, self.L, self.A, m_j, n_j),
+                    )
+                    inner_list[j2] = out
+                results.append(inner_list)
 
             # 4. Downsample Logic (Pyramid)
             if j < self.J - 1:

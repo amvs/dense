@@ -146,3 +146,67 @@ class ReluCenterLayerDownsample(ReluCenterLayer):
             
             out.append(feature_map)
         return out
+
+class ReluCenterLayerDownsamplePairs(ReluCenterLayer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        # Build per-scale masks as in ReluCenterLayerDownsample
+        _masks_list = []
+        for j in range(self.J):
+            h_j = math.ceil(self.M / (2 ** j))
+            w_j = math.ceil(self.N / (2 ** j))
+            m_stack = self.maskns(J=1, M=h_j, N=w_j)
+            mask = m_stack[0]
+            mask = mask.view(1, 1, 1, 1, h_j, w_j)
+            _masks_list.append(mask)
+        for i, m in enumerate(_masks_list):
+            self.register_buffer(f'mask_{i}', m)
+
+    def get_mask(self, idx):
+        return getattr(self, f'mask_{idx}')
+
+    def forward(self, x_nested):
+        """
+        x_nested: nested list/dict of tensors indexed by [j1][j2] (or {j2: ...}).
+        Each tensor is (B, C, L, A, H_j1, W_j1) or complex.
+        Returns a nested structure with the same sparsity pattern after ReLU+mask.
+        """
+        out_nested = []
+        for j1, row in enumerate(x_nested):
+            if row is None:
+                out_nested.append(None)
+                continue
+            if isinstance(row, dict):
+                inner_out = {}
+                iterable = row.items()
+            else:
+                inner_out = [None] * len(row)
+                iterable = enumerate(row)
+
+            for j2, feature_map in iterable:
+                if feature_map is None:
+                    if isinstance(inner_out, dict):
+                        inner_out[j2] = None
+                    else:
+                        inner_out[j2] = None
+                    continue
+                expected_h = math.ceil(self.M / (2 ** j1))
+                expected_w = math.ceil(self.N / (2 ** j1))
+                assert feature_map.shape[-2:] == (expected_h, expected_w), (
+                    f"Expected spatial dims {(expected_h, expected_w)} for scale {j1}, got {feature_map.shape[-2:]}"
+                )
+                fm = self.mean(feature_map)
+                if self.normalize:
+                    fm = self.std(fm)
+                if torch.is_complex(fm):
+                    fm = fm.real
+                fm = F.relu(fm)
+                mask = self.get_mask(j1)
+                fm = fm * mask
+                if isinstance(inner_out, dict):
+                    inner_out[j2] = fm
+                else:
+                    inner_out[j2] = fm
+            out_nested.append(inner_out)
+        return out_nested
