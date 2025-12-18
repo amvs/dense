@@ -24,7 +24,6 @@ def train_one_epoch(model, loader, optimizer, base_loss, device, original_params
     total_base_loss = 0
     total_reg_loss = 0
     correct = 0
-
     for inputs, targets in loader:
         inputs, targets = inputs.to(device), targets.to(device)
 

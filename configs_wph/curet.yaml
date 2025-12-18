@@ -15,6 +15,8 @@ shift_mode: samec
 mask_union: false
 mask_angles: 4
 mask_union_highpass: true
+share_scales: false
+downsample: true
 
 # training setting
 dataset: smohsensadeghi/curet-dataset
@@ -24,9 +26,10 @@ classifier_epochs: 15
 conv_epochs: 10
 batch_size: 32
 lr: 0.00001
-lambda_reg: 1.0e-5
+lambda_reg: 1.0e-2
 train_ratio: 0.9
-val_ratio: 0.1
+test_ratio: 0.15
+train_val_ratio: 4
 seed: 42
 vmap_chunk_size: 50
 

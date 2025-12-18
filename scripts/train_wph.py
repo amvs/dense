@@ -3,12 +3,6 @@ import os
 from datetime import datetime
 import torch
 import torch.nn as nn
-from configs import load_config, save_config, apply_overrides
-from training.datasets import get_loaders, split_train_val
-from training import train_one_epoch, evaluate
-from wph.wph_model import WPHModel, WPHClassifier
-from dense.helpers import LoggerManager
-from wph.layers.utils import apply_phase_shifts
 import sys
 import random
 import numpy as np
@@ -16,8 +10,17 @@ import time
 import platform
 from functools import partial
 from dotenv import load_dotenv
-
 load_dotenv()
+
+from configs import load_config, save_config, apply_overrides
+from training.datasets import get_loaders, split_train_val
+from training import train_one_epoch, evaluate
+from wph.wph_model import WPHModel, WPHModelDownsample, WPHClassifier
+from dense.helpers import LoggerManager
+from dense.wavelets import filter_bank
+from wph.layers.utils import apply_phase_shifts
+
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train WPHClassifier with config")
@@ -103,24 +106,24 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
         # Log L2 norm distance for feature extractor phase
         if phase == 'feature_extractor' and original_params is not None:
             l2_norm = sum((p - o).norm().item() for p, o in zip(model.feature_extractor.parameters(), original_params))
-            logger.log(f"Epoch={epoch+1} L2_Norm_Distance={l2_norm:.4f}", data=True)
         else:
             l2_norm = 0.0
+        logger.log(f"Epoch={epoch+1} L2_Norm_Distance={l2_norm:.4f}", data=True)
 
     return best_acc, l2_norm
 
-def construct_filters(config, image_shape, logger):
+def construct_filters_fullsize(config, image_shape):
     """
     Constructs the filters based on the configuration.
 
     Args:
         config (dict): Configuration dictionary.
         image_shape (tuple): Shape of the input image.
-        logger (Logger): Logger for logging progress.
 
     Returns:
         dict: Dictionary containing the constructed filters.
     """
+    logger = LoggerManager.get_logger()
     max_scale = config["max_scale"]
     nb_orients = config["nb_orients"]
     num_phases = config["num_phases"]
@@ -168,6 +171,71 @@ def construct_filters(config, image_shape, logger):
         filters['hatpsi'] = filters['hatpsi'][:,0,...].unsqueeze(1)
     filters["hatpsi"] = apply_phase_shifts(filters["hatpsi"], A=param_A)
     return filters
+
+def construct_filters_downsample(config, image_shape, T: int = 3):
+    """
+    Constructs the filters for the downsampled WPH model based on the configuration.
+
+    Args:
+        config (dict): Configuration dictionary.
+        image_shape (tuple): Shape of the input image.
+    Returns:
+        dict: Dictionary containing the constructed filters.
+    """
+    logger = LoggerManager.get_logger()
+    nb_orients = config["nb_orients"]
+    num_phases = config["num_phases"]
+    max_scale = config['max_scale']
+    share_rotations = config.get("share_rotations", False)
+    share_channels = config.get("share_channels", True)
+    share_phases = config.get("share_phases", False)
+    share_scales = config.get("share_scales", True)
+    num_channels = image_shape[0]
+
+    # Determine parameter shape based on sharing
+    param_nc = 1 if share_channels else num_channels
+    param_L = 1 if share_rotations else nb_orients
+    param_A = 1 if share_phases else num_phases
+    param_J = 1 if share_scales else max_scale
+
+    if config.get("random_filters", False):
+        logger.info("Initializing filters randomly.")
+        filters = {
+            "psi": torch.complex(
+                torch.randn(param_J, param_L, param_A, T, T),
+                torch.randn(param_J, param_L, param_A, T, T)
+            ),
+            "hatphi": torch.complex(
+                torch.randn(1, image_shape[1], image_shape[2]),
+                torch.randn(1, image_shape[1], image_shape[2])
+            )
+        }
+    else:
+        logger.info(f"Generating filters with base wavelet: {config.get("wavelet", "morlet")}")
+        filters = {}
+        filters['psi'] = filter_bank(
+            wavelet_name=config.get("wavelet", "morlet"),
+            max_scale=1,
+            nb_orients=nb_orients,
+        )[0]  # Get first scale
+        filter_dir = os.path.join(os.path.dirname(__file__), "../filters")
+        hatphi_path = os.path.join(filter_dir, f"morlet_lp_N{image_shape[1]}_J1_L{nb_orients}.pt")
+        if not os.path.exists(hatphi_path):
+            logger.info("Filters not found. Generating filters...")
+            build_filters_script = os.path.join(os.path.dirname(__file__), "../wph/ops/build-filters.py")
+            os.system(f"python {build_filters_script} --N {image_shape[1]} --J {1} --L {nb_orients} --wavelets morlet")
+            
+        # Load precomputed filters
+        filters["hatphi"] = torch.load(hatphi_path, weights_only=True)
+        filters["psi"] = apply_phase_shifts(filters["psi"], A=param_A).squeeze(0) # squeeze J dim
+        if share_scales:
+            filters['psi'] = filters['psi'].unsqueeze(0)  # Add J dim
+        else:
+            filters['psi'] = torch.stack([filters['psi'].clone() for _ in range(max_scale)], dim=0)
+    return(filters)
+
+
+
 
 def log_model_parameters(model, logger):
     """Logs the number of trainable parameters in the feature extractor and classifier."""
@@ -241,28 +309,56 @@ def main():
     )
 
     # Initialize models
-    filters = construct_filters(config, image_shape, logger)
-    feature_extractor = WPHModel(
-        J=config["max_scale"],
-        L=config["nb_orients"],
-        A=config["num_phases"],
-        A_prime=config.get("num_phases_prime", 1),
-        M=image_shape[1],
-        N=image_shape[2],
-        filters=filters,
-        num_channels=image_shape[0],
-        share_rotations=config["share_rotations"],
-        share_phases=config["share_phases"],
-        share_channels=config["share_channels"],
-        normalize_relu=config["normalize_relu"],
-        delta_j=config.get("delta_j"),
-        delta_l=config.get("delta_l"),
-        shift_mode=config["shift_mode"],
-        mask_union=config["mask_union"],
-        mask_angles=config["mask_angles"],
-        mask_union_highpass=config["mask_union_highpass"],
-        wavelets=config["wavelet"]
-    ).to(device)
+    downsample = config.get("downsample", False)
+    if downsample:
+        filters = construct_filters_downsample(config, image_shape)
+        T = filters['psi'].shape[-1]
+        logger.info(f"Using downsampled WPH model with filter size T={T}")
+        feature_extractor = WPHModelDownsample(J=config["max_scale"],
+            L=config["nb_orients"],
+            A=config["num_phases"],
+            A_prime=config.get("num_phases_prime", 1),
+            M=image_shape[1],
+            N=image_shape[2],
+            T = T,
+            filters=filters,
+            num_channels=image_shape[0],
+            share_rotations=config["share_rotations"],
+            share_phases=config["share_phases"],
+            share_channels=config["share_channels"],
+            share_scales=config.get("share_scales", True),
+            normalize_relu=config["normalize_relu"],
+            delta_j=config.get("delta_j"),
+            delta_l=config.get("delta_l"),
+            shift_mode=config["shift_mode"],
+            mask_angles=config["mask_angles"],
+            mask_union_highpass=config["mask_union_highpass"],
+        ).to(device)
+    else:
+        if config.get("wavelet", "morlet") != "morlet":
+            logger.warning("Full-size WPHModel only supports 'morlet' wavelet. Overriding to 'morlet'.")
+            config["wavelet"] = "morlet"
+        filters = construct_filters_fullsize(config, image_shape)
+        feature_extractor = WPHModel(
+            J=config["max_scale"],
+            L=config["nb_orients"],
+            A=config["num_phases"],
+            A_prime=config.get("num_phases_prime", 1),
+            M=image_shape[1],
+            N=image_shape[2],
+            filters=filters,
+            num_channels=image_shape[0],
+            share_rotations=config["share_rotations"],
+            share_phases=config["share_phases"],
+            share_channels=config["share_channels"],
+            normalize_relu=config["normalize_relu"],
+            delta_j=config.get("delta_j"),
+            delta_l=config.get("delta_l"),
+            shift_mode=config["shift_mode"],
+            mask_union=config["mask_union"],
+            mask_angles=config["mask_angles"],
+            mask_union_highpass=config["mask_union_highpass"],
+        ).to(device)
     model = WPHClassifier(
         feature_extractor, 
         num_classes=config["num_classes"],
@@ -276,23 +372,17 @@ def main():
     # Log model parameters
     log_model_parameters(model, logger)
 
+
     # Training setup
-    lr = float(config["lr"])
+    # Support separate learning rates for classifier and conv (feature extractor) phases
+    lr_classifier = float(config.get("lr_classifier", config.get("lr", 1e-3)))
+    lr_conv = float(config.get("lr_conv", config.get("lr", 1e-3) * 0.01))
     classifier_epochs = config["classifier_epochs"]
     conv_epochs = config["conv_epochs"]
     optimizer = torch.optim.Adam([
-        {"params": model.classifier.parameters(), "lr": lr},
-        {"params": model.feature_extractor.parameters(), "lr": lr * 0.01}
+        {"params": model.classifier.parameters(), "lr": lr_classifier},
+        {"params": model.feature_extractor.parameters(), "lr": lr_conv}
     ])
-
-    # Ensure filters remain complex-valued and updates propagate correctly
-    resolved_filters = {
-        key: value.resolve_conj() if value.is_conj() else value
-        for key, value in filters.items()
-    }
-    logger.log("Resolved filters for training:")
-    optimizer.add_param_group({"params": resolved_filters.values(), "lr": lr * 0.001})
-    filters.update(resolved_filters)
 
     criterion = nn.CrossEntropyLoss()
 
@@ -357,8 +447,10 @@ def main():
     config["feature_extractor_last_acc"] = feature_extractor_test_acc
     config["feature_extractor_best_acc"] = best_acc_feature_extractor
     config["feature_extractor_params"] = sum(p.numel() for p in model.feature_extractor.parameters())
+    config["finetuning_gain"] = feature_extractor_test_acc - classifier_test_acc
     config["classifier_params"] = sum(p.numel() for p in model.classifier.parameters())
     config["device"] = str(device)
+    config["model_type"] = "wph"
     filter_dir = os.path.join(os.path.dirname(__file__), "../filters")
     config["filters"] = {
         "hatpsi": os.path.join(filter_dir, f"morlet_N{image_shape[1]}_J{config['max_scale']}_L{config['nb_orients']}.pt"),
@@ -372,7 +464,8 @@ def main():
     from visualize import visualize_main
     try:
         logger.log("Plotting kernels before and after training...")
-        img_file_names = plot_kernels_wph_base_filters(exp_dir, trained_filename='best_feature_extractor_model_state.pt')
+        base_filter_names = ['feature_extractor.wave_conv.base_real', 'feature_extractor.wave_conv.base_imag'] if config['downsample'] else ['feature_extractor.wave_conv.base_filters']
+        img_file_names = plot_kernels_wph_base_filters(exp_dir, trained_filename='best_feature_extractor_model_state.pt', base_filters_key=base_filter_names)
         # Log kernel image if available
         for f in img_file_names:
             kernel_img_path = os.path.join(exp_dir, f)
