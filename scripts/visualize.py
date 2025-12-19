@@ -69,18 +69,18 @@ def calc_wph_activations(model, x, flatten=False, vmap_chunk_size=None):
         acts['corr'] = xcorr.detach().cpu()
     elif type(fe) is WPHModelDownsample and fe.share_scale_pairs:
         # xpsi, xrelu, xcorr are lists of lists of tensors; flatten into a single list
-        acts['wave_conv'] = [t.detach().cpu() for inner in xpsi for t in inner]
+        acts['wave_conv'] = [t.detach().cpu() for t in xpsi]
         xrelu = fe.relu_center(xpsi)
-        acts['relu_center'] = [t.detach().cpu() for inner in xrelu for t in inner]
+        acts['relu_center'] = [t.detach().cpu() for t in xrelu]
         xcorr = fe.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
-        acts['corr'] = [t.detach().cpu() for inner in xcorr for t in inner]
+        acts['corr'] = [t.detach().cpu() for t in xcorr]
     elif type(fe) is WPHModelDownsample and not fe.share_scale_pairs:
         # xpsi, xrelu, xcorr are lists of lists of tensors; flatten into a single list
         acts['wave_conv'] = [t.detach().cpu() for inner in xpsi for t in inner]
         xrelu = fe.relu_center(xpsi)
         acts['relu_center'] = [t.detach().cpu() for inner in xrelu for t in inner]
         xcorr = fe.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
-        acts['corr'] = [t.detach().cpu() for inner in xcorr for t in inner]
+        acts['corr'] = [t.detach().cpu() for t in xcorr]
     
     # FFT
     hatx_c = torch.fft.fft2(x)
