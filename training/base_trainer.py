@@ -1,6 +1,6 @@
 import torch
 
-def regularization_loss(current_params, original_params, lambda_reg=1e-3):
+def regularization_loss(current_params, original_params, lambda_reg=1e-3, normalize_reg=True):
     '''
     It is caller's responsibility to ensure that
     `current_params` and `original_params` have the same length and
@@ -12,13 +12,15 @@ def regularization_loss(current_params, original_params, lambda_reg=1e-3):
     for p, p0 in zip(current_params, original_params):
         reg_loss += (torch.abs(p - p0)**2).sum()
         num_params += p.numel()
-
-    assert num_params > 0, "Model has no parameters for regularization; can't normalize by num params."
-    reg_loss = lambda_reg * (reg_loss / num_params)
+    if normalize_reg:
+        assert num_params > 0, "Model has no parameters for regularization; can't normalize by num params."
+        reg_loss = lambda_reg * (reg_loss / num_params)
+    else:
+        reg_loss = lambda_reg * reg_loss
 
     return reg_loss
 
-def train_one_epoch(model, loader, optimizer, base_loss, device, original_params=None, lambda_reg=None, vmap_chunk_size=None):
+def train_one_epoch(model, loader, optimizer, base_loss, device, original_params=None, lambda_reg=None, vmap_chunk_size=None, normalize_reg=True):
     model.train()
     total_loss = 0
     total_base_loss = 0
@@ -40,7 +42,7 @@ def train_one_epoch(model, loader, optimizer, base_loss, device, original_params
                 raise NotImplementedError(
                     "Model passed to train_one_epoch must implement a callable fine_tuned_params() method for regularization."
                 )
-            reg_loss_value = regularization_loss(model.fine_tuned_params(), original_params, lambda_reg)
+            reg_loss_value = regularization_loss(model.fine_tuned_params(), original_params, lambda_reg, normalize_reg=normalize_reg)
             loss += reg_loss_value
         loss.backward()
         optimizer.step()

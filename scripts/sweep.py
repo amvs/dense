@@ -135,12 +135,12 @@ logger.send_file("all_runs_data", os.path.join(results_path, "all_runs.csv"), "t
 
 # Step 1: Plot validation accuracy per run per train_ratio, sorted decreasingly
 for train_ratio, group in df.groupby("train_ratio"):
-    # Sort runs by last_val_acc descending
-    group_sorted = group.sort_values("last_val_acc", ascending=False)
+    # Sort runs by metric descending
+    group_sorted = group.sort_values(args.metric, ascending=False)
     
     plt.figure(figsize=(8, 5))
     plt.title(f"Validation Error per Run (train_ratio={train_ratio})")
-    plt.bar(group_sorted["run"], 1.0 - group_sorted["last_val_acc"], color="skyblue")
+    plt.bar(group_sorted["run"], 1.0 - group_sorted[args.metric], color="skyblue")
     plt.xticks(rotation=90)
     plt.ylabel("Validation Error(1-val_acc)")
     plt.tight_layout()
@@ -168,7 +168,7 @@ labels = []
 heights = []
 for val_ratio, group in top_runs.groupby("val_ratio"):
     # sort by val_acc descending within this val_ratio
-    group_sorted = group.sort_values("last_val_acc", ascending=False).reset_index()
+    group_sorted = group.sort_values(args.metric, ascending=False).reset_index()
     for rank, row in enumerate(group_sorted.itertuples(), 1):
         labels.append(f"{train_ratio:.2f}--{rank}")
         heights.append(1.0 - row.test_acc)  # or row.test_acc if that's the column name

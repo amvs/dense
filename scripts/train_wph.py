@@ -85,7 +85,8 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
             device=device,
             lambda_reg=configs['lambda_reg'] if phase == 'feature_extractor' else 0.0,
             original_params=original_params if phase == 'feature_extractor' else None,
-            vmap_chunk_size=configs.get('vmap_chunk_size', None)
+            vmap_chunk_size=configs.get('vmap_chunk_size', None),
+            normalize_reg=configs.get('normalize_reg', True)
         )
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
         logger.log("Phase: {} Epoch: {}".format(phase, epoch+1))
@@ -172,7 +173,7 @@ def construct_filters_fullsize(config, image_shape):
     filters["hatpsi"] = apply_phase_shifts(filters["hatpsi"], A=param_A)
     return filters
 
-def construct_filters_downsample(config, image_shape, T: int = 3):
+def construct_filters_downsample(config, image_shape):
     """
     Constructs the filters for the downsampled WPH model based on the configuration.
 
@@ -202,6 +203,7 @@ def construct_filters_downsample(config, image_shape, T: int = 3):
 
     if config.get("random_filters", False):
         logger.info("Initializing filters randomly.")
+        T = config.get("wavelet_params", {}).get("S", 3)
         filters = {
             "psi": torch.complex(
                 torch.randn(param_J, param_L, param_A, T, T),
@@ -219,6 +221,7 @@ def construct_filters_downsample(config, image_shape, T: int = 3):
             wavelet_name=config.get("wavelet", "morlet"),
             max_scale=1,
             nb_orients=nb_orients,
+            **config.get("wavelet_params", {})
         )[0]  # Get first scale
         filter_dir = os.path.join(os.path.dirname(__file__), "../filters")
         hatphi_path = os.path.join(filter_dir, f"morlet_lp_N{image_shape[1]}_J1_L{nb_orients}.pt")
