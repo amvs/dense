@@ -67,12 +67,20 @@ def calc_wph_activations(model, x, flatten=False, vmap_chunk_size=None):
         acts['relu_center'] = xrelu.detach().cpu()
         xcorr = fe.corr(xrelu.view(nb, fe.num_channels * fe.J * fe.L * fe.A, fe.M, fe.N), flatten=flatten, vmap_chunk_size=vmap_chunk_size)
         acts['corr'] = xcorr.detach().cpu()
-    elif type(fe) is WPHModelDownsample:
-        acts['wave_conv'] = [x.detach().cpu() for x in xpsi]
+    elif type(fe) is WPHModelDownsample and fe.share_scale_pairs:
+        # xpsi, xrelu, xcorr are lists of lists of tensors; flatten into a single list
+        acts['wave_conv'] = [t.detach().cpu() for inner in xpsi for t in inner]
         xrelu = fe.relu_center(xpsi)
-        acts['relu_center'] = [x.detach().cpu() for x in xrelu]
+        acts['relu_center'] = [t.detach().cpu() for inner in xrelu for t in inner]
         xcorr = fe.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
-        acts['corr'] = [x.detach().cpu() for x in xcorr]
+        acts['corr'] = [t.detach().cpu() for inner in xcorr for t in inner]
+    elif type(fe) is WPHModelDownsample and not fe.share_scale_pairs:
+        # xpsi, xrelu, xcorr are lists of lists of tensors; flatten into a single list
+        acts['wave_conv'] = [t.detach().cpu() for inner in xpsi for t in inner]
+        xrelu = fe.relu_center(xpsi)
+        acts['relu_center'] = [t.detach().cpu() for inner in xrelu for t in inner]
+        xcorr = fe.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
+        acts['corr'] = [t.detach().cpu() for inner in xcorr for t in inner]
     
     # FFT
     hatx_c = torch.fft.fft2(x)
@@ -362,6 +370,7 @@ def visualize_main(exp_dir, model_type="dense", origin_filename="origin.pt", tun
                 share_phases=config["share_phases"],
                 share_channels=config["share_channels"],
                 share_scales=config['share_scales'],
+                share_scale_pairs=config.get('share_scale_pairs', True),
                 normalize_relu=config["normalize_relu"],
                 delta_j=config.get("delta_j"),
                 delta_l=config.get("delta_l"),
@@ -382,6 +391,7 @@ def visualize_main(exp_dir, model_type="dense", origin_filename="origin.pt", tun
                 share_phases=config["share_phases"],
                 share_channels=config["share_channels"],
                 share_scales=config['share_scales'],
+                share_scale_pairs=config.get('share_scale_pairs', True),
                 normalize_relu=config["normalize_relu"],
                 delta_j=config.get("delta_j"),
                 delta_l=config.get("delta_l"),
