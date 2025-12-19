@@ -440,8 +440,8 @@ def visualize_main(exp_dir, model_type="dense", origin_filename="origin.pt", tun
                                     use_batch_norm=config["use_batch_norm"]).to(device)
         tuned_model.feature_extractor.wave_conv.get_full_filters()
         logger.log("Loading model weights...")
-        origin_state = torch.load(origin_path, map_location=device)
-        tuned_state = torch.load(tuned_path, map_location=device)
+        origin_state = torch.load(origin_path, map_location=device, weights_only=True)
+        tuned_state = torch.load(tuned_path, map_location=device, weights_only=True)
         origin_model.load_state_dict(origin_state)
         tuned_model.load_state_dict(tuned_state)
     else:

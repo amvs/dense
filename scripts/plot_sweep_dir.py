@@ -78,6 +78,7 @@ def pair_boxplots(
     group_cols=["lambda_reg", "random_filters", "train_ratio"],
     sweep_dir=None,
     fname_suffix="",
+    logy=False
 ):
     """
     Creates paired boxplots comparing two conditions:
@@ -95,6 +96,9 @@ def pair_boxplots(
     axs[1].set_title(f"Boxplot of {metric} ({pair_col}=False)")
     axs[1].set_ylabel(metric)
     axs[1].tick_params(axis="x", rotation=90)
+    if logy:
+        axs[0].set_yscale("log")
+        axs[1].set_yscale("log")
     plt.suptitle("")
     plt.tight_layout()
     results_path = os.path.join(sweep_dir, "results")
@@ -102,6 +106,28 @@ def pair_boxplots(
     plt.savefig(plot_path)
     plt.close()
     print(f"Paired boxplot saved to {plot_path}")
+
+def side_by_side_boxplots(
+    df,
+    metrics,
+    group_cols=["lambda_reg", "train_ratio", "random_filters"],
+    facet_col='train_ratio',
+    sweep_dir=None,
+    fname_suffix="",
+):
+    assert facet_col in group_cols, "facet_col must be in group_cols"
+    df_melted = df.melt(id_vars=group_cols, value_vars=metrics, var_name="metric", value_name="value")
+    set_cols = set(group_cols)
+    set_cols.remove(facet_col)
+    df_melted['params'] = df_melted[list(set_cols)].astype(str).agg(','.join, axis=1)
+    g = sns.catplot(data = df_melted, x = 'params',y = 'value', hue='metric', col ='train_ratio', kind = 'strip', col_wrap=3, sharey=False, sharex=False)
+    for ax in g.axes.flat:
+        ax.tick_params(axis='x', rotation=90)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(sweep_dir, 'results', f'side_by_side_boxplots_{fname_suffix}.png'))
+    plt.close()
+    print(f"Side by side boxplots saved to {os.path.join(sweep_dir, 'results', f'side_by_side_boxplots_{fname_suffix}.png')}")
 
 
 def slope_plot(df, group_cols, metric, sweep_dir, fname_suffix=""):
@@ -140,15 +166,15 @@ if __name__ == "__main__":
     df = df_from_logs(args)
     df_lr1 = df.loc[df.lambda_reg == 1].reset_index(drop=True)
     df_lr1_downsample = df_lr1.loc[df_lr1.downsample].reset_index(drop=True)
-    df_lr1_fullsize = df_lr1.loc[~df_lr1.downsample].reset_index(drop=True)
+    # df_lr1_fullsize = df_lr1.loc[~df_lr1.downsample].reset_index(drop=True)
     plot_all_boxplots(df_lr1_downsample, group_cols = ['max_scale', 'train_ratio', 'random_filters'],
                       sweep_dir=args.sweep_dir,
                       fname_suffix = 'lreg=1_downsample')
-    plot_all_boxplots(df_lr1_fullsize, group_cols = ['max_scale', 'train_ratio', 'random_filters'],
-                      sweep_dir=args.sweep_dir,
-                      fname_suffix = 'lreg=1_fullsize')
+    # plot_all_boxplots(df_lr1_fullsize, group_cols = ['max_scale', 'train_ratio', 'random_filters'],
+    #                   sweep_dir=args.sweep_dir,
+    #                   fname_suffix = 'lreg=1_fullsize')
     df_downsample = df.loc[df.downsample].reset_index(drop=True)
-    df_fullsize = df.loc[~df.downsample].reset_index(drop=True)
+    # df_fullsize = df.loc[~df.downsample].reset_index(drop=True)
     pair_boxplots(
         df_downsample,
         metric="feature_extractor_test_acc",
@@ -158,13 +184,22 @@ if __name__ == "__main__":
         fname_suffix="downsample",
     )
     pair_boxplots(
-        df_fullsize,
-        metric="feature_extractor_test_acc",
+        df_downsample,
+        metric="finetuning_gain",
         pair_col="random_filters",
         group_cols=["lambda_reg", "random_filters", "train_ratio"],
         sweep_dir=args.sweep_dir,
-        fname_suffix="fullsize",
+        fname_suffix="downsample",
+        logy=True
     )
+    # pair_boxplots(
+    #     df_fullsize,
+    #     metric="feature_extractor_test_acc",
+    #     pair_col="random_filters",
+    #     group_cols=["lambda_reg", "random_filters", "train_ratio"],
+    #     sweep_dir=args.sweep_dir,
+    #     fname_suffix="fullsize",
+    # )
     slope_group_cols = [
         "share_rotations",
         "share_phases",
@@ -183,10 +218,15 @@ if __name__ == "__main__":
         sweep_dir=args.sweep_dir,
         fname_suffix="downsample",
     )
-    slope_plot(
-        df_fullsize,
-        group_cols=slope_group_cols,
-        metric="feature_extractor_test_acc",
-        sweep_dir=args.sweep_dir,
-        fname_suffix="fullsize",
-    )
+    # slope_plot(
+    #     df_fullsize,
+    #     group_cols=slope_group_cols,
+    #     metric="feature_extractor_test_acc",
+    #     sweep_dir=args.sweep_dir,
+    #     fname_suffix="fullsize",
+    # )
+    side_by_side_boxplots(df_downsample, metrics = ['feature_extractor_test_acc', 'classifier_test_acc'],
+                          group_cols = ['lambda_reg', 'train_ratio', 'random_filters'],
+                          facet_col='train_ratio',
+                          sweep_dir=args.sweep_dir,
+                          fname_suffix='downsample')

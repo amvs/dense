@@ -62,7 +62,22 @@ def plot_kernels_wph_base_filters(exp_dir, trained_filename='trained.pt', origin
     os.makedirs(out_root, exist_ok=True)
     filenames = []
 
-    # Iterate over all combinations of indices except M,N
+
+
+    # Precompute global vmin/vmax for before/after plots (real and imag separately)
+    all_real = []
+    all_imag = []
+    for idx in np.ndindex(*loop_dims):
+        o = W_o[idx]
+        t = W_t[idx]
+        all_real.extend([o.real.flatten(), t.real.flatten()])
+        all_imag.extend([o.imag.flatten(), t.imag.flatten()])
+    all_real = np.concatenate(all_real)
+    all_imag = np.concatenate(all_imag)
+    vmax_r = float(np.max(np.abs(all_real)))
+    vmax_i = float(np.max(np.abs(all_imag)))
+
+    # Iterate and plot with shared scale for before/after, separate scale for delta
     for idx in np.ndindex(*loop_dims):
         o = W_o[idx]  # shape (M, N)
         t = W_t[idx]
@@ -74,20 +89,28 @@ def plot_kernels_wph_base_filters(exp_dir, trained_filename='trained.pt', origin
         # Plot real/imag before/after/delta
         o_r, t_r, d_r = o.real, t.real, d.real
         o_i, t_i, d_i = o.imag, t.imag, d.imag
-        vmax_r = float(np.max(np.abs([o_r, t_r, d_r])))
-        vmax_i = float(np.max(np.abs([o_i, t_i, d_i])))
+
+        # Delta scales
+        vmax_dr = float(np.max(np.abs(d_r)))
+        vmax_di = float(np.max(np.abs(d_i)))
 
         fig, axes = plt.subplots(2, 3, figsize=(9, 6))
         im00 = axes[0,0].imshow(o_r, vmin=-vmax_r, vmax=+vmax_r, interpolation="nearest"); axes[0,0].set_title("Real — Before"); axes[0,0].axis("off")
         im01 = axes[0,1].imshow(t_r, vmin=-vmax_r, vmax=+vmax_r, interpolation="nearest"); axes[0,1].set_title("Real — After");  axes[0,1].axis("off")
-        im02 = axes[0,2].imshow(d_r, vmin=-vmax_r, vmax=+vmax_r, interpolation="nearest"); axes[0,2].set_title("Real Δ");        axes[0,2].axis("off")
+        im02 = axes[0,2].imshow(d_r, vmin=-vmax_dr, vmax=+vmax_dr, interpolation="nearest"); axes[0,2].set_title("Real Δ");        axes[0,2].axis("off")
 
         im10 = axes[1,0].imshow(o_i, vmin=-vmax_i, vmax=+vmax_i, interpolation="nearest"); axes[1,0].set_title("Imag — Before"); axes[1,0].axis("off")
         im11 = axes[1,1].imshow(t_i, vmin=-vmax_i, vmax=+vmax_i, interpolation="nearest"); axes[1,1].set_title("Imag — After");  axes[1,1].axis("off")
-        im12 = axes[1,2].imshow(d_i, vmin=-vmax_i, vmax=+vmax_i, interpolation="nearest"); axes[1,2].set_title("Imag Δ");        axes[1,2].axis("off")
+        im12 = axes[1,2].imshow(d_i, vmin=-vmax_di, vmax=+vmax_di, interpolation="nearest"); axes[1,2].set_title("Imag Δ");        axes[1,2].axis("off")
 
-        for ax, im in zip(axes.flatten(), [im00, im01, im02, im10, im11, im12]):
-            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        # Add colorbars with labels as legends
+        for ax, im, label in zip(
+            axes.flatten(),
+            [im00, im01, im02, im10, im11, im12],
+            ["Real — Before", "Real — After", "Real Δ", "Imag — Before", "Imag — After", "Imag Δ"]
+        ):
+            cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            cbar.ax.set_ylabel(label, rotation=270, labelpad=15)
 
         idx_str = "_".join([f"{i}" for i in idx])
         fig.suptitle(f"base_filters idx={idx_str} | L1(Δ)={l1:.3e}")
