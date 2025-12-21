@@ -1,5 +1,5 @@
 import torch
-
+from dense.helpers import LoggerManager
 def regularization_loss(current_params, original_params, lambda_reg=1e-3):
     '''
     It is caller's responsibility to ensure that
@@ -7,18 +7,18 @@ def regularization_loss(current_params, original_params, lambda_reg=1e-3):
     correspond to each other in order.
     '''
     reg_loss = 0.
-    num_params = 0
+    #num_params = 0
 
     for p, p0 in zip(current_params, original_params):
         reg_loss += (torch.abs(p - p0)**2).sum()
-        num_params += p.numel()
+        #num_params += p.numel()
 
-    assert num_params > 0, "Model has no parameters for regularization; can't normalize by num params."
-    reg_loss = lambda_reg * (reg_loss / num_params)
+    #assert num_params > 0, "Model has no parameters for regularization; can't normalize by num params."
+    reg_loss = lambda_reg * (reg_loss) # / num_params)
 
     return reg_loss
 
-def train_one_epoch(model, loader, optimizer, base_loss, device, original_params=None, lambda_reg=None, vmap_chunk_size=None):
+def train_one_epoch(model, loader, optimizer, base_loss, device, original_params=None, lambda_reg=None, vmap_chunk_size=None, r=None):
     model.train()
     total_loss = 0
     total_base_loss = 0
@@ -45,6 +45,8 @@ def train_one_epoch(model, loader, optimizer, base_loss, device, original_params
             loss += reg_loss_value
         loss.backward()
         optimizer.step()
+        # if original_params is not None:
+        #     project_weights(model, original_params, r)
 
         total_base_loss += base_loss_value.item() * inputs.size(0)
         total_reg_loss += reg_loss_value.item() * inputs.size(0)
@@ -77,3 +79,22 @@ def evaluate(model, loader, base_loss, device):
     avg_loss = total_loss / len(loader.dataset)
     accuracy = correct / len(loader.dataset)
     return avg_loss, accuracy
+
+# def project_weights(model, original_params, r):
+#     logger = LoggerManager.get_logger()
+#     with torch.no_grad():
+#         dist_sq = 0.0
+
+#         for p, p0 in zip(model.fine_tuned_params(), original_params):
+#             if p.requires_grad:
+#                 diff = p - p0
+#                 dist_sq += torch.sum(torch.abs(diff) ** 2)
+
+#         dist = torch.sqrt(dist_sq)
+
+#         if dist > r:
+#             logger.info(f"Projecting weights back to the radius {r:.4f} (current distance: {dist:.4f})")
+#             scale = r / dist
+#             for p, p0 in zip(model.fine_tuned_params(), original_params):
+#                 if p.requires_grad:
+#                     p.copy_(p0 + scale * (p - p0))

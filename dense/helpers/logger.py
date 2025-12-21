@@ -83,7 +83,6 @@ class LoggerManager:
                 logger.log("epoch=1 loss=0.345 acc=0.89", data=True)
             '''
             logger.info(message)
-
             if data and LoggerManager._cloud:
                 json_data = {}
                 try:

@@ -3,7 +3,7 @@ wavelet: meyer
 max_scale: 2
 nb_orients: 4
 efficient: true
-share_channels: true
+share_channels: false
 
 # training setting
 dataset: smohsensadeghi/curet-dataset

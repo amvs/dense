@@ -47,11 +47,11 @@ os.makedirs(sweep_dir, exist_ok=True)
 
 params = sweep["sweep"]  # dict of lists
 
-random_flag = args.random
-if random_flag:
-    script = "scripts/train_random.py"
-else:
-    script = "scripts/train.py"
+# random_flag = args.random
+# if random_flag:
+#     script = "scripts/train_random.py"
+# else:
+#     script = "scripts/train.py"
 
 
 # init logger
@@ -79,7 +79,10 @@ for run_idx, values in enumerate(all_combinations, 1):
     logger.info(f"Run {run_idx}/{total_runs} — overrides: {overrides}")
 
     if args.model_type == 'scat':
-        file = "scripts/train.py"
+        if args.random:
+            file = "scripts/train_random.py"
+        else:
+            file = "scripts/train.py"
     elif args.model_type == 'wph':
         file = "scripts/train_wph_classifier.py"
 

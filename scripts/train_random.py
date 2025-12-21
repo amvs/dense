@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from training.datasets import get_loaders, split_train_val
 from training import train_one_epoch, evaluate
-from dense import dense
+from dense import dense, ScatterParams
 from dense.helpers import LoggerManager
 from plot_before_and_after import plot_kernels
 from visualize import visualize_main
@@ -53,11 +53,14 @@ def main():
     # get data loader
     dataset = config["dataset"]
     batch_size = config["batch_size"]
+    test_ratio = config["test_ratio"]
     train_ratio = config["train_ratio"]
+    train_val_ratio = config["train_val_ratio"]
+    seed = config["seed"]
     if dataset=="mnist":
         train_loader, test_loader, nb_class, image_shape = get_loaders(dataset=dataset, 
                                                 batch_size=batch_size, 
-                                                train_ratio=train_ratio)
+                                                train_ratio=1-test_ratio)
     else: # only kaggle dataset needs deeper path and resize
         resize = config["resize"]
         deeper_path = config["deeper_path"]
@@ -65,28 +68,41 @@ def main():
                                                 resize=resize,
                                                 deeper_path=deeper_path,
                                                 batch_size=batch_size, 
-                                                train_ratio=train_ratio)
+                                                train_ratio=1-test_ratio)
     train_loader, val_loader = split_train_val(
                                 train_loader.dataset,
                                 train_ratio=train_ratio,
-                                batch_size=batch_size)
+                                batch_size=batch_size,
+                                train_val_ratio=train_val_ratio,
+                                seed=seed)
     # init model
     max_scale = config["max_scale"]
     nb_orients = config["nb_orients"]
     wavelet = config["wavelet"]
     efficient = config["efficient"]
     share_channels = config.get("share_channels", False)
-    model = dense(max_scale, nb_orients, image_shape,
-                wavelet=wavelet, nb_class=nb_class, 
-                efficient=efficient, share_channels=share_channels,
-                random=True).to(device)
+    params = ScatterParams(
+        n_scale=max_scale,
+        n_orient=nb_orients,
+        in_channels=image_shape[0],
+        wavelet=wavelet,
+        n_class=nb_class,
+        share_channels=share_channels,
+        in_size=image_shape[1],
+        random=True
+    )
+    model = dense(params).to(device)
+    # model = dense(max_scale, nb_orients, image_shape,
+    #             wavelet=wavelet, nb_class=nb_class, 
+    #             efficient=efficient, share_channels=share_channels,
+    #             random=True).to(device)
     
     # Train classifier
     lr = float(config["lr"])
-    lambda_reg = float(config["lambda_reg"])
+    weight_decays = float(config["weight_decays"])
     classifier_epochs = config["classifier_epochs"]
     conv_epochs = config["conv_epochs"]
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=lambda_reg)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decays)
 
     base_loss = nn.CrossEntropyLoss()
 
@@ -101,21 +117,68 @@ def main():
     
     #
     logger.log("Training a model from random initialization...") 
-    model.full_train()
-    for epoch in range(classifier_epochs + conv_epochs):  # Change number of epochs as needed
+    ##
+    # Configuration
+    patience = config.get("conv_patience", 3)  # number of epochs to wait without improvement
+    best_val_loss = float("inf")
+    best_val_acc = 0.0
+    best_train_acc = 0.0
+    best_state = None
+    counter = 0
+
+    model.full_train()  # training mode
+
+    for epoch in range(classifier_epochs + conv_epochs):
+        # Train one epoch
         train_metrics = train_one_epoch(model, train_loader, optimizer, base_loss, device)
         train_loss = train_metrics['total_loss']
         train_acc = train_metrics['accuracy']
+
+        # Evaluate on validation set
         val_loss, val_acc = evaluate(model, val_loader, base_loss, device)
-        logger.log(f"Epoch={epoch} Train_Acc={train_acc:.4f} Train_Loss={train_loss:.4f} Val_Acc={val_acc:.4f} Val_Loss={val_loss:.4f}", data=True)
+
+        logger.log(f"Epoch={epoch+1} Train_Acc={train_acc:.4f} Train_Loss={train_loss:.4f} Val_Acc={val_acc:.4f} Val_Loss={val_loss:.4f}", data=True)
+        # Early stopping based on validation loss
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_val_acc = val_acc
+            best_train_acc = train_acc
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            counter = 0  # reset patience counter
+        else:
+            counter += 1
+            if counter >= patience:
+                print(f"Early stopping at epoch {epoch+1}")
+                break
+
+    # Restore best model
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    dist_sq = 0.0
+    for p, p0 in zip(model.fine_tuned_params(), original_params):
+        if p.requires_grad:
+            diff = p - p0
+            dist_sq += torch.sum(torch.abs(diff) ** 2)
+
+    dist = torch.sqrt(dist_sq)
+    ##
+    # model.full_train()
+    # for epoch in range(classifier_epochs + conv_epochs):  # Change number of epochs as needed
+    #     train_metrics = train_one_epoch(model, train_loader, optimizer, base_loss, device)
+    #     train_loss = train_metrics['total_loss']
+    #     train_acc = train_metrics['accuracy']
+    #     val_loss, val_acc = evaluate(model, val_loader, base_loss, device)
+    #     logger.log(f"Epoch={epoch} Train_Acc={train_acc:.4f} Train_Loss={train_loss:.4f} Val_Acc={val_acc:.4f} Val_Loss={val_loss:.4f}", data=True)
     logger.log("Finish training task.")
 
     #
     test_loss, test_acc = evaluate(model, test_loader, base_loss, device)
+    gap = abs(test_acc - best_val_acc)
+    n_tuned_params = model.n_tuned_params()
     logger.log(f"Finish testing task.")
     logger.log(f"Test_Acc={test_acc:.4f} Ini_Test_Acc={ini_test_acc:.4f} Train_Ratio={train_ratio:.4f} "
     f"Test_Loss={test_loss:.4f} "
-    f"Lambda={lambda_reg:.4f} Out_dim={model.out_dim}", data=True)
+    f"weight_decays={weight_decays:.5f} Out_dim={model.out_dim} gap={gap:5f} n_params={n_tuned_params} dist={dist}", data=True)
     #
     save_fine_tuned = os.path.join(exp_dir, "trained.pt")
     torch.save(model.state_dict(), save_fine_tuned)
@@ -124,19 +187,19 @@ def main():
     # back up config
     config["nb_class"] = nb_class
     config["image_shape"] = list(image_shape)
-    config["last_train_acc"] = train_acc
-    config["last_val_acc"] = val_acc
+    config["best_train_acc"] = best_train_acc
+    config["best_val_acc"] = best_val_acc
     config["test_acc"] = test_acc
     config["random"] = True
     save_config(exp_dir, config)
 
     # Plot kernels before and after training
-    logger.log("Plotting kernels before and after training...")
-    plot_kernels(exp_dir)
+    # logger.log("Plotting kernels before and after training...")
+    # plot_kernels(exp_dir)
 
-    # Visualize filters(sampled first few for each layer) and activations
-    logger.log("Visualizing filters and activations...")
-    visualize_main(exp_dir)
+    # # Visualize filters(sampled first few for each layer) and activations
+    # logger.log("Visualizing filters and activations...")
+    # visualize_main(exp_dir)
 
     logger.finish()
     

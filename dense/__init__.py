@@ -1,3 +1,2 @@
-from .dense import dense
-
-__all__ = ["dense"]
+from .model import dense, ScatterParams
+__all__ = ["dense", "ScatterParams"]

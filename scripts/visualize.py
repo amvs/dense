@@ -9,7 +9,7 @@ import os
 from configs import load_config
 from datetime import datetime
 from dense.helpers import LoggerManager
-from dense import dense
+from dense import dense, ScatterParams
 import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
@@ -39,7 +39,7 @@ def run_modules(model, x):
     """Run input through module_list step by step and collect outputs (for dense model)."""
     inputs = [x]
     activations = []
-    for idx, module in enumerate(model.module_list):
+    for idx, module in enumerate(model.blocks):
         result = module(*inputs)
         activations.append(result.detach().cpu())
         inputs.append(result)
@@ -308,10 +308,22 @@ def visualize_main(exp_dir, model_type="dense", origin_filename="origin.pt", tun
         image_shape = config["image_shape"]
         random = config["random"]
         share_channels = config["share_channels"]
-        origin_model = DenseModel(max_scale, nb_orients, image_shape,
-                    wavelet=wavelet, nb_class=nb_class, efficient=efficient, random=random, share_channels=share_channels).to(device)
-        tuned_model = DenseModel(max_scale, nb_orients, image_shape,
-                    wavelet=wavelet, nb_class=nb_class, efficient=efficient, random=random, share_channels=share_channels).to(device)
+        params = ScatterParams(
+            n_scale=max_scale,
+            n_orient=nb_orients,
+            in_channels=image_shape[0],
+            wavelet=wavelet,
+            n_class=nb_class,
+            share_channels=share_channels,
+            in_size=image_shape[1],
+            random=random
+        )
+        origin_model = DenseModel(params).to(device)
+        tuned_model = DenseModel(params).to(device)
+        # origin_model = DenseModel(max_scale, nb_orients, image_shape,
+        #             wavelet=wavelet, nb_class=nb_class, efficient=efficient, random=random, share_channels=share_channels).to(device)
+        # tuned_model = DenseModel(max_scale, nb_orients, image_shape,
+        #             wavelet=wavelet, nb_class=nb_class, efficient=efficient, random=random, share_channels=share_channels).to(device)
         logger.log("Loading model weights...")
         origin_state = torch.load(origin_path, map_location=device)
         tuned_state = torch.load(tuned_path, map_location=device)

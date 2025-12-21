@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from training.datasets import get_loaders, split_train_val
 from training import train_one_epoch, evaluate
-from dense import dense
+from dense import dense, ScatterParams
 from dense.helpers import LoggerManager
 from plot_before_and_after import plot_kernels
 from visualize import visualize_main
@@ -59,6 +59,7 @@ def main():
     test_ratio = config["test_ratio"]
     train_ratio = config["train_ratio"]
     train_val_ratio = config["train_val_ratio"]
+    seed = config["seed"]
     if dataset=="mnist":
         train_loader, test_loader, nb_class, image_shape = get_loaders(dataset=dataset, 
                                                 batch_size=batch_size, 
@@ -75,54 +76,190 @@ def main():
                                 train_loader.dataset,
                                 train_ratio=train_ratio,
                                 batch_size=batch_size,
-                                train_val_ratio=train_val_ratio)
+                                train_val_ratio=train_val_ratio,
+                                seed=seed)
     # init model
     max_scale = config["max_scale"]
     nb_orients = config["nb_orients"]
     wavelet = config["wavelet"]
     efficient = config["efficient"]
     share_channels = config.get("share_channels", False)
-    model = dense(max_scale, nb_orients, image_shape,
-                wavelet=wavelet, nb_class=nb_class, efficient=efficient, share_channels=share_channels).to(device)
+    out_size = config["out_size"]
+    params = ScatterParams(
+        n_scale=max_scale,
+        n_orient=nb_orients,
+        in_channels=image_shape[0],
+        wavelet=wavelet,
+        n_class=nb_class,
+        share_channels=share_channels,
+        in_size=image_shape[1],
+        out_size=out_size
+    )
+    model = dense(params).to(device)
+    # model = dense(max_scale, nb_orients, image_shape,
+    #             wavelet=wavelet, nb_class=nb_class, efficient=efficient, share_channels=share_channels).to(device)
     
     # Train classifier
+    #radius = float(config["radius"])
     lr = float(config["lr"])
+    #lr = min(lr, radius * 0.5)
     lambda_reg = float(config["lambda_reg"])
+    
     classifier_epochs = config["classifier_epochs"]
     conv_epochs = config["conv_epochs"]
-    optimizer = torch.optim.Adam([
-        {"params": model.linear.parameters(), "lr": lr},   # different lr
-        {"params": model.fine_tuned_params(), "lr": lr * 0.01}   # 
-    ])
+    # optimizer = torch.optim.Adam([
+    #     {"params": model.linear.parameters(), "lr": lr},   # different lr
+    #     {"params": model.fine_tuned_params(), "lr": lr * 0.01}   # 
+    # ])
+
+    ##
+    classifier_patience = config.get("classifier_patience", 5)
+    conv_patience = config.get("conv_patience", 3)
+    normalize_classifier = config.get("normalize_classifier", False)
+    ##
 
     base_loss = nn.CrossEntropyLoss()
     with torch.no_grad():
         original_params = [p.clone().detach() for p in model.fine_tuned_params()]
-    #
+    
     logger.log("Training linear classifier...") 
     model.train_classifier()
-    for classifier_epoch in range(classifier_epochs):
-        train_metrics = train_one_epoch(model, train_loader, optimizer, base_loss, device)
-        val_loss, val_acc = evaluate(model, val_loader, base_loss, device)
-        logger.log(f"Epoch {classifier_epoch+1}: Train_Acc={train_metrics['accuracy']:.4f} Val_Acc={val_acc:.4f} Base_Loss={train_metrics['base_loss']:.4e} Reg_Loss={train_metrics['reg_loss']:.4e} Total_Loss={train_metrics['total_loss']:.4e}", data=True)
-    logger.log("Finish linear layer training task.")
-    ini_test_loss, ini_test_acc = evaluate(model, test_loader, base_loss, device)
+    ##
+    optimizer_cls = torch.optim.Adam(
+        model.linear.parameters(),
+        lr=lr,
+    )
+    best_val_acc = 0.0
+    best_state = None
+    patience_counter = 0
 
+    for epoch in range(classifier_epochs):
+        train_metrics = train_one_epoch(
+            model, train_loader, optimizer_cls, base_loss, device
+        )
+        val_loss, val_acc = evaluate(
+            model, val_loader, base_loss, device
+        )
+
+        logger.log(
+            f"Epoch={epoch+1} "
+            f"Train_Acc={train_metrics['accuracy']:.4f} "
+            f"Train_Loss={train_metrics['total_loss']:.4f} "
+            f"Base_Loss={train_metrics['base_loss']:.4f} "
+            f"Val_Acc={val_acc:.4f} "
+            f"Val_Loss={val_loss:.4f} ",
+            data=True,
+        )
+
+        # ---- Early stopping on validation accuracy
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= classifier_patience:
+                logger.log("Early stopping classifier training.")
+                break
+    # Restore best classifier
+    model.load_state_dict(best_state)
+    logger.log("Finish linear layer training task.")
+
+    ##
+    # for classifier_epoch in range(classifier_epochs):
+    #     train_metrics = train_one_epoch(model, train_loader, optimizer, base_loss, device)
+    #     val_loss, val_acc = evaluate(model, val_loader, base_loss, device)
+    #     logger.log(f"Epoch {classifier_epoch+1}: Train_Acc={train_metrics['accuracy']:.4f} Val_Acc={val_acc:.4f} Base_Loss={train_metrics['base_loss']:.4e} Reg_Loss={train_metrics['reg_loss']:.4e} Total_Loss={train_metrics['total_loss']:.4e}", data=True)
+    # logger.log("Finish linear layer training task.")
+    ini_test_loss, ini_test_acc = evaluate(model, test_loader, base_loss, device)
 
     save_original = os.path.join(exp_dir, "origin.pt")
     torch.save(model.state_dict(), save_original)
     logger.log(f"Save model to {save_original}")
-    #
+    ##
+    if normalize_classifier:
+        logger.log("Normalizing linear classifier weights.")
+        with torch.no_grad():
+            w = model.linear.weight
+            model.linear.weight.copy_(
+                w / w.norm(dim=1, keepdim=True)
+            )
+    ##
     logger.log("Fine tuning conv layers...")
     model.train_conv()
-    for conv_epoch in range(conv_epochs):  # Change number of epochs as needed
-        train_metrics = train_one_epoch(model, train_loader, optimizer, base_loss, device, original_params, lambda_reg)
-        val_loss, val_acc = evaluate(model, val_loader, base_loss, device)
-        logger.log(f"Epoch={conv_epoch + classifier_epoch + 1} Train_Acc={train_metrics['accuracy']:.4f} Base_Loss={train_metrics['base_loss']:.4e} Val_Acc={val_acc:.4f} Val_Loss={val_loss:.4f} Reg_Loss={train_metrics['reg_loss']:.4e} Total_Loss={train_metrics['total_loss']:.4e}", data=True)
+    ##
+    optimizer_conv = torch.optim.Adam(
+        model.fine_tuned_params(),
+        lr=lr * 0.01,
+    )
+    best_val_loss = float("inf")
+    best_val_acc = 0.0
+    best_train_acc = 0.0
+    best_state = None
+    patience_counter = 0
+
+    for epoch in range(conv_epochs):
+        train_metrics = train_one_epoch(
+            model,
+            train_loader,
+            optimizer_conv,
+            base_loss,
+            device,
+            original_params,
+            #r=radius,
+            lambda_reg,
+        )
+
+        val_loss, val_acc = evaluate(
+            model, val_loader, base_loss, device
+        )
+
+        logger.log(
+            f"Epoch={classifier_epochs+epoch+1} "
+            f"Train_Acc={train_metrics['accuracy']:.4f} "
+            f"Train_Loss={train_metrics['total_loss']:.4f} "
+            f"Base_Loss={train_metrics['base_loss']:.4f} "
+            f"Val_Acc={val_acc:.4f} "
+            f"Val_Loss={val_loss:.4f} "
+            f"Reg_Loss={train_metrics['reg_loss']:.4f} "
+            f"Total_Loss={train_metrics['total_loss']:.4f}",
+            data=True,
+        )
+
+        # ---- Early stopping on validation loss
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_val_acc = val_acc
+            best_train_acc = train_metrics['accuracy']
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= conv_patience:
+                logger.log("Early stopping fine-tuning.")
+                break
+
+    # Restore best encoder
+    model.load_state_dict(best_state)
+    dist_sq = 0.0
+    for p, p0 in zip(model.fine_tuned_params(), original_params):
+        if p.requires_grad:
+            diff = p - p0
+            dist_sq += torch.sum(torch.abs(diff) ** 2)
+
+    dist = torch.sqrt(dist_sq)
+    ##
+    # for conv_epoch in range(conv_epochs):  # Change number of epochs as needed
+    #     train_metrics = train_one_epoch(model, train_loader, optimizer, base_loss, device, original_params, lambda_reg)
+    #     val_loss, val_acc = evaluate(model, val_loader, base_loss, device)
+    #     logger.log(f"Epoch={conv_epoch + classifier_epoch + 1} Train_Acc={train_metrics['accuracy']:.4f} Base_Loss={train_metrics['base_loss']:.4e} Val_Acc={val_acc:.4f} Val_Loss={val_loss:.4f} Reg_Loss={train_metrics['reg_loss']:.4e} Total_Loss={train_metrics['total_loss']:.4e}", data=True)
     test_loss, test_acc = evaluate(model, test_loader, base_loss, device)
+    gap = abs(test_acc - best_val_acc)
+    n_tuned_params = model.n_tuned_params()
     logger.log(f"Finish conv fine tuning task.")
     logger.log(f"Test_Acc={test_acc:.4f} Ini_Test_Acc={ini_test_acc:.4f} Train_Ratio={train_ratio:.4f}"
-    f" Lambda={lambda_reg:.4f} Out_dim={model.out_dim}", data=True)
+    f" Best_Val_Acc={best_val_acc:.4f}"
+    f" lambda_reg={lambda_reg} Out_dim={model.out_dim} LR={lr:.4f} gap={gap:5f} n_tuned_params={n_tuned_params} n_class_params={model.out_dim*model.n_class} dist={dist}", data=True)
     #
     save_fine_tuned = os.path.join(exp_dir, "trained.pt")
     torch.save(model.state_dict(), save_fine_tuned)
@@ -130,20 +267,22 @@ def main():
 
     # back up config
     config["nb_class"] = nb_class
+    config["n_tuned_params"] = n_tuned_params
     config["image_shape"] = list(image_shape)
-    config["last_train_acc"] = train_metrics['accuracy']
-    config["last_val_acc"] = val_acc
+    config["best_train_acc"] = best_train_acc
+    config["best_val_acc"] = best_val_acc
     config["test_acc"] = test_acc
+    # config["lr"] = lr
     config["random"] = False
     save_config(exp_dir, config)
 
-    # Plot kernels before and after training
-    logger.log("Plotting kernels before and after training...")
-    plot_kernels(exp_dir)
+    # # Plot kernels before and after training
+    # logger.log("Plotting kernels before and after training...")
+    # plot_kernels(exp_dir)
 
-    # Visualize filters(sampled first few for each layer) and activations
-    logger.log("Visualizing filters and activations...")
-    visualize_main(exp_dir)
+    # # Visualize filters(sampled first few for each layer) and activations
+    # logger.log("Visualizing filters and activations...")
+    # visualize_main(exp_dir)
 
     logger.finish()
     
