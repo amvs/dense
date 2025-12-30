@@ -62,32 +62,40 @@ def get_kaggle_loaders(dataset_name, resize, deeper_path, batch_size=64, train_r
     path = get_kaggle_dataset(dataset_name) # download if not exists
     logger.info(f"Load dataset {dataset_name} from Kaggle...")
     logger.info(f"Dataset path: {path} + {deeper_path}")
+    # Initial transform without normalization
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Grayscale(num_output_channels=1),
-        transforms.Resize((resize, resize)),      # resize shorter side
-    ])
-    #dataset = datasets.ImageFolder(root=path, transform=transform)
-    dataset = KaggleDataset(path, deeper_path, transform=transform)
-    mean, std = compute_mean_std(dataset)
-    dataset.transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Grayscale(num_output_channels=1),
         transforms.Resize((resize, resize)),
-        transforms.Normalize((mean,), (std,))  # only gray
     ])
-    logger.info(f"mean: {mean}, std: {std}")
+    dataset = KaggleDataset(path, deeper_path, transform=transform)
 
     # compute split sizes
     total_len = len(dataset)
     train_len = int(total_len * train_ratio)
     test_len = total_len - train_len
 
-    # split dataset
+    # split dataset FIRST, before computing statistics
     train_dataset, test_dataset = stratify_split(
         dataset, train_size=train_len,
         seed=42
     )
+    
+    # compute mean and std from TRAIN set only (no data leakage)
+    logger.info(f"Computing normalization statistics from {len(train_dataset)} training samples...")
+    mean, std = compute_mean_std(train_dataset)
+    logger.info(f"Normalization stats - mean: {mean:.6f}, std: {std:.6f}")
+    
+    # Apply normalization using train statistics to both train and test
+    normalized_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Grayscale(num_output_channels=1),
+        transforms.Resize((resize, resize)),
+        transforms.Normalize((mean,), (std,))
+    ])
+    # Update the base dataset's transform so both subsets use it
+    dataset.transform = normalized_transform
+    logger.info(f"Updated dataset transform with normalization")
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn, drop_last=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=True)
     nb_class = len(dataset.classes)
@@ -98,19 +106,24 @@ def get_kaggle_loaders(dataset_name, resize, deeper_path, batch_size=64, train_r
 
 def compute_mean_std(dataset):
     """Compute mean and std for a grayscale dataset."""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     loader = DataLoader(dataset, batch_size=64, shuffle=False)
     mean = 0.0
     sq_mean = 0.0
     num_pixels = 0
+    num_batches = 0
 
-    for imgs, _ in loader:
+    for idx, (imgs, _) in enumerate(loader):
         imgs = imgs.view(imgs.size(0), -1)  # flatten H*W
         mean += imgs.sum()
         sq_mean += (imgs ** 2).sum()
         num_pixels += imgs.numel()
+        num_batches += 1
 
     mean /= num_pixels
     std = (sq_mean / num_pixels - mean ** 2).sqrt()
+    logger = LoggerManager.get_logger()
+    logger.info(f"Computed mean/std from {num_batches} batches ({num_pixels} pixels total)")
     return mean.item(), std.item()
 
 

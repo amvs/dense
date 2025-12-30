@@ -55,7 +55,7 @@ def worker_init_fn(worker_id, seed=None):
     if seed is not None:
         np.random.seed(seed + worker_id)
 
-def train_model(model, train_loader, val_loader, optimizer, criterion, device, epochs, logger, phase, configs, exp_dir, original_params=None):
+def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion, device, epochs, logger, phase, configs, exp_dir, original_params=None):
     """
     A reusable function for training the model.
 
@@ -64,6 +64,7 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
         train_loader (DataLoader): DataLoader for training data.
         val_loader (DataLoader): DataLoader for validation data.
         optimizer (Optimizer): Optimizer for training.
+        scheduler (Scheduler): Learning rate scheduler.
         criterion (Loss): Loss function.
         device (torch.device): Device to train on.
         epochs (int): Number of epochs to train.
@@ -90,19 +91,21 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
         )
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
         logger.log("Phase: {} Epoch: {}".format(phase, epoch+1))
+        
+        # Step scheduler based on validation accuracy
+        if scheduler is not None:
+            scheduler.step(val_acc)
+            current_lr = [group['lr'] for group in optimizer.param_groups]
+            logger.log(f"Epoch={epoch+1} LR={current_lr[0]:.6e} LR_Conv={current_lr[1]:.6e}")
+        
         logger.log(f"Epoch={epoch+1} Train_Acc={train_metrics['accuracy']:.4f} Val_Acc={val_acc:.4f} Base_Loss={train_metrics['base_loss']:.4e} Reg_Loss={train_metrics['reg_loss']:.4e} Total_Loss={train_metrics['total_loss']:.4e}", data=True)
 
-        # Track best accuracy and save state_dicts
+        # Track best accuracy and save state_dict only when validation improves
         if val_acc > best_acc:
             best_acc = val_acc
             best_model_path = os.path.join(exp_dir, f"best_{phase}_model_state.pt")
             torch.save(model.state_dict(), best_model_path)
             logger.log(f"Saved best {phase} model state_dict to {best_model_path}")
-
-        # Save most recent model state_dict
-        recent_model_path = os.path.join(exp_dir, f"recent_{phase}_model_state.pt")
-        torch.save(model.state_dict(), recent_model_path)
-        logger.log(f"Saved recent {phase} model state_dict to {recent_model_path}")
 
         # Log L2 norm distance for feature extractor phase
         if phase == 'feature_extractor' and original_params is not None:
@@ -110,6 +113,11 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, device, e
         else:
             l2_norm = 0.0
         logger.log(f"Epoch={epoch+1} L2_Norm_Distance={l2_norm:.4f}", data=True)
+
+    # Save final model after training completes
+    final_model_path = os.path.join(exp_dir, f"final_{phase}_model_state.pt")
+    torch.save(model.state_dict(), final_model_path)
+    logger.log(f"Saved final {phase} model state_dict to {final_model_path}")
 
     return best_acc, l2_norm
 
@@ -401,6 +409,18 @@ def main():
         {"params": model.classifier.parameters(), "lr": lr_classifier},
         {"params": model.feature_extractor.parameters(), "lr": lr_conv}
     ])
+    
+    # Create learning rate scheduler
+    scheduler_config = config.get("scheduler", {"mode": "max", "factor": 0.5, "patience": 2, "min_lr": 1e-7})
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode=scheduler_config.get("mode", "max"),
+        factor=scheduler_config.get("factor", 0.5),
+        patience=scheduler_config.get("patience", 5),
+        min_lr=scheduler_config.get("min_lr", 1e-7),
+        verbose=True
+    )
+    logger.log(f"Scheduler: ReduceLROnPlateau(mode={scheduler_config.get('mode', 'max')}, factor={scheduler_config.get('factor', 0.5)}, patience={scheduler_config.get('patience', 5)})")
 
     criterion = nn.CrossEntropyLoss()
 
@@ -415,7 +435,7 @@ def main():
         start_time = time.time()
         best_acc_classifier, _ = train_model(model=model, train_loader=train_loader,
                                           val_loader=val_loader, optimizer=optimizer,
-                                          criterion=criterion, device=device, epochs=classifier_epochs,
+                                          scheduler=scheduler, criterion=criterion, device=device, epochs=classifier_epochs,
                                           logger=logger, phase='classifier', configs=config, exp_dir=exp_dir)
         elapsed_time = time.time() - start_time
         logger.log(f"Classifier training completed in {elapsed_time:.2f} seconds.")
@@ -435,8 +455,20 @@ def main():
     if not args.skip_finetuning:
         logger.log("Fine-tuning feature extractor...")
         model.set_trainable({"feature_extractor": True, "classifier": False})
+        
+        # Reset scheduler for feature extractor phase
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode=scheduler_config.get("mode", "max"),
+            factor=scheduler_config.get("factor", 0.5),
+            patience=scheduler_config.get("patience", 5),
+            min_lr=scheduler_config.get("min_lr", 1e-7),
+            verbose=True
+        )
+        logger.log("Reset scheduler for feature extractor phase")
+        
         start_time = time.time()
-        best_acc_feature_extractor, l2_norm = train_model(model=model, train_loader=train_loader, val_loader=val_loader, optimizer=optimizer, criterion=criterion, device=device, epochs=conv_epochs, logger=logger, phase='feature_extractor', configs=config, exp_dir=exp_dir, original_params=original_params)
+        best_acc_feature_extractor, l2_norm = train_model(model=model, train_loader=train_loader, val_loader=val_loader, optimizer=optimizer, scheduler=scheduler, criterion=criterion, device=device, epochs=conv_epochs, logger=logger, phase='feature_extractor', configs=config, exp_dir=exp_dir, original_params=original_params)
         elapsed_time = time.time() - start_time
         logger.log(f"Feature extractor fine-tuning completed in {elapsed_time:.2f} seconds.")
     else:

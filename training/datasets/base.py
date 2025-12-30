@@ -64,21 +64,27 @@ def split_train_val(train_dataset, train_ratio=0.1, batch_size=64, seed=123, tra
         )
     else: # we discard some data to maintain the train:val ratio
           # this mimics the situation when dataset is small in practice
+        # Use derived seeds to avoid reusing the same seed in nested splits
         used_dataset, _ = stratify_split(
             train_dataset, train_size=used_len,
             seed=seed
         )
         train_subset, val_subset = stratify_split(
             used_dataset, train_size=train_len,
-            seed=seed
+            seed=seed + 1000  # offset to ensure independence while maintaining reproducibility
         )
     discard_len = total_len - len(train_subset) - len(val_subset)
     train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, drop_last=drop_last)
-    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, drop_last=drop_last)
+    # Validation should NOT drop last batch to ensure all samples are evaluated
+    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, drop_last=False)
     logger = LoggerManager.get_logger()
     logger.info(f"Split train dataset into train and val subsets...")
     logger.info(f"[Train Ratio: {train_ratio}] Train size: {train_len}, "
                  f"Val size: {val_len}, Used Size: {used_len}, Discard Size: {discard_len}, "
                  f"Train:Val={train_val_ratio}:1")
+    if drop_last:
+        train_batches_dropped = train_len % batch_size
+        logger.info(f"Train batches: {train_len // batch_size}, dropping {train_batches_dropped} samples")
+    logger.info(f"Val batches: {(val_len + batch_size - 1) // batch_size} (no samples dropped)")
 
     return train_loader, val_loader
