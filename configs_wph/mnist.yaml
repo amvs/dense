@@ -8,6 +8,7 @@ share_rotations: false
 share_channels: true
 share_phases: false
 share_scales: false
+share_scale_pairs: true
 normalize_relu: true
 delta_j: null
 delta_l: null

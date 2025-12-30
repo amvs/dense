@@ -3,10 +3,8 @@
 base_config: configs_wph/mnist.yaml
 sweep:
   downsample: [true]
-  train_ratio: [0.05]
-  wavelet_params:
-    - {S: 5, T: 8, w0: 1.09955}  # 0.35 * pi
-    - {S: 7, T: 8, w0: 1.09955}  # 0.35 * pi
+  share_scale_pairs: [false]
+  train_ratio: [0.1]
   lr_conv: [1.0e-6, 1.0e-5, 1.0e-4, 1.0e-3]
 
 

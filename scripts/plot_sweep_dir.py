@@ -8,7 +8,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
-
+from ast import literal_eval
 
 def df_from_logs(args):
     sweep_dir = args.sweep_dir
@@ -86,8 +86,10 @@ def pair_boxplots(
     """
     pair_true = df[df[pair_col] == True].reset_index(drop=True)
     pair_false = df[df[pair_col] == False].reset_index(drop=True)
-
-    fix, axs = plt.subplots(figsize=(10, 12), nrows=2, ncols=1)
+    if pair_true.empty or pair_false.empty:
+        print(f"Skipping pair_boxplots for {metric} as one condition is empty.")
+        return
+    fig, axs = plt.subplots(figsize=(10, 12), nrows=2, ncols=1)
     pair_true.boxplot(column=metric, by=group_cols, ax=axs[0])
     axs[0].set_title(f"Boxplot of {metric} ({pair_col}=True)")
     axs[0].set_ylabel(metric)
@@ -115,12 +117,12 @@ def side_by_side_boxplots(
     sweep_dir=None,
     fname_suffix="",
 ):
-    assert facet_col in group_cols, "facet_col must be in group_cols"
+    assert facet_col in group_cols, f"facet_col must be in group_cols but {facet_col} not in {group_cols}"
     df_melted = df.melt(id_vars=group_cols, value_vars=metrics, var_name="metric", value_name="value")
     set_cols = set(group_cols)
     set_cols.remove(facet_col)
     df_melted['params'] = df_melted[list(set_cols)].astype(str).agg(','.join, axis=1)
-    g = sns.catplot(data = df_melted, x = 'params',y = 'value', hue='metric', col ='train_ratio', kind = 'strip', col_wrap=3, sharey=False, sharex=False)
+    g = sns.catplot(data = df_melted, x = 'params',y = 'value', hue='metric', col =facet_col, kind = 'strip', col_wrap=3, sharey=True, sharex=False)
     for ax in g.axes.flat:
         ax.tick_params(axis='x', rotation=90)
 
@@ -164,10 +166,32 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     df = df_from_logs(args)
+    # df['wavelet_params'] = df['wavelet_params'].apply(literal_eval)
+    df = df.join(pd.json_normalize(df['wavelet_params']))
     df_lr1 = df.loc[df.lambda_reg == 1].reset_index(drop=True)
     df_lr1_downsample = df_lr1.loc[df_lr1.downsample].reset_index(drop=True)
+    # Loop over all unique S values present in the dataframe and generate plots
+    if 'S' in df.columns:
+        unique_S = sorted(df['S'].dropna().unique())
+    else:
+        unique_S = []
+
+    for s_val in unique_S:
+        dfS = df.loc[df['S'] == s_val].reset_index(drop=True)
+        if dfS.empty:
+            continue
+        suffix = f"S={s_val}"
+        plot_all_boxplots(
+            dfS,
+            group_cols=['max_scale', 'train_ratio', 'random_filters'],
+            sweep_dir=args.sweep_dir,
+            fname_suffix=suffix,
+        )
     # df_lr1_fullsize = df_lr1.loc[~df_lr1.downsample].reset_index(drop=True)
-    plot_all_boxplots(df_lr1_downsample, group_cols = ['max_scale', 'train_ratio', 'random_filters'],
+    if df_lr1_downsample.empty:
+        print("No data for lambda_reg=1 and downsample=True, skipping related plots.")
+    else:
+        plot_all_boxplots(df_lr1_downsample, group_cols = ['max_scale', 'train_ratio', 'random_filters'],
                       sweep_dir=args.sweep_dir,
                       fname_suffix = 'lreg=1_downsample')
     # plot_all_boxplots(df_lr1_fullsize, group_cols = ['max_scale', 'train_ratio', 'random_filters'],
@@ -225,8 +249,26 @@ if __name__ == "__main__":
     #     sweep_dir=args.sweep_dir,
     #     fname_suffix="fullsize",
     # )
-    side_by_side_boxplots(df_downsample, metrics = ['feature_extractor_test_acc', 'classifier_test_acc'],
-                          group_cols = ['lambda_reg', 'train_ratio', 'random_filters'],
-                          facet_col='train_ratio',
-                          sweep_dir=args.sweep_dir,
-                          fname_suffix='downsample')
+    side_by_side_boxplots(
+        df_downsample,
+        metrics=['feature_extractor_test_acc', 'classifier_test_acc'],
+        group_cols=['lambda_reg', 'train_ratio', 'random_filters'],
+        facet_col='train_ratio',
+        sweep_dir=args.sweep_dir,
+        fname_suffix='downsample',
+    )
+
+    # Side-by-side plots for each S value
+    for s_val in unique_S:
+        dfS = df.loc[df['S'] == s_val].reset_index(drop=True)
+        if dfS.empty:
+            continue
+        suffix = f"S={s_val}"
+        side_by_side_boxplots(
+            dfS,
+            metrics=['feature_extractor_test_acc', 'classifier_test_acc'],
+            group_cols=['lambda_reg', 'train_ratio', 'random_filters'],
+            facet_col='train_ratio',
+            sweep_dir=args.sweep_dir,
+            fname_suffix=suffix,
+        )
