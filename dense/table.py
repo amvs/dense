@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-def compute_tables(out_size, n_class, k_size, K_values=(4, 6, 8), J_values=(3, 4, 5)):
+def compute_tables(n_copies, out_size, n_class, k_size, K_values=(4, 6, 8), J_values=(3, 4, 5)):
     """
     Compute four tables with:
       rows    -> K in K_values
@@ -32,7 +32,7 @@ def compute_tables(out_size, n_class, k_size, K_values=(4, 6, 8), J_values=(3, 4
             T3[i, j] = base * out_size ** 2 * n_class
 
             # geometric series sum
-            T4[i, j] = ((K + 1) ** (J) -  1) * (k_size ** 2)
+            T4[i, j] = ((K + 1) ** (J) -  1) * (k_size ** 2) * n_copies
 
     # Wrap as DataFrames for readability
     index = [f"K={K}" for K in K_vals]
@@ -48,9 +48,10 @@ def compute_tables(out_size, n_class, k_size, K_values=(4, 6, 8), J_values=(3, 4
     return tables
 
 if __name__ == "__main__":
-    values = input("Please enter out_size, n_class, k_size separated by spaces:")
-    out_size, n_class, k_size = map(int, values.split())
+    values = input("Please enter n_copies, out_size, n_class, k_size separated by spaces:")
+    n_copies, out_size, n_class, k_size = map(int, values.split())
     tables = compute_tables(
+        n_copies=n_copies,
         out_size=out_size,
         n_class=n_class,
         k_size=k_size
