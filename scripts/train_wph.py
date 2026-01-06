@@ -287,12 +287,15 @@ def main():
     # Create output folder
     train_ratio = config["train_ratio"]
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    # Optional GPU id suffix provided by sweep launcher to avoid log collisions
+    gpu_id_env = os.getenv("SWEEP_GPU_ID")
+    run_suffix = f"-gpu{gpu_id_env}" if gpu_id_env is not None else ""
     if args.sweep_dir is not None:
         if not os.path.exists(args.sweep_dir):
             raise ValueError(f"Sweep dir {args.sweep_dir} does not exist!")
-        exp_dir = os.path.join(args.sweep_dir, f"{train_ratio=}", f"run-{timestamp}")
+        exp_dir = os.path.join(args.sweep_dir, f"{train_ratio=}", f"run-{timestamp}{run_suffix}")
     else:
-        exp_dir = os.path.join("experiments", f"{train_ratio=}", f"run-{timestamp}")
+        exp_dir = os.path.join("experiments", f"{train_ratio=}", f"run-{timestamp}{run_suffix}")
     os.makedirs(exp_dir, exist_ok=True)
 
     # Initialize logger
