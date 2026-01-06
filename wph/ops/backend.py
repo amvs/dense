@@ -49,7 +49,7 @@ class SubInitSpatialMean(nn.Module):
             minput = torch.mean(minput, -1, True)
             minput = torch.mean(minput, -2, True)
             self.minput = minput
-        elif self.minput.shape != input.shape:
+        elif self.minput.shape[1:-2] != input.shape[1:-2]:
             warnings.warn('overwriting minput')
             minput = input.clone().detach()
             minput = torch.mean(minput, -1, True)
@@ -76,7 +76,7 @@ class DivInitStd(nn.Module):
             stdinput = torch.norm(stdinput, dim=(-2,-1), keepdim=True)
             self.stdinput = stdinput / torch.sqrt(torch.tensor(d, dtype=stdinput.dtype, device=stdinput.device))
             self.stdinput = self.stdinput + self.eps
-        elif self.stdinput.shape != input.shape:
+        elif self.stdinput.shape[1:-2] != input.shape[1:-2]:
             warnings.warn('overwriting stdinput')
             stdinput = input.clone().detach()  # input size:(...,M,N)
             m = torch.mean(torch.mean(stdinput, -1, True), -2, True)
