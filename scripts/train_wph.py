@@ -448,6 +448,12 @@ def main():
         logger.log("Skipping classifier training phase.")
         best_acc_classifier = 0.0
 
+    # Load best classifier model and evaluate
+    if not args.skip_classifier_training:
+        best_classifier_path = os.path.join(exp_dir, "best_classifier_model_state.pt")
+        if os.path.exists(best_classifier_path):
+            model.load_state_dict(torch.load(best_classifier_path, weights_only=True))
+            logger.log(f"Loaded best classifier model from {best_classifier_path}")
     # Evaluate classifier phase (validation and test)
     val_loss, classifier_val_acc = evaluate(model, val_loader, criterion, device)
     test_loss, classifier_test_acc = evaluate(model, test_loader, criterion, device)
@@ -483,8 +489,14 @@ def main():
         best_acc_feature_extractor = 0.0
 
     # Evaluate feature extractor phase
-    val_loss_fe, feature_extractor_val_acc = evaluate(model, val_loader, criterion, device)
+    # Load best feature extractor model and evaluate
+    if not args.skip_finetuning:
+        best_fe_path = os.path.join(exp_dir, "best_feature_extractor_model_state.pt")
+        if os.path.exists(best_fe_path):
+            model.load_state_dict(torch.load(best_fe_path, weights_only=True))
+            logger.log(f"Loaded best feature extractor model from {best_fe_path}")
     test_loss, feature_extractor_test_acc = evaluate(model, test_loader, criterion, device)
+    val_loss_fe, feature_extractor_val_acc = evaluate(model, val_loader, criterion, device)
     logger.log(f"Feature Extractor Val Accuracy={feature_extractor_val_acc:.4f}", data=True)
     logger.log(f"Feature Extractor Test Accuracy={feature_extractor_test_acc:.4f}", data=True)
 

@@ -45,3 +45,4 @@ num_classes: 61
 use_batch_norm: true
 copies: 1
 noise_std: 0.01
+
