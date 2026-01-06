@@ -46,14 +46,12 @@ class SubInitSpatialMean(nn.Module):
     def forward(self, input):
         if self.minput.numel() == 0:
             minput = input.clone().detach()
-            minput = torch.mean(minput, 0, keepdim=True)  # Average over batch
             minput = torch.mean(minput, -1, True)
             minput = torch.mean(minput, -2, True)
             self.minput = minput
-        elif self.minput.shape[1:-2] != input.shape[1:-2]:
+        elif self.minput.shape != input.shape:
             warnings.warn('overwriting minput')
             minput = input.clone().detach()
-            minput = torch.mean(minput, 0, keepdim=True)  # Average over batch
             minput = torch.mean(minput, -1, True)
             minput = torch.mean(minput, -2, True)
             self.minput = minput
@@ -72,17 +70,15 @@ class DivInitStd(nn.Module):
     def forward(self, input):
         if self.stdinput.numel() == 0:
             stdinput = input.clone().detach()  # input size:(...,M,N)
-            stdinput = torch.mean(stdinput, 0, keepdim=True)  # Average over batch
             m = torch.mean(torch.mean(stdinput, -1, True), -2, True)
             stdinput = stdinput - m
             d = input.shape[-1]*input.shape[-2]
             stdinput = torch.norm(stdinput, dim=(-2,-1), keepdim=True)
             self.stdinput = stdinput / torch.sqrt(torch.tensor(d, dtype=stdinput.dtype, device=stdinput.device))
             self.stdinput = self.stdinput + self.eps
-        elif self.stdinput.shape[1:-2] != input.shape[1:-2]:
+        elif self.stdinput.shape != input.shape:
             warnings.warn('overwriting stdinput')
             stdinput = input.clone().detach()  # input size:(...,M,N)
-            stdinput = torch.mean(stdinput, 0, keepdim=True)  # Average over batch
             m = torch.mean(torch.mean(stdinput, -1, True), -2, True)
             stdinput = stdinput - m
             d = input.shape[-1]*input.shape[-2]
