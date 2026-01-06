@@ -38,6 +38,7 @@ test_ratio: 0.15
 train_val_ratio: 2
 seed: 42
 vmap_chunk_size: 50
+normalize_reg: false
 
 # Classifier settings
 num_classes: 61
