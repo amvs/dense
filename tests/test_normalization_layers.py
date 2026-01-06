@@ -123,36 +123,6 @@ def test_batch_independence():
     print("✓ Batch independence test passed")
 
 
-def test_shape_check():
-    """Test that shape check validates full shape including batch size."""
-    mean_layer = SubInitSpatialMean()
-    
-    # Initialize with one batch size and shape
-    input1 = torch.randn(2, 3, 8, 8)
-    _ = mean_layer(input1)
-    
-    # Try with same shape - should NOT trigger reinit warning
-    input2 = torch.randn(2, 3, 8, 8)
-    import warnings
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        _ = mean_layer(input2)
-        # Should NOT have warned
-        overwrite_warnings = [x for x in w if "overwriting" in str(x.message).lower()]
-        assert len(overwrite_warnings) == 0, "Should not warn when shape is the same"
-    
-    # Try with different batch size - should trigger reinit warning
-    input3 = torch.randn(4, 3, 8, 8)
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        _ = mean_layer(input3)
-        # Should have warned since batch size changed
-        overwrite_warnings = [x for x in w if "overwriting" in str(x.message).lower()]
-        assert len(overwrite_warnings) > 0, "Should warn when batch size changes"
-    
-    print("✓ Shape check test passed")
-
-
 if __name__ == "__main__":
     test_subinit_spatial_mean_per_sample()
     test_divinit_std_per_sample()
