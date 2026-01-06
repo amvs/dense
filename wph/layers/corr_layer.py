@@ -789,3 +789,104 @@ class CorrLayerDownsamplePairs(BaseCorrLayer):
                 combined = torch.cat(batches, dim=1)
                 final_output.append(combined)
             return final_output
+
+
+# Hybrid variants (per-scale downsample_splits)
+class CorrLayerHybrid(CorrLayerDownsample):
+    """
+    Correlation layer for hybrid wavelet outputs with per-scale downsample_splits.
+    Expects input as list of tensors indexed by scale j.
+    """
+
+    def __init__(self, downsample_splits: list[int], *args, **kwargs):
+        self.downsample_splits = list(downsample_splits)
+        super().__init__(*args, **kwargs)
+
+        # Remove parent buffers
+        if hasattr(self, "masks_shift"):
+            del self.masks_shift
+        if hasattr(self, "factr_shift"):
+            del self.factr_shift
+
+        _masks_temp = []
+        _factr_temp = []
+        for j in range(self.J):
+            h_j = math.ceil(self.M / (2 ** self.downsample_splits[j]))
+            w_j = math.ceil(self.N / (2 ** self.downsample_splits[j]))
+            m_shift, factr_shift_j = create_masks_shift(
+                J=1, M=h_j, N=w_j, mask_union=self.uses_mask_union(), mask_angles=self.mask_angles
+            )
+            _masks_temp.append(m_shift)
+            _factr_temp.append(factr_shift_j)
+
+        for i, (m, f) in enumerate(zip(_masks_temp, _factr_temp)):
+            self.register_buffer(f"mask_scale_{i}", m)
+            self.register_buffer(f"factr_scale_{i}", f)
+
+        ref_masks, _ = self.get_mask_for_scale(0)
+        union_mask = ref_masks.sum(dim=0).bool()
+        union_indices = torch.nonzero(union_mask.flatten(), as_tuple=True)[0]
+        self.mask_indices_map = {}
+        grid_to_union_map = torch.full((ref_masks[0].numel(),), -1, dtype=torch.long)
+        grid_to_union_map[union_indices] = torch.arange(len(union_indices))
+        for k in range(ref_masks.shape[0]):
+            k_mask = ref_masks[k].flatten().bool()
+            k_indices = torch.nonzero(k_mask, as_tuple=True)[0]
+            mapped_indices = grid_to_union_map[k_indices]
+            self.mask_indices_map[k] = mapped_indices
+        for k, idxs in self.mask_indices_map.items():
+            self.register_buffer(f"mask_idx_map_{k}", idxs)
+
+        self.idx_wph = self.compute_idx()
+
+    def get_mask_for_scale(self, j):
+        if hasattr(self, f"mask_scale_{j}"):
+            return getattr(self, f"mask_scale_{j}"), getattr(self, f"factr_scale_{j}")
+        elif hasattr(self, "masks_shift") and hasattr(self, "factr_shift"):
+            return self.masks_shift, self.factr_shift
+        else:
+            raise ValueError(f"No masks found for scale {j}")
+
+
+class CorrLayerHybridPairs(CorrLayerDownsamplePairs):
+    """Pair-specific hybrid correlation layer using downsample_splits sizes."""
+
+    def __init__(self, downsample_splits: list[int], *args, **kwargs):
+        self.downsample_splits = list(downsample_splits)
+        super().__init__(*args, **kwargs)
+
+        if hasattr(self, "masks_shift"):
+            del self.masks_shift
+        if hasattr(self, "factr_shift"):
+            del self.factr_shift
+
+        _masks_temp = []
+        _factr_temp = []
+        for j in range(self.J):
+            h_j = math.ceil(self.M / (2 ** self.downsample_splits[j]))
+            w_j = math.ceil(self.N / (2 ** self.downsample_splits[j]))
+            m_shift, factr_shift_j = create_masks_shift(
+                J=1, M=h_j, N=w_j, mask_union=self.uses_mask_union(), mask_angles=self.mask_angles
+            )
+            _masks_temp.append(m_shift)
+            _factr_temp.append(factr_shift_j)
+
+        for i, (m, f) in enumerate(zip(_masks_temp, _factr_temp)):
+            self.register_buffer(f"mask_scale_{i}", m)
+            self.register_buffer(f"factr_scale_{i}", f)
+
+        ref_masks, _ = self.get_mask_for_scale(0)
+        union_mask = ref_masks.sum(dim=0).bool()
+        union_indices = torch.nonzero(union_mask.flatten(), as_tuple=True)[0]
+        self.mask_indices_map = {}
+        grid_to_union_map = torch.full((ref_masks[0].numel(),), -1, dtype=torch.long)
+        grid_to_union_map[union_indices] = torch.arange(len(union_indices))
+        for k in range(ref_masks.shape[0]):
+            k_mask = ref_masks[k].flatten().bool()
+            k_indices = torch.nonzero(k_mask, as_tuple=True)[0]
+            mapped_indices = grid_to_union_map[k_indices]
+            self.mask_indices_map[k] = mapped_indices
+        for k, idxs in self.mask_indices_map.items():
+            self.register_buffer(f"mask_idx_map_{k}", idxs)
+
+        self.idx_wph = self.compute_idx()
