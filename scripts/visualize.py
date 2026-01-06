@@ -53,8 +53,10 @@ def calc_wph_activations(model, x, flatten=False, vmap_chunk_size=None):
     """
     from wph.wph_model import WPHModel, WPHModelDownsample
     acts = {}
-    # If model is WPHClassifier, get feature_extractor
-    if hasattr(model, 'feature_extractor'):
+    # If model is WPHClassifier, use the first feature extractor
+    if hasattr(model, 'feature_extractors'):
+        fe = model.feature_extractors[0]
+    elif hasattr(model, 'feature_extractor'):
         fe = model.feature_extractor
     else:
         fe = model
@@ -440,15 +442,18 @@ def visualize_main(exp_dir, model_type="dense", origin_filename="origin.pt", tun
             mask_angles=config["mask_angles"],
             mask_union_highpass=config["mask_union_highpass"],
         )
+        copies = int(config.get("copies", 1))
         origin_model = WPHClassifier(feature_extractor=origin_fe,
-                                     num_classes=config["num_classes"],
-                                     use_batch_norm=config["use_batch_norm"]).to(device)
-        origin_model.feature_extractor.wave_conv.get_full_filters()
+                 num_classes=config["num_classes"],
+                 use_batch_norm=config["use_batch_norm"],
+                 copies=copies).to(device)
+        origin_model.feature_extractors[0].wave_conv.get_full_filters()
         
         tuned_model = WPHClassifier(feature_extractor=tuned_fe,
-                                    num_classes=config["num_classes"],
-                                    use_batch_norm=config["use_batch_norm"]).to(device)
-        tuned_model.feature_extractor.wave_conv.get_full_filters()
+                num_classes=config["num_classes"],
+                use_batch_norm=config["use_batch_norm"],
+                copies=copies).to(device)
+        tuned_model.feature_extractors[0].wave_conv.get_full_filters()
         logger.log("Loading model weights...")
         origin_state = torch.load(origin_path, map_location=device, weights_only=True)
         tuned_state = torch.load(tuned_path, map_location=device, weights_only=True)
