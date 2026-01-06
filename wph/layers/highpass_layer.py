@@ -44,9 +44,7 @@ class HighpassBase(nn.Module):
         psi[2, 2, 1] = 1 / 4
         hathaar2d[2, :, :] = fft.fft2(torch.view_as_complex(psi))
 
-        self.divinitstdH = [None] * 3 * self.num_channels
-        for hid in range(3 * self.num_channels):
-            self.divinitstdH[hid] = DivInitStd()
+        self.divinitstdH = nn.ModuleList([DivInitStd() for _ in range(3 * self.num_channels)])
         
         return(hathaar2d)
     
