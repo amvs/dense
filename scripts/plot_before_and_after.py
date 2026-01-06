@@ -27,17 +27,17 @@ def extract_kernels_dense(orig):
 
 def extract_kernels_wph(orig):
     def conv_index(k: str):
-        # expects "feature_extractor.base_filters.{j}.weight"
-        m = re.search(r"feature_extractor\.base_filters", k)
+        # expects "feature_extractors.0.base_filters.{j}.weight"
+        m = re.search(r"feature_extractors\.0\.base_filters", k)
         return int(m.group(1)) if m else 10**9
     
     conv_keys = sorted(
-        [k for k in orig.keys() if 'base_filters' in k],
+        [k for k in orig.keys() if 'feature_extractors.0' in k and 'base_filters' in k],
         key=conv_index
     )
     return conv_keys, conv_index
 
-def plot_kernels_wph_base_filters(exp_dir, trained_filename='trained.pt', origin_filename='origin.pt', base_filters_key:list[str]=['feature_extractor.wave_conv.base_filters']):
+def plot_kernels_wph_base_filters(exp_dir, trained_filename='trained.pt', origin_filename='origin.pt', base_filters_key:list[str]=['feature_extractors.0.wave_conv.base_filters']):
     origin_path = os.path.join(exp_dir, origin_filename)
     trained_path = os.path.join(exp_dir, trained_filename)
     orig = torch.load(origin_path, map_location="cpu", weights_only=True)
