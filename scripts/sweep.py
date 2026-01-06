@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import torch
+import time
 
 dotenv.load_dotenv()
 
@@ -93,11 +94,11 @@ def run_single_trial(run_idx, total_runs, values, keys, base_config, sweep_dir, 
     elif args.model_type == 'wph':
         file = "scripts/train_wph.py"
     
-    # Save merged config to a temporary file
+    # Save merged config to a temporary file in the main sweep dir
     temp_config_path = os.path.join(sweep_dir, f"temp_config_{run_idx}.yaml")
     with open(temp_config_path, "w") as f:
         yaml.dump(merged_config, f)
-    
+
     cmd = [
         "python", file,
         "--config", temp_config_path,
@@ -106,10 +107,13 @@ def run_single_trial(run_idx, total_runs, values, keys, base_config, sweep_dir, 
     if wandb_project is not None:
         cmd.extend(["--wandb_project", wandb_project])
     
-    # Set up environment with GPU assignment
+    # Set up environment with GPU assignment and export GPU id for run suffix
     env = os.environ.copy()
     if gpu_id is not None:
         env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        env["SWEEP_GPU_ID"] = str(gpu_id)
+    else:
+        env["SWEEP_GPU_ID"] = "cpu"
     
     try:
         result = subprocess.run(cmd, env=env)
@@ -146,6 +150,8 @@ with ThreadPoolExecutor(max_workers=num_gpus) as executor:
             sweep_dir, wandb_project, args, gpu_id
         )
         futures.append(future)
+        # Sleep briefly to ensure unique timestamps for each trial
+        time.sleep(1.5 * gpu_id if gpu_id is not None else 0.1)
     
     # Wait for all jobs to complete
     for future in as_completed(futures):
