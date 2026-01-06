@@ -85,9 +85,11 @@ def main():
     efficient = config["efficient"]
     share_channels = config.get("share_channels", False)
     out_size = config["out_size"]
+    n_copies = config["n_copies"]
     params = ScatterParams(
         n_scale=max_scale,
         n_orient=nb_orients,
+        n_copies=n_copies,
         in_channels=image_shape[0],
         wavelet=wavelet,
         n_class=nb_class,
@@ -121,7 +123,8 @@ def main():
     base_loss = nn.CrossEntropyLoss()
     with torch.no_grad():
         original_params = [p.clone().detach() for p in model.fine_tuned_params()]
-    
+    n_tuned_params = model.n_tuned_params()
+    logger.log(f"n_tuned_params={n_tuned_params} n_linear_params={model.out_dim*model.n_class}", data=True)
     logger.log("Training linear classifier...") 
     model.train_classifier()
     ##
@@ -172,7 +175,7 @@ def main():
     #     logger.log(f"Epoch {classifier_epoch+1}: Train_Acc={train_metrics['accuracy']:.4f} Val_Acc={val_acc:.4f} Base_Loss={train_metrics['base_loss']:.4e} Reg_Loss={train_metrics['reg_loss']:.4e} Total_Loss={train_metrics['total_loss']:.4e}", data=True)
     # logger.log("Finish linear layer training task.")
     ini_test_loss, ini_test_acc = evaluate(model, test_loader, base_loss, device)
-
+    logger.log(f"linear_test_acc={ini_test_acc:.4f} linear_test_loss={ini_test_loss:.4f}", data=True)
     save_original = os.path.join(exp_dir, "origin.pt")
     torch.save(model.state_dict(), save_original)
     logger.log(f"Save model to {save_original}")
@@ -193,6 +196,7 @@ def main():
         lr=lr * 0.01,
     )
     best_val_loss = float("inf")
+    best_train_loss = float("inf")
     best_val_acc = 0.0
     best_train_acc = 0.0
     best_state = None
@@ -229,6 +233,7 @@ def main():
         # ---- Early stopping on validation loss
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            best_train_loss = train_metrics['base_loss']
             best_val_acc = val_acc
             best_train_acc = train_metrics['accuracy']
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
@@ -254,24 +259,35 @@ def main():
     #     val_loss, val_acc = evaluate(model, val_loader, base_loss, device)
     #     logger.log(f"Epoch={conv_epoch + classifier_epoch + 1} Train_Acc={train_metrics['accuracy']:.4f} Base_Loss={train_metrics['base_loss']:.4e} Val_Acc={val_acc:.4f} Val_Loss={val_loss:.4f} Reg_Loss={train_metrics['reg_loss']:.4e} Total_Loss={train_metrics['total_loss']:.4e}", data=True)
     test_loss, test_acc = evaluate(model, test_loader, base_loss, device)
-    gap = abs(test_acc - best_val_acc)
-    n_tuned_params = model.n_tuned_params()
+    train_test_gap = abs(test_loss - best_train_loss)
+    val_test_gap = abs(test_loss - best_val_loss)
+
     logger.log(f"Finish conv fine tuning task.")
     logger.log(f"Test_Acc={test_acc:.4f} Ini_Test_Acc={ini_test_acc:.4f} Train_Ratio={train_ratio:.4f}"
     f" Best_Val_Acc={best_val_acc:.4f}"
-    f" lambda_reg={lambda_reg} Out_dim={model.out_dim} LR={lr:.4f} gap={gap:5f} n_tuned_params={n_tuned_params} n_class_params={model.out_dim*model.n_class} dist={dist}", data=True)
+    f" Test_Loss={test_loss:.4f} Best_Train_Loss={best_train_loss:.4f} Best_Val_Loss={best_val_loss:.4f}"
+    f" lambda_reg={lambda_reg} Out_dim={model.out_dim} LR={lr:.4f} train_test_gap={train_test_gap:5f} val_test_gap={val_test_gap:5f} dist={dist}", data=True)
     #
     save_fine_tuned = os.path.join(exp_dir, "trained.pt")
     torch.save(model.state_dict(), save_fine_tuned)
     logger.log(f"Save model to {save_fine_tuned}")
 
     # back up config
+    config["dist"] = dist.item()
     config["nb_class"] = nb_class
     config["n_tuned_params"] = n_tuned_params
+    config["n_linear_params"] = model.out_dim * model.n_class
+    config["linear_test_acc"] = ini_test_acc
+    config["linear_test_loss"] = ini_test_loss
     config["image_shape"] = list(image_shape)
     config["best_train_acc"] = best_train_acc
     config["best_val_acc"] = best_val_acc
     config["test_acc"] = test_acc
+    config["test_loss"] = test_loss
+    config["best_train_loss"] = best_train_loss
+    config["best_val_loss"] = best_val_loss
+    config["train_test_gap"] = train_test_gap
+    config["val_test_gap"] = val_test_gap
     # config["lr"] = lr
     config["random"] = False
     save_config(exp_dir, config)

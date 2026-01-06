@@ -1,17 +1,20 @@
 
 base_config: configs/curet.yaml
 sweep:
+  resize: 128
   classifier_epochs: [40]
   conv_epochs: [30]
-  max_scale: [3, 5]
-  nb_orients: [4, 8]
-  out_size: [4, 8]
+  max_scale: [4, 5]
+  nb_orients: [6]
+  out_size: [2]
+  n_copies: [12]
   #lr: [0.01, 0.001, 0.0001]
-  lr: [0.005]
+  lr: [0.025]
+  lambda_reg: [1e-4, 1e-3, 1e-2]
   weight_decays: [1e-3]
   #radius: [0.05, 0.1, 1.0]
   seed: [123, 456, 789]
-  share_channels: [true, false]
+  share_channels: false
   train_ratio:
     start: 0.2
     stop: 0.46

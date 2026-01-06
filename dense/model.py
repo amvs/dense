@@ -17,7 +17,7 @@ class ScatterParams:
     n_class: int
     share_channels: bool
     in_size: int
-    #out_size: int
+    out_size: int
     random: bool = False
 
 class MyConv2d(nn.Module):
@@ -49,14 +49,14 @@ class MyConv2d(nn.Module):
 
     '''
     def __init__(
-        self, filters: Tensor, in_channels: int, n_copies: int, share_channels: bool = False
+        self, filters: Tensor, in_channels: int, share_channels: bool = False
     ):
         super().__init__()
         nb_orients, S, _ = filters.shape
         self.S = S
         self.in_channels = in_channels
         self.share_channels = share_channels
-        self.out_channel = nb_orients * in_channels * n_copies
+        self.out_channel = nb_orients * in_channels
         if share_channels:
             weight = filters.unsqueeze(0)
             self.param = nn.Parameter(weight) # shape [1, nb_orients, S, S]
@@ -66,6 +66,7 @@ class MyConv2d(nn.Module):
 
     def forward(self, x):
         if self.share_channels:
+            raise Exception("Bug")
             kernel = self.param.expand(self.in_channels, -1, -1, -1).reshape(self.out_channel, 1, self.S, self.S)
         else:
             kernel = self.param
@@ -96,7 +97,7 @@ class ScatterBlock(nn.Module):
         imgs = imgs.to(torch.complex64)
         result = torch.abs(self.conv(imgs))
         # Reshape and average over n_copies
-        return result.reshape(imgs.shape[0], self.conv.in_channels, 
+        return result.reshape(imgs.shape[0], self.conv.out_channel//self.n_copies, 
                              self.n_copies, imgs.shape[-1], imgs.shape[-1]).mean(dim=2)
 
 class dense(nn.Module):
@@ -121,18 +122,26 @@ class dense(nn.Module):
                 ScatterBlock(
                     filters=self.filters[0],
                     in_channels=self.in_channels_per_block[scale],
+                    n_copies=self.n_copies,
                     share_channels=self.share_channels
                 )
                 for scale in range(self.n_scale)
             ]
         )
-        #out_size = self.out_size
-        self.out_dim = self.out_channels * (self.in_size // 2**self.n_scale)**2 #* out_size**2
-        #self.global_pool = nn.AdaptiveAvgPool2d((out_size,out_size))
+        out_size = self.out_size
+        self.out_dim = self.out_channels * out_size**2 #* (self.in_size // 2**self.n_scale)**2 
+        self.global_pool = nn.AdaptiveAvgPool2d((out_size,out_size))
         self.linear = nn.Linear(self.out_dim, self.n_class)
 
     def set_filters(self):
         self.filters = filter_bank(self.wavelet, self.n_scale, self.n_orient)
+        # self.filters[0] = torch.ones(2, 7, 7)
+        # self.filters[0][0] = self.filters[0][0]*2
+        # print(self.filters[0].shape)
+        # print(self.filters[0])
+        self.filters[0] = self.repeat_interleave_with_noise(self.filters[0])
+        # print(self.filters[0].shape)
+        # print(self.filters[0])
         if self.random:
             random_filters = []
             seeds = [42, 123, 999, 2025, 7]
@@ -145,13 +154,11 @@ class dense(nn.Module):
 
             torch.cuda.manual_seed_all(seed)
 
-            for filt in self.filters:
-                temp = torch.randn_like(filt.real) + 1j * torch.randn_like(filt.real)
-                random_filters.append(temp.to(dtype=filt.dtype))
-            self.filters = random_filters
-        self.filters[0] = self.repeat_interleave_with_noise(self.filters[0])
-        print(self.filters[0].shape)
-        print(self.filters[0])
+            # for filt in self.filters:
+            #     temp = torch.randn_like(filt.real) + 1j * torch.randn_like(filt.real)
+            #     random_filters.append(temp.to(dtype=filt.dtype))
+            self.filters[0] = torch.randn_like(self.filters[0])
+        
 
     def repeat_interleave_with_noise(self, x):
         """
@@ -175,7 +182,7 @@ class dense(nn.Module):
             out = block(*inputs)
             inputs.append(out)
             inputs = [self.pooling(i) for i in inputs]
-        features = torch.cat(inputs, dim=1).reshape(img.shape[0], -1) #self.global_pool(torch.cat(inputs, dim=1)).reshape(img.shape[0], -1)
+        features = self.global_pool(torch.cat(inputs, dim=1)).reshape(img.shape[0], -1)
         return self.linear(features) #self.linear(F.normalize(features, p=2, dim=1))
 
 

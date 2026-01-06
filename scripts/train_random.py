@@ -80,15 +80,19 @@ def main():
     nb_orients = config["nb_orients"]
     wavelet = config["wavelet"]
     efficient = config["efficient"]
+    out_size = config["out_size"]
+    n_copies = config["n_copies"]
     share_channels = config.get("share_channels", False)
     params = ScatterParams(
         n_scale=max_scale,
         n_orient=nb_orients,
         in_channels=image_shape[0],
+        n_copies=n_copies,
         wavelet=wavelet,
         n_class=nb_class,
         share_channels=share_channels,
         in_size=image_shape[1],
+        out_size=out_size,
         random=True
     )
     model = dense(params).to(device)
@@ -110,7 +114,8 @@ def main():
     save_original = os.path.join(exp_dir, "origin.pt")
     torch.save(model.state_dict(), save_original)
     logger.log(f"Save initialized model to {save_original}")
-    
+    with torch.no_grad():
+        original_params = [p.clone().detach() for p in model.fine_tuned_params()]
     # Evaluate initial test accuracy before training
     ini_test_loss, ini_test_acc = evaluate(model, test_loader, base_loss, device)
     logger.log(f"Initial test accuracy (before training): {ini_test_acc:.4f}")
@@ -119,12 +124,16 @@ def main():
     logger.log("Training a model from random initialization...") 
     ##
     # Configuration
-    patience = config.get("conv_patience", 3)  # number of epochs to wait without improvement
+    patience = config.get("conv_patience", 5)  # number of epochs to wait without improvement
     best_val_loss = float("inf")
+    best_train_loss = float("inf")
     best_val_acc = 0.0
     best_train_acc = 0.0
     best_state = None
     counter = 0
+
+    n_tuned_params = model.n_tuned_params()
+    logger.log(f"n_tuned_params={n_tuned_params} n_class_params={model.out_dim*model.n_class}", data=True)
 
     model.full_train()  # training mode
 
@@ -140,6 +149,7 @@ def main():
         logger.log(f"Epoch={epoch+1} Train_Acc={train_acc:.4f} Train_Loss={train_loss:.4f} Val_Acc={val_acc:.4f} Val_Loss={val_loss:.4f}", data=True)
         # Early stopping based on validation loss
         if val_loss < best_val_loss:
+            best_train_loss = train_loss
             best_val_loss = val_loss
             best_val_acc = val_acc
             best_train_acc = train_acc
@@ -173,12 +183,12 @@ def main():
 
     #
     test_loss, test_acc = evaluate(model, test_loader, base_loss, device)
-    gap = abs(test_acc - best_val_acc)
-    n_tuned_params = model.n_tuned_params()
+    train_test_gap = abs(test_loss - best_train_loss)
+    val_test_gap = abs(test_loss - best_val_loss)
     logger.log(f"Finish testing task.")
     logger.log(f"Test_Acc={test_acc:.4f} Ini_Test_Acc={ini_test_acc:.4f} Train_Ratio={train_ratio:.4f} "
-    f"Test_Loss={test_loss:.4f} "
-    f"weight_decays={weight_decays:.5f} Out_dim={model.out_dim} gap={gap:5f} n_params={n_tuned_params} dist={dist}", data=True)
+    f"Test_Loss={test_loss:.4f} Best_Train_Loss={best_train_loss:.4f} Best_Val_Loss={best_val_loss:.4f} "
+    f"weight_decays={weight_decays:.5f} Out_dim={model.out_dim} val_test_gap={val_test_gap:5f} train_test_gap={train_test_gap:5f} dist={dist}", data=True)
     #
     save_fine_tuned = os.path.join(exp_dir, "trained.pt")
     torch.save(model.state_dict(), save_fine_tuned)
@@ -190,6 +200,13 @@ def main():
     config["best_train_acc"] = best_train_acc
     config["best_val_acc"] = best_val_acc
     config["test_acc"] = test_acc
+    config["test_loss"] = test_loss
+    config["best_train_loss"] = best_train_loss
+    config["best_val_loss"] = best_val_loss
+    config["train_test_gap"] = train_test_gap
+    config["val_test_gap"] = val_test_gap
+    config["n_tuned_params"] = n_tuned_params
+    config["n_linear_params"] = model.out_dim * model.n_class
     config["random"] = True
     save_config(exp_dir, config)
 
