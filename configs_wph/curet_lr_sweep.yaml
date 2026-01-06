@@ -3,12 +3,12 @@
 base_config: configs_wph/curet.yaml
 sweep:
   downsample: [true]
-  delta_l: [1]
+  train_ratio: [0.5]
   delta_j: [1, null]
-  share_scale_pairs: [true, false]
+  share_scale_pairs: [false]
   wavelet_params:
-    - {S: 11, w0: 1.94}  # 0.62 * pi
     - {S: 15, w0: 2.7646}  # 0.88 * pi
-  lr_conv: [1.0e-4, 1.0e-5, 1.0e-6, 1e-7, 1e-8]
+  copies: [1,5,10]
+  lr_conv: [1.0e-5, 1.0e-6, 1e-7]
 
 

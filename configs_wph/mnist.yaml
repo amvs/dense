@@ -40,3 +40,5 @@ normalize_reg: false
 # Classifier settings
 num_classes: 10
 use_batch_norm: true
+copies: 1
+noise_std: 0.01
