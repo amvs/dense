@@ -15,7 +15,7 @@ load_dotenv()
 from configs import load_config, save_config, apply_overrides
 from training.datasets import get_loaders, split_train_val
 from training import train_one_epoch, evaluate
-from wph.wph_model import WPHModel, WPHModelDownsample, WPHClassifier
+from wph.wph_model import WPHModel, WPHModelDownsample, WPHModelHybrid, WPHClassifier
 from dense.helpers import LoggerManager
 from dense.wavelets import filter_bank
 from wph.layers.utils import apply_phase_shifts
@@ -287,12 +287,15 @@ def main():
     # Create output folder
     train_ratio = config["train_ratio"]
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    # Optional GPU id suffix provided by sweep launcher to avoid log collisions
+    gpu_id_env = os.getenv("SWEEP_GPU_ID")
+    run_suffix = f"-gpu{gpu_id_env}" if gpu_id_env is not None else ""
     if args.sweep_dir is not None:
         if not os.path.exists(args.sweep_dir):
             raise ValueError(f"Sweep dir {args.sweep_dir} does not exist!")
-        exp_dir = os.path.join(args.sweep_dir, f"{train_ratio=}", f"run-{timestamp}")
+        exp_dir = os.path.join(args.sweep_dir, f"{train_ratio=}", f"run-{timestamp}{run_suffix}")
     else:
-        exp_dir = os.path.join("experiments", f"{train_ratio=}", f"run-{timestamp}")
+        exp_dir = os.path.join("experiments", f"{train_ratio=}", f"run-{timestamp}{run_suffix}")
     os.makedirs(exp_dir, exist_ok=True)
 
     # Initialize logger
@@ -337,7 +340,35 @@ def main():
 
     # Initialize models
     downsample = config.get("downsample", False)
-    if downsample:
+    if downsample == "hybrid":
+        filters = construct_filters_downsample(config, image_shape)
+        T = filters['psi'].shape[-1]
+        downsample_splits = config.get("downsample_splits", None)
+        logger.info(f"Using hybrid WPH model with filter size T={T} and downsample_splits={downsample_splits}")
+        feature_extractor = WPHModelHybrid(
+            T=T,
+            filters=filters,
+            J=config["max_scale"],
+            L=config["nb_orients"],
+            A=config["num_phases"],
+            M=image_shape[1],
+            N=image_shape[2],
+            num_channels=image_shape[0],
+            downsample_splits=downsample_splits,
+            share_rotations=config["share_rotations"],
+            share_phases=config["share_phases"],
+            share_channels=config["share_channels"],
+            share_scales=config.get("share_scales", True),
+            share_scale_pairs=config.get("share_scale_pairs", True),
+            use_antialiasing=config.get("use_antialiasing", False),
+            normalize_relu=config["normalize_relu"],
+            delta_j=config.get("delta_j"),
+            delta_l=config.get("delta_l"),
+            shift_mode=config["shift_mode"],
+            mask_angles=config["mask_angles"],
+            mask_union_highpass=config["mask_union_highpass"],
+        ).to(device)
+    elif downsample:
         filters = construct_filters_downsample(config, image_shape)
         T = filters['psi'].shape[-1]
         logger.info(f"Using downsampled WPH model with filter size T={T}")
@@ -464,6 +495,11 @@ def main():
     torch.save(model.state_dict(), save_original)
     logger.log(f"Saved original model state_dict to {save_original}")
 
+    # Add noise to feature extractor copies before fine-tuning
+    if model.copies > 1:
+        logger.log(f"Adding noise (std={model.noise_std}) to {model.copies - 1} feature extractor copies before fine-tuning...")
+        model.add_noise_to_copies()
+
     # Fine-tune feature extractor
     if not args.skip_finetuning:
         logger.log("Fine-tuning feature extractor...")
@@ -535,7 +571,11 @@ def main():
     from visualize import visualize_main
     try:
         logger.log("Plotting kernels before and after training...")
-        base_filter_names = ['feature_extractors.0.wave_conv.base_real', 'feature_extractors.0.wave_conv.base_imag'] if config['downsample'] else ['feature_extractors.0.wave_conv.base_filters']
+        downsample_mode = config.get('downsample', False)
+        if downsample_mode == "hybrid" or downsample_mode is True:
+            base_filter_names = ['feature_extractors.0.wave_conv.base_real', 'feature_extractors.0.wave_conv.base_imag']
+        else:
+            base_filter_names = ['feature_extractors.0.wave_conv.base_filters']
         # img_file_names = plot_kernels_wph_base_filters(exp_dir, trained_filename='best_feature_extractor_model_state.pt', base_filters_key=base_filter_names)
         # # Log kernel image if available
         # for f in img_file_names:
