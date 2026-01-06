@@ -2,6 +2,8 @@ import torch
 from torch import nn
 from typing import Optional, Literal, Union, Tuple
 from torch.fft import fft2, ifft2
+import copy
+import warnings
 
 from wph.layers.wave_conv_layer import WaveConvLayer, WaveConvLayerDownsample
 from wph.layers.relu_center_layer import ReluCenterLayer, ReluCenterLayerDownsample, ReluCenterLayerDownsamplePairs
@@ -238,28 +240,98 @@ class WPHModelDownsample(WPHFeatureBase):
         
 
 class WPHClassifier(nn.Module):
-    def __init__(self, feature_extractor: WPHFeatureBase, num_classes: int, use_batch_norm: bool = False):
+    def __init__(self, feature_extractor: WPHFeatureBase, num_classes: int, use_batch_norm: bool = False, copies: int = 1, noise_std: float = 0.01):
         """
         A wrapper class for classification using WPHModel as a feature extractor.
 
         Args:
-            feature_extractor (nn.Module): The feature extractor model (e.g., WPHModel).
+            feature_extractor (nn.Module): The feature extractor model (e.g., WPHModel or WPHModelDownsample).
             num_classes (int): Number of classes for classification.
             use_batch_norm (bool): Whether to include a batch normalization layer before the classifier.
+            copies (int): Number of feature extractor copies to ensemble. Default is 1 (no ensembling).
+            noise_std (float): Standard deviation of noise added to filters for each copy. Default is 0.01.
         """
         super().__init__()
-        self.feature_extractor = feature_extractor
         self.num_classes = num_classes
         self.use_batch_norm = use_batch_norm
+        self.copies = copies
+        self.noise_std = noise_std
 
+        # store copies of feature extractor in module list
+        self.feature_extractors = nn.ModuleList([feature_extractor])
+
+        if copies > 1:
+            extra_copies = [self._deep_copy_feature_extractor(feature_extractor) for _ in range(copies - 1)]
+            for fe_copy in extra_copies:
+                self._add_noise_to_copy(fe_copy, noise_std)
+            self.feature_extractors.extend(extra_copies)
+
+            # Trainable averaging layer initialized to uniform weights (1/copies)
+            self.ensemble_weights = nn.Linear(copies, 1, bias=False)
+            with torch.no_grad():
+                self.ensemble_weights.weight.fill_(1.0 / copies)
+        else:
+            self.ensemble_weights = None
+        
         # Define the batch normalization layer (optional)
+        nb_moments_int = int(feature_extractor.nb_moments)
         if self.use_batch_norm:
-            self.batch_norm = nn.BatchNorm1d(self.feature_extractor.nb_moments)
+            self.batch_norm = nn.BatchNorm1d(nb_moments_int)
         else:
             self.batch_norm = None
 
         # Define the classifier layer
-        self.classifier = nn.Linear(self.feature_extractor.nb_moments, num_classes)
+        self.classifier = nn.Linear(nb_moments_int, num_classes)
+
+    @staticmethod
+    def _deep_copy_feature_extractor(feature_extractor):
+        """Create a deep copy of the feature extractor."""
+        return copy.deepcopy(feature_extractor)
+
+    @staticmethod
+    def _add_noise_to_copy(feature_extractor, noise_std: float):
+        """
+        Add small random noise to the filters of a feature extractor copy.
+        Handles both WPHModel and WPHModelDownsample architectures.
+        Applies noise to base_filters (WaveConvLayer) or base_real/base_imag (WaveConvLayerDownsample).
+        Also applies noise to hatphi in LowpassLayer for both.
+        """
+        if not hasattr(feature_extractor, 'wave_conv'):
+            return
+        
+        wave_conv = feature_extractor.wave_conv
+        
+        # Add noise to wave_conv filters - handle both layer types
+        if hasattr(wave_conv, 'base_filters'):
+            # WaveConvLayer (used by WPHModel)
+            with torch.no_grad():
+                wave_conv.base_filters.add_(torch.randn_like(wave_conv.base_filters) * noise_std)
+            if hasattr(wave_conv, '_invalidate_cache'):
+                wave_conv._invalidate_cache()
+
+        # WaveConvLayerDownsample uses base_real/base_imag
+        if hasattr(wave_conv, 'base_real'):
+            with torch.no_grad():
+                wave_conv.base_real.add_(torch.randn_like(wave_conv.base_real) * noise_std)
+            if hasattr(wave_conv, '_invalidate_cache'):
+                wave_conv._invalidate_cache()
+
+        if hasattr(wave_conv, 'base_imag'):
+            with torch.no_grad():
+                wave_conv.base_imag.add_(torch.randn_like(wave_conv.base_imag) * noise_std)
+            if hasattr(wave_conv, '_invalidate_cache'):
+                wave_conv._invalidate_cache()
+        
+        # Add noise to lowpass filter (hatphi) for both architectures
+        if hasattr(feature_extractor, 'lowpass'):
+            lowpass = feature_extractor.lowpass
+            if hasattr(lowpass, 'hatphi'):
+                with torch.no_grad():
+                    noisy_hatphi = lowpass.hatphi + torch.randn_like(lowpass.hatphi) * noise_std
+                # Remove buffer and register as parameter
+                if 'hatphi' in lowpass._buffers:
+                    del lowpass._buffers['hatphi']
+                lowpass.register_parameter('hatphi', nn.Parameter(noisy_hatphi))
 
     def forward(self, x: torch.Tensor, vmap_chunk_size=None) -> torch.Tensor:
         """
@@ -272,12 +344,21 @@ class WPHClassifier(nn.Module):
         Returns:
             torch.Tensor: Classification logits.
         """
-        # Always flatten features for classifier
-        features = self.feature_extractor(x, flatten=True, vmap_chunk_size=vmap_chunk_size)
+        features_list = [fe(x, flatten=True, vmap_chunk_size=vmap_chunk_size) for fe in self.feature_extractors]
+
+        if self.ensemble_weights is None:
+            features = features_list[0]
+        else:
+            # Stack features: (batch_size, nb_moments, copies)
+            features_stack = torch.stack(features_list, dim=2)
+            # Apply trainable averaging: (batch_size, nb_moments, 1)
+            features = self.ensemble_weights(features_stack).squeeze(2)
 
         # Apply batch normalization if enabled
         if self.batch_norm is not None:
             features = self.batch_norm(features)
+        
+        # Compute logits
         logits = self.classifier(features)
         return logits
 
@@ -290,8 +371,10 @@ class WPHClassifier(nn.Module):
                           and boolean values indicating whether each part should be trainable.
         """
         if 'feature_extractor' in parts:
-            for param in self.feature_extractor.parameters():
-                param.requires_grad = parts['feature_extractor']
+            trainable = parts['feature_extractor']
+            for fe in self.feature_extractors:
+                for param in fe.parameters():
+                    param.requires_grad = trainable
 
         if 'classifier' in parts:
             for param in self.classifier.parameters():
@@ -304,4 +387,8 @@ class WPHClassifier(nn.Module):
         Returns:
             list: List of trainable parameters from the feature extractor.
         """
-        return [param for param in self.feature_extractor.parameters() if param.requires_grad]
+        params = []
+        for fe in self.feature_extractors:
+            params.extend([param for param in fe.parameters() if param.requires_grad])
+        return params
+

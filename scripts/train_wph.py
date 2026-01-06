@@ -55,7 +55,7 @@ def worker_init_fn(worker_id, seed=None):
     if seed is not None:
         np.random.seed(seed + worker_id)
 
-def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion, device, epochs, logger, phase, configs, exp_dir, original_params=None):
+def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion, device, epochs, logger, phase, configs, exp_dir, original_fe_params=None):
     """
     A reusable function for training the model.
 
@@ -71,7 +71,7 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
         logger (Logger): Logger for logging progress.
         phase (str): Phase of training (e.g., 'classifier', 'feature_extractor').
         configs (dict): Configuration dictionary.
-        original_params (list[torch.Tensor], optional): Original parameters for regularization during fine-tuning.
+        original_fe_params (list[torch.Tensor], optional): Original feature-extractor parameters for regularization during fine-tuning.
 
     Returns:
         None
@@ -85,7 +85,7 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
             base_loss=criterion,
             device=device,
             lambda_reg=configs['lambda_reg'] if phase == 'feature_extractor' else 0.0,
-            original_params=original_params if phase == 'feature_extractor' else None,
+            original_params=original_fe_params if phase == 'feature_extractor' else None,
             vmap_chunk_size=configs.get('vmap_chunk_size', None),
             normalize_reg=configs.get('normalize_reg', True)
         )
@@ -96,7 +96,7 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
         if scheduler is not None:
             scheduler.step(val_acc)
             current_lr = [group['lr'] for group in optimizer.param_groups]
-            logger.log(f"Epoch={epoch+1} LR={current_lr[0]:.6e} LR_Conv={current_lr[1]:.6e}")
+            # logger.log(f"Epoch={epoch+1} LR={current_lr[0]:.6e} LR_Conv={current_lr[1]:.6e}")
         
         logger.log(f"Epoch={epoch+1} Train_Acc={train_metrics['accuracy']:.4f} Val_Acc={val_acc:.4f} Base_Loss={train_metrics['base_loss']:.4e} Reg_Loss={train_metrics['reg_loss']:.4e} Total_Loss={train_metrics['total_loss']:.4e}", data=True)
 
@@ -107,9 +107,10 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
             torch.save(model.state_dict(), best_model_path)
             logger.log(f"Saved best {phase} model state_dict to {best_model_path}")
 
-        # Log L2 norm distance for feature extractor phase
-        if phase == 'feature_extractor' and original_params is not None:
-            l2_norm = sum((p - o).norm().item() for p, o in zip(model.feature_extractor.parameters(), original_params))
+        # Log L2 norm distance for feature extractor phase (feature extractor only)
+        if phase == 'feature_extractor' and original_fe_params is not None:
+            current_fe_params = list(model.feature_extractors.parameters())
+            l2_norm = sum((p - o).norm().item() for p, o in zip(current_fe_params, original_fe_params))
         else:
             l2_norm = 0.0
         logger.log(f"Epoch={epoch+1} L2_Norm_Distance={l2_norm:.4f}", data=True)
@@ -223,7 +224,7 @@ def construct_filters_downsample(config, image_shape):
             )
         }
     else:
-        logger.info(f"Generating filters with base wavelet: {config.get("wavelet", "morlet")}")
+        logger.info(f"Generating filters with base wavelet: {config.get('wavelet', 'morlet')}")
         filters = {}
         filters['psi'] = filter_bank(
             wavelet_name=config.get("wavelet", "morlet"),
@@ -242,7 +243,6 @@ def construct_filters_downsample(config, image_shape):
         filters["hatphi"] = torch.load(hatphi_path, weights_only=True)
         filters["psi"] = apply_phase_shifts(filters["psi"], A=param_A).squeeze(0) # squeeze J dim
         T = filters['psi'].shape[-1]
-        
         if share_scales:
             filters['psi'] = filters['psi'].unsqueeze(0)  # Add J dim: (1, L, A, T, T)
         elif share_scale_pairs:
@@ -264,7 +264,9 @@ def construct_filters_downsample(config, image_shape):
 
 def log_model_parameters(model, logger):
     """Logs the number of trainable parameters in the feature extractor and classifier."""
-    feature_extractor_params = sum(p.numel() for p in model.feature_extractor.parameters() if p.requires_grad)
+    feature_extractor_params = 0
+    for fe in model.feature_extractors:
+        feature_extractor_params += sum(p.numel() for p in fe.parameters() if p.requires_grad)
     classifier_params = sum(p.numel() for p in model.classifier.parameters() if p.requires_grad)
     total_params = feature_extractor_params + classifier_params
 
@@ -388,7 +390,9 @@ def main():
     model = WPHClassifier(
         feature_extractor, 
         num_classes=config["num_classes"],
-        use_batch_norm=config.get("use_batch_norm", False)
+        use_batch_norm=config.get("use_batch_norm", False),
+        copies=int(config.get("copies", 1)),
+        noise_std=float(config.get("noise_std", 0.01)),
     ).to(device)
 
     # Log model architecture
@@ -407,7 +411,7 @@ def main():
     conv_epochs = config["conv_epochs"]
     optimizer = torch.optim.Adam([
         {"params": model.classifier.parameters(), "lr": lr_classifier},
-        {"params": model.feature_extractor.parameters(), "lr": lr_conv}
+        {"params": model.feature_extractors.parameters(), "lr": lr_conv}
     ])
     
     # Create learning rate scheduler
@@ -426,7 +430,8 @@ def main():
 
     # Clone original parameters for regularization during fine-tuning
     with torch.no_grad():
-        original_params = [p.clone().detach() for p in model.parameters()]
+        original_fe_params = [p.clone().detach() for p in model.feature_extractors.parameters()]
+    l2_norm = 0.0
 
     # Train classifier
     if not args.skip_classifier_training:
@@ -443,8 +448,10 @@ def main():
         logger.log("Skipping classifier training phase.")
         best_acc_classifier = 0.0
 
-    # Evaluate classifier phase
+    # Evaluate classifier phase (validation and test)
+    val_loss, classifier_val_acc = evaluate(model, val_loader, criterion, device)
     test_loss, classifier_test_acc = evaluate(model, test_loader, criterion, device)
+    logger.log(f"Classifier Val Accuracy: {classifier_val_acc:.4f}")
     logger.log(f"Classifier Test Accuracy: {classifier_test_acc:.4f}")
 
     save_original = os.path.join(exp_dir, "origin.pt")
@@ -468,7 +475,7 @@ def main():
         logger.log("Reset scheduler for feature extractor phase")
         
         start_time = time.time()
-        best_acc_feature_extractor, l2_norm = train_model(model=model, train_loader=train_loader, val_loader=val_loader, optimizer=optimizer, scheduler=scheduler, criterion=criterion, device=device, epochs=conv_epochs, logger=logger, phase='feature_extractor', configs=config, exp_dir=exp_dir, original_params=original_params)
+        best_acc_feature_extractor, l2_norm = train_model(model=model, train_loader=train_loader, val_loader=val_loader, optimizer=optimizer, scheduler=scheduler, criterion=criterion, device=device, epochs=conv_epochs, logger=logger, phase='feature_extractor', configs=config, exp_dir=exp_dir, original_fe_params=original_fe_params)
         elapsed_time = time.time() - start_time
         logger.log(f"Feature extractor fine-tuning completed in {elapsed_time:.2f} seconds.")
     else:
@@ -476,7 +483,9 @@ def main():
         best_acc_feature_extractor = 0.0
 
     # Evaluate feature extractor phase
+    val_loss_fe, feature_extractor_val_acc = evaluate(model, val_loader, criterion, device)
     test_loss, feature_extractor_test_acc = evaluate(model, test_loader, criterion, device)
+    logger.log(f"Feature Extractor Val Accuracy={feature_extractor_val_acc:.4f}", data=True)
     logger.log(f"Feature Extractor Test Accuracy={feature_extractor_test_acc:.4f}", data=True)
 
     # Repeat test accuracies at the end of the log
@@ -488,15 +497,15 @@ def main():
     # Update config with final accuracies
     config["nb_class"] = nb_class
     config["image_shape"] = list(image_shape)
-    config["nb_moments"] = model.feature_extractor.nb_moments
+    config["nb_moments"] = model.feature_extractors[0].nb_moments
     config["l2_norm_finetuning"] = l2_norm
     config["feature_extractor_test_acc"] = feature_extractor_test_acc
     config["classifier_test_acc"] = classifier_test_acc
-    config["classifier_last_acc"] = classifier_test_acc
+    config["classifier_last_acc"] = classifier_val_acc
     config["classifier_best_acc"] = best_acc_classifier
-    config["feature_extractor_last_acc"] = feature_extractor_test_acc
+    config["feature_extractor_last_acc"] = feature_extractor_val_acc
     config["feature_extractor_best_acc"] = best_acc_feature_extractor
-    config["feature_extractor_params"] = sum(p.numel() for p in model.feature_extractor.parameters())
+    config["feature_extractor_params"] = sum(p.numel() for fe in model.feature_extractors for p in fe.parameters())
     config["finetuning_gain"] = feature_extractor_test_acc - classifier_test_acc
     config["classifier_params"] = sum(p.numel() for p in model.classifier.parameters())
     config["device"] = str(device)
@@ -514,7 +523,7 @@ def main():
     from visualize import visualize_main
     try:
         logger.log("Plotting kernels before and after training...")
-        base_filter_names = ['feature_extractor.wave_conv.base_real', 'feature_extractor.wave_conv.base_imag'] if config['downsample'] else ['feature_extractor.wave_conv.base_filters']
+        base_filter_names = ['feature_extractors.0.wave_conv.base_real', 'feature_extractors.0.wave_conv.base_imag'] if config['downsample'] else ['feature_extractors.0.wave_conv.base_filters']
         # img_file_names = plot_kernels_wph_base_filters(exp_dir, trained_filename='best_feature_extractor_model_state.pt', base_filters_key=base_filter_names)
         # # Log kernel image if available
         # for f in img_file_names:
