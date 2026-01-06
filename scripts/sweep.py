@@ -7,6 +7,8 @@ from configs import load_config, expand_param
 import pandas as pd
 import matplotlib.pyplot as plt
 import dotenv
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import torch
 
 dotenv.load_dotenv()
 
@@ -64,34 +66,38 @@ sweep_name = os.path.splitext(os.path.basename(args.config))[0]
 logger = LoggerManager.get_logger(log_dir=sweep_dir, wandb_project=wandb_project, name=f"{sweep_name}-{timestamp}")
 
 
-# All parameter names
-expanded_values = [expand_param(v) for v in params.values()]
-keys = list(params.keys())
-all_combinations = list(itertools.product(*expanded_values))
-total_runs = len(all_combinations)
+logger = LoggerManager.get_logger(log_dir=sweep_dir, wandb_project=wandb_project, name=f"{sweep_name}-{timestamp}")
 
-# All combinations of values
-for run_idx, values in enumerate(all_combinations, 1):
+# Detect available GPUs
+if torch.cuda.is_available():
+    num_gpus = torch.cuda.device_count()
+    gpu_ids = list(range(num_gpus))
+    logger.info(f"Found {num_gpus} GPUs available for parallel execution")
+else:
+    num_gpus = 1
+    gpu_ids = [None]  # Will run on CPU
+    logger.info("No GPUs found, running on CPU")
+
+
+def run_single_trial(run_idx, total_runs, values, keys, base_config, sweep_dir, wandb_project, args, gpu_id):
+    """Run a single trial with a specific GPU assignment."""
     overrides = {k: v for k, v in zip(keys, values)}
-    merged_config = {**base_config, **overrides}  # Merge base config with overrides
-
-    # Debug: Log merged_config to verify content
-    logger.info(f"Merged config for run {run_idx}: {merged_config}")
-
-    # Optional: create a run name from param values
+    merged_config = {**base_config, **overrides}
+    
     run_name = "_".join([f"{k}{v}" for k, v in overrides.items()])
-    logger.info(f"Run {run_idx}/{total_runs} — overrides: {overrides}")
-
+    log_msg = f"Run {run_idx}/{total_runs} (GPU {gpu_id if gpu_id is not None else 'CPU'}) — overrides: {overrides}"
+    logger.info(log_msg)
+    
     if args.model_type == 'scat':
         file = "scripts/train.py"
     elif args.model_type == 'wph':
         file = "scripts/train_wph.py"
-
+    
     # Save merged config to a temporary file
     temp_config_path = os.path.join(sweep_dir, f"temp_config_{run_idx}.yaml")
     with open(temp_config_path, "w") as f:
         yaml.dump(merged_config, f)
-
+    
     cmd = [
         "python", file,
         "--config", temp_config_path,
@@ -99,12 +105,60 @@ for run_idx, values in enumerate(all_combinations, 1):
     ]
     if wandb_project is not None:
         cmd.extend(["--wandb_project", wandb_project])
-    result = subprocess.run(cmd)
-    if result.returncode == 0:
-        logger.info(f"Finished run.")
-    else:
-        logger.error(f"Run failed with return code {result.returncode}")
-logger.info("All runs finished.")
+    
+    # Set up environment with GPU assignment
+    env = os.environ.copy()
+    if gpu_id is not None:
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    
+    try:
+        result = subprocess.run(cmd, env=env)
+        if result.returncode == 0:
+            logger.info(f"Run {run_idx} (GPU {gpu_id if gpu_id is not None else 'CPU'}) finished successfully")
+            return {"run_idx": run_idx, "success": True, "gpu_id": gpu_id}
+        else:
+            logger.error(f"Run {run_idx} (GPU {gpu_id if gpu_id is not None else 'CPU'}) failed with return code {result.returncode}")
+            return {"run_idx": run_idx, "success": False, "gpu_id": gpu_id, "returncode": result.returncode}
+    except Exception as e:
+        logger.error(f"Run {run_idx} (GPU {gpu_id if gpu_id is not None else 'CPU'}) failed with exception: {e}")
+        return {"run_idx": run_idx, "success": False, "gpu_id": gpu_id, "exception": str(e)}
+
+
+# All parameter names
+expanded_values = [expand_param(v) for v in params.values()]
+keys = list(params.keys())
+all_combinations = list(itertools.product(*expanded_values))
+total_runs = len(all_combinations)
+
+logger.info(f"Starting {total_runs} runs in parallel across {num_gpus} GPU(s)")
+
+# Run trials in parallel
+results = []
+with ThreadPoolExecutor(max_workers=num_gpus) as executor:
+    # Submit all jobs
+    futures = []
+    for run_idx, values in enumerate(all_combinations, 1):
+        # Assign GPU in round-robin fashion
+        gpu_id = gpu_ids[(run_idx - 1) % num_gpus]
+        future = executor.submit(
+            run_single_trial,
+            run_idx, total_runs, values, keys, base_config,
+            sweep_dir, wandb_project, args, gpu_id
+        )
+        futures.append(future)
+    
+    # Wait for all jobs to complete
+    for future in as_completed(futures):
+        result = future.result()
+        results.append(result)
+
+# Summary of results
+successful_runs = sum(1 for r in results if r["success"])
+failed_runs = len(results) - successful_runs
+logger.info(f"All runs finished. Successful: {successful_runs}/{total_runs}, Failed: {failed_runs}/{total_runs}")
+if failed_runs > 0:
+    failed_indices = [r["run_idx"] for r in results if not r["success"]]
+    logger.warning(f"Failed run indices: {failed_indices}")
 
 logger.info("Analyzing results...")
 rows = []
