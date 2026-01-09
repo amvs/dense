@@ -86,6 +86,7 @@ def main():
     share_channels = config.get("share_channels", False)
     out_size = config["out_size"]
     n_copies = config["n_copies"]
+    pca_dim  = config["pca_dim"]
     params = ScatterParams(
         n_scale=max_scale,
         n_orient=nb_orients,
@@ -95,99 +96,40 @@ def main():
         n_class=nb_class,
         share_channels=share_channels,
         in_size=image_shape[1],
-        out_size=out_size
+        out_size=out_size,
+        pca_dim=pca_dim,
     )
     model = dense(params).to(device)
-    # model = dense(max_scale, nb_orients, image_shape,
-    #             wavelet=wavelet, nb_class=nb_class, efficient=efficient, share_channels=share_channels).to(device)
-    
+
     # Train classifier
-    #radius = float(config["radius"])
     lr = float(config["lr"])
     #lr = min(lr, radius * 0.5)
     lambda_reg = float(config["lambda_reg"])
     
-    classifier_epochs = config["classifier_epochs"]
+    classifier_epochs = 0 #config["classifier_epochs"]
     conv_epochs = config["conv_epochs"]
-    # optimizer = torch.optim.Adam([
-    #     {"params": model.linear.parameters(), "lr": lr},   # different lr
-    #     {"params": model.fine_tuned_params(), "lr": lr * 0.01}   # 
-    # ])
 
     ##
-    classifier_patience = config.get("classifier_patience", 5)
     conv_patience = config.get("conv_patience", 3)
-    normalize_classifier = config.get("normalize_classifier", False)
     ##
 
     base_loss = nn.CrossEntropyLoss()
     with torch.no_grad():
         original_params = [p.clone().detach() for p in model.fine_tuned_params()]
     n_tuned_params = model.n_tuned_params()
-    logger.log(f"n_tuned_params={n_tuned_params} n_linear_params={model.out_dim*model.n_class}", data=True)
-    logger.log("Training linear classifier...") 
-    model.train_classifier()
-    ##
-    optimizer_cls = torch.optim.Adam(
-        model.linear.parameters(),
-        lr=lr,
-    )
-    best_val_acc = 0.0
-    best_state = None
-    patience_counter = 0
-
-    for epoch in range(classifier_epochs):
-        train_metrics = train_one_epoch(
-            model, train_loader, optimizer_cls, base_loss, device
-        )
-        val_loss, val_acc = evaluate(
-            model, val_loader, base_loss, device
-        )
-
-        logger.log(
-            f"Epoch={epoch+1} "
-            f"Train_Acc={train_metrics['accuracy']:.4f} "
-            f"Train_Loss={train_metrics['total_loss']:.4f} "
-            f"Base_Loss={train_metrics['base_loss']:.4f} "
-            f"Val_Acc={val_acc:.4f} "
-            f"Val_Loss={val_loss:.4f} ",
-            data=True,
-        )
-
-        # ---- Early stopping on validation accuracy
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-            patience_counter = 0
-        else:
-            patience_counter += 1
-            if patience_counter >= classifier_patience:
-                logger.log("Early stopping classifier training.")
-                break
+    logger.log(f"n_tuned_params={n_tuned_params} n_linear_params={model.out_dim*model.n_class*model.pca_dim}", data=True)
+    logger.log("Training linear(PCA) classifier...") 
+    model.fit(train_loader, device)
     # Restore best classifier
-    model.load_state_dict(best_state)
-    logger.log("Finish linear layer training task.")
+    logger.log("Finish linear(PCA) layer training task.")
 
-    ##
-    # for classifier_epoch in range(classifier_epochs):
-    #     train_metrics = train_one_epoch(model, train_loader, optimizer, base_loss, device)
-    #     val_loss, val_acc = evaluate(model, val_loader, base_loss, device)
-    #     logger.log(f"Epoch {classifier_epoch+1}: Train_Acc={train_metrics['accuracy']:.4f} Val_Acc={val_acc:.4f} Base_Loss={train_metrics['base_loss']:.4e} Reg_Loss={train_metrics['reg_loss']:.4e} Total_Loss={train_metrics['total_loss']:.4e}", data=True)
-    # logger.log("Finish linear layer training task.")
     ini_test_loss, ini_test_acc = evaluate(model, test_loader, base_loss, device)
     logger.log(f"linear_test_acc={ini_test_acc:.4f} linear_test_loss={ini_test_loss:.4f}", data=True)
     save_original = os.path.join(exp_dir, "origin.pt")
     torch.save(model.state_dict(), save_original)
     logger.log(f"Save model to {save_original}")
-    ##
-    if normalize_classifier:
-        logger.log("Normalizing linear classifier weights.")
-        with torch.no_grad():
-            w = model.linear.weight
-            model.linear.weight.copy_(
-                w / w.norm(dim=1, keepdim=True)
-            )
-    ##
+
+    
     logger.log("Fine tuning conv layers...")
     model.train_conv()
     ##

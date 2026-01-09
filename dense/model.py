@@ -5,6 +5,7 @@ from .wavelets import filter_bank
 from torch import Tensor
 import torch.nn.functional as F
 import random
+from collections import defaultdict
 
 from .helpers import checkpoint
 @dataclass
@@ -17,7 +18,11 @@ class ScatterParams:
     n_class: int
     share_channels: bool
     in_size: int
-    out_size: int
+    out_size: int # -1 means no global pooling on scatter features
+    # PCA
+    pca_dim: int
+
+    #
     random: bool = False
 
 class MyConv2d(nn.Module):
@@ -129,9 +134,93 @@ class dense(nn.Module):
             ]
         )
         out_size = self.out_size
-        self.out_dim = self.out_channels * out_size**2 #* (self.in_size // 2**self.n_scale)**2 
-        self.global_pool = nn.AdaptiveAvgPool2d((out_size,out_size))
-        self.linear = nn.Linear(self.out_dim, self.n_class)
+        if out_size != -1:
+            self.out_dim = self.out_channels * out_size**2 #* (self.in_size // 2**self.n_scale)**2 
+            self.global_pool = nn.AdaptiveAvgPool2d((out_size,out_size))
+        else:
+            self.out_dim = self.out_channels * (self.in_size // 2**self.n_scale)**2
+        #self.linear = nn.Linear(self.out_dim, self.n_class)
+
+        self.register_buffer("class_means", None)   # [C, D]
+        self.register_buffer("pca_bases", None)     # [C, D, k]
+    
+    @torch.no_grad()
+    def fit(self, dataloader, device):
+        self.eval()
+
+        # running statistics
+        count = torch.zeros(self.n_class, device=device)
+        sum_feat = None
+
+        # ---------- pass 1: class means ----------
+        for imgs, labels in dataloader:
+            imgs = imgs.to(device)
+            labels = labels.to(device)
+
+            feats = self.scatter_forward(imgs)  # [B, D]
+
+            if sum_feat is None:
+                D = feats.shape[1]
+                sum_feat = torch.zeros(self.n_class, D, device=device)
+
+            for c in range(self.n_class):
+                mask = labels == c
+                if mask.any():
+                    sum_feat[c] += feats[mask].sum(dim=0)
+                    count[c] += mask.sum()
+
+        class_means = sum_feat / count.unsqueeze(1)
+
+        # ---------- pass 2: covariance ----------
+        self.pca_bases = self._compute_pca_bases_randomized(
+            dataloader, class_means, device
+        )
+        self.class_means = class_means
+
+    @torch.no_grad()
+    def _compute_pca_bases_randomized(
+        self, dataloader, class_means, device
+    ):
+        C = self.n_class
+        k = self.pca_dim
+        oversample = 5  # 常用设置
+
+        # 每个类别一个 list
+        feats_by_class = defaultdict(list)
+
+        for imgs, labels in dataloader:
+            imgs = imgs.to(device)
+            labels = labels.to(device)
+
+            feats = self.scatter_forward(imgs)
+
+            for c in range(C):
+                mask = labels == c
+                if mask.any():
+                    x = feats[mask] - class_means[c]
+                    feats_by_class[c].append(x)
+
+        pca_bases = []
+
+        for c in range(C):
+            X = torch.cat(feats_by_class[c], dim=0)  # [Nc, D]
+
+            # ---------- randomized SVD ----------
+            q = k + oversample
+            R = torch.randn(X.shape[1], q, device=device)
+
+            Y = X @ R                  # [Nc, q]
+            Q, _ = torch.linalg.qr(Y)  # [Nc, q]
+
+            B = Q.T @ X                # [q, D]
+            _, _, Vh = torch.linalg.svd(B, full_matrices=False)
+
+            V = Vh[:k].T               # [D, k]
+            pca_bases.append(V)
+
+        return torch.stack(pca_bases)  # [C, D, k]
+
+
 
     def set_filters(self):
         self.filters = filter_bank(self.wavelet, self.n_scale, self.n_orient)
@@ -175,28 +264,68 @@ class dense(nn.Module):
         return y
 
 
-    def forward(self, img):
+    def scatter_forward(self, img):
         inputs = [img]
         for ind, block in enumerate(self.blocks):
             #out = checkpoint(block, *inputs) if ind != 0 else block(*inputs)
             out = block(*inputs)
             inputs.append(out)
             inputs = [self.pooling(i) for i in inputs]
-        features = self.global_pool(torch.cat(inputs, dim=1)).reshape(img.shape[0], -1)
-        return self.linear(features) #self.linear(F.normalize(features, p=2, dim=1))
+        if self.out_size != -1:
+            features = self.global_pool(torch.cat(inputs, dim=1)).reshape(img.shape[0], -1)
+        else:
+            features = torch.cat(inputs, dim=1).reshape(img.shape[0], -1)
+        return features #self.linear(features) #self.linear(F.normalize(features, p=2, dim=1))
+
+    def forward(self, imgs):
+        """
+        imgs: [B, ...]
+        return: logits [B, C] (负重构误差)
+        """
+        feats = self.scatter_forward(imgs)  # [B, D]
+
+        B, D = feats.shape
+
+        C = self.n_class
+
+        scores = feats.new_empty(B, C)
+
+        for c in range(C):
+            mean = self.class_means[c]     # [D]
+            V = self.pca_bases[c]          # [D, k]
+
+            x = feats - mean               # [B, D]
+
+            # low-dim coordinates: [B, k]
+            alpha = x @ V                  # O(B D k)
+
+            # reconstruction: [B, D]
+            recon = alpha @ V.T
+
+            residual = x - recon
+            scores[:, c] = -residual.norm(dim=1)
+
+        # for c in range(C):
+        #     x = feats - self.class_means[c]    # [B, D]
+        #     alpha = x @ self.pca_bases[c]      # [B, k]
+
+        #     dist2 = (x ** 2).sum(dim=1) - (alpha ** 2).sum(dim=1)
+        #     scores[:, c] = -torch.sqrt(dist2 + 1e-8)
+
+        return scores
 
 
     def train_classifier(self):
         for param in self.blocks.parameters():
             param.requires_grad = False
-        for param in self.linear.parameters():
-            param.requires_grad = True
+        # for param in self.linear.parameters():
+        #     param.requires_grad = True
 
     def train_conv(self):
         for param in self.blocks.parameters():
             param.requires_grad = True
-        for param in self.linear.parameters():
-            param.requires_grad = False
+        # for param in self.linear.parameters():
+        #     param.requires_grad = False
 
     def full_train(self):
         for param in self.parameters():

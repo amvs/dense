@@ -72,7 +72,7 @@ def evaluate(model, loader, base_loss, device):
     with torch.no_grad():
         for inputs, targets in loader:
             inputs, targets = inputs.to(device), targets.to(device)
-            outputs = model(inputs)
+            outputs = model(inputs) # PCA classifier outputs: negative reconstruction distances
             loss = base_loss(outputs, targets)
             total_loss += loss.item() * inputs.size(0)
             correct += (outputs.argmax(dim=1) == targets).sum().item()
