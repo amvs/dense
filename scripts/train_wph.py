@@ -11,6 +11,10 @@ import platform
 from functools import partial
 from dotenv import load_dotenv
 load_dotenv()
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import pandas as pd
 
 from configs import load_config, save_config, apply_overrides
 from training.datasets import get_loaders, split_train_val
@@ -19,6 +23,21 @@ from wph.wph_model import WPHModel, WPHModelDownsample, WPHClassifier
 from dense.helpers import LoggerManager
 from dense.wavelets import filter_bank
 from wph.layers.utils import apply_phase_shifts
+
+
+class AutoConfig(dict):
+    """Dictionary subclass that records default values used via `get()`.
+
+    Any call to `config.get(key, default)` where `key` is missing will
+    insert `key: default` into the dictionary and return `default`.
+    This ensures defaults become part of the saved config.
+    """
+    def get(self, key, default=None):
+        if key in self:
+            return super().get(key)
+        # Record the default into the config so it is saved later
+        super().__setitem__(key, default)
+        return default
 
 
 
@@ -55,7 +74,7 @@ def worker_init_fn(worker_id, seed=None):
     if seed is not None:
         np.random.seed(seed + worker_id)
 
-def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion, device, epochs, logger, phase, configs, exp_dir, original_fe_params=None):
+def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion, device, epochs, logger, phase, configs, exp_dir, original_fe_params=None, test_loader=None):
     """
     A reusable function for training the model.
 
@@ -77,6 +96,8 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
         None
     """
     best_acc = 0.0  # Initialize best accuracy
+    # Accuracy history per epoch for plotting
+    train_acc_hist, val_acc_hist, test_acc_hist = [], [], []
     for epoch in range(epochs):
         train_metrics = train_one_epoch(
             model=model,
@@ -90,6 +111,11 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
             normalize_reg=configs.get('normalize_reg', True)
         )
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
+        # Optionally evaluate on test set each epoch (for tracking only)
+        if test_loader is not None:
+            test_loss_epoch, test_acc_epoch = evaluate(model, test_loader, criterion, device)
+        else:
+            test_acc_epoch = None
         logger.log("Phase: {} Epoch: {}".format(phase, epoch+1))
         
         # Step scheduler based on validation accuracy
@@ -98,7 +124,12 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
             current_lr = [group['lr'] for group in optimizer.param_groups]
             # logger.log(f"Epoch={epoch+1} LR={current_lr[0]:.6e} LR_Conv={current_lr[1]:.6e}")
         
-        logger.log(f"Epoch={epoch+1} Train_Acc={train_metrics['accuracy']:.4f} Val_Acc={val_acc:.4f} Base_Loss={train_metrics['base_loss']:.4e} Reg_Loss={train_metrics['reg_loss']:.4e} Total_Loss={train_metrics['total_loss']:.4e}", data=True)
+        logger.log(f"Epoch={epoch+1} Train_Acc={train_metrics['accuracy']:.4f} Val_Acc={val_acc:.4f} Base_Loss={train_metrics['base_loss']:.4e} Reg_Loss={train_metrics['reg_loss']:.4e} Total_Loss={train_metrics['total_loss']:.4e}" + (f" Test_Acc={test_acc_epoch:.4f}" if test_acc_epoch is not None else ""), data=True)
+
+        # Record history
+        train_acc_hist.append(float(train_metrics['accuracy']))
+        val_acc_hist.append(float(val_acc))
+        test_acc_hist.append(float(test_acc_epoch) if test_acc_epoch is not None else float('nan'))
 
         # Track best accuracy and save state_dict only when validation improves
         if val_acc > best_acc:
@@ -120,7 +151,13 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
     torch.save(model.state_dict(), final_model_path)
     logger.log(f"Saved final {phase} model state_dict to {final_model_path}")
 
-    return best_acc, l2_norm
+    # Return accuracy history for plotting
+    history = {
+        'train_acc': train_acc_hist,
+        'val_acc': val_acc_hist,
+        'test_acc': test_acc_hist,
+    }
+    return best_acc, l2_norm, history
 
 def construct_filters_fullsize(config, image_shape):
     """
@@ -279,6 +316,9 @@ def main():
     args = parse_args()
     config = load_config(args.config)
     config = apply_overrides(config, args.override)
+    # Wrap config so that any use of config.get(key, default) will
+    # record the default into the config dictionary for later saving.
+    config = AutoConfig(config)
 
     # Set random seed for reproducibility
     seed = config.get("seed", None)  # Default seed is None if not provided
@@ -429,7 +469,7 @@ def main():
     )
     logger.log(f"Scheduler: ReduceLROnPlateau(mode={scheduler_config.get('mode', 'max')}, factor={scheduler_config.get('factor', 0.5)}, patience={scheduler_config.get('patience', 5)})")
 
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=config.get("ce_smooth", 0.0))
 
     # Clone original parameters for regularization during fine-tuning
     with torch.no_grad():
@@ -441,15 +481,27 @@ def main():
         logger.log("Training classifier...")
         model.set_trainable({"feature_extractor": False, "classifier": True})
         start_time = time.time()
-        best_acc_classifier, _ = train_model(model=model, train_loader=train_loader,
-                                          val_loader=val_loader, optimizer=optimizer,
-                                          scheduler=scheduler, criterion=criterion, device=device, epochs=classifier_epochs,
-                                          logger=logger, phase='classifier', configs=config, exp_dir=exp_dir)
+        best_acc_classifier, _, hist_cls = train_model(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            criterion=criterion,
+            device=device,
+            epochs=classifier_epochs,
+            logger=logger,
+            phase='classifier',
+            configs=config,
+            exp_dir=exp_dir,
+            test_loader=test_loader,
+        )
         elapsed_time = time.time() - start_time
         logger.log(f"Classifier training completed in {elapsed_time:.2f} seconds.")
     else:
         logger.log("Skipping classifier training phase.")
         best_acc_classifier = 0.0
+        hist_cls = {'train_acc': [], 'val_acc': [], 'test_acc': []}
 
     # Load best classifier model and evaluate
     if not args.skip_classifier_training:
@@ -484,12 +536,33 @@ def main():
         logger.log("Reset scheduler for feature extractor phase")
         
         start_time = time.time()
-        best_acc_feature_extractor, l2_norm = train_model(model=model, train_loader=train_loader, val_loader=val_loader, optimizer=optimizer, scheduler=scheduler, criterion=criterion, device=device, epochs=conv_epochs, logger=logger, phase='feature_extractor', configs=config, exp_dir=exp_dir, original_fe_params=original_fe_params)
+        best_acc_feature_extractor, l2_norm, hist_fe = train_model(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            criterion=criterion,
+            device=device,
+            epochs=conv_epochs,
+            logger=logger,
+            phase='feature_extractor',
+            configs=config,
+            exp_dir=exp_dir,
+            original_fe_params=original_fe_params,
+            test_loader=test_loader,
+        )
         elapsed_time = time.time() - start_time
         logger.log(f"Feature extractor fine-tuning completed in {elapsed_time:.2f} seconds.")
     else:
         logger.log("Skipping fine-tuning phase.")
         best_acc_feature_extractor = 0.0
+        hist_fe = {'train_acc': [], 'val_acc': [], 'test_acc': []}
+
+    # Aggregate history across phases
+    train_acc_all = (hist_cls['train_acc'] if hist_cls else []) + (hist_fe['train_acc'] if hist_fe else [])
+    val_acc_all = (hist_cls['val_acc'] if hist_cls else []) + (hist_fe['val_acc'] if hist_fe else [])
+    test_acc_all = (hist_cls['test_acc'] if hist_cls else []) + (hist_fe['test_acc'] if hist_fe else [])
 
     # Evaluate feature extractor phase
     # Load best feature extractor model and evaluate
@@ -507,6 +580,47 @@ def main():
     logger.log("===== Final Test Accuracies =====")
     logger.log(f"Classifier_Test_Accuracy={classifier_test_acc:.4f}", data=True)
     logger.log(f"Feature_Extractor_Test_Accuracy={feature_extractor_test_acc:.4f}", data=True)
+
+    # Plot accuracy history across epochs (train, val, test)
+    try:
+        total_epochs = len(train_acc_all)
+        if total_epochs > 0:
+            epochs_axis = list(range(1, total_epochs + 1))
+            plt.figure(figsize=(8, 5))
+            plt.plot(epochs_axis, train_acc_all, label='Train', color='tab:blue', linewidth=2)
+            plt.plot(epochs_axis, val_acc_all, label='Val', color='tab:orange', linewidth=2)
+            # Filter out NaNs for plotting test if present
+            if any([not np.isnan(v) for v in test_acc_all]):
+                # Replace NaNs with None so matplotlib skips them
+                test_plot = [v if not np.isnan(v) else None for v in test_acc_all]
+                plt.plot(epochs_axis, test_plot, label='Test', color='tab:green', linewidth=2)
+            plt.xlabel('Epoch')
+            plt.ylabel('Accuracy')
+            plt.title('Accuracy per Epoch')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            acc_plot_path = os.path.join(exp_dir, 'accuracy.png')
+            plt.savefig(acc_plot_path)
+            plt.close()
+            logger.log(f"Saved accuracy plot to {acc_plot_path}")
+
+            # Save accuracy per-epoch as a DataFrame (CSV)
+            df = pd.DataFrame({
+                'epoch': epochs_axis,
+                'train_acc': train_acc_all,
+                'val_acc': val_acc_all,
+                'test_acc': test_acc_all,
+            })
+            acc_csv_path = os.path.join(exp_dir, 'accuracy.csv')
+            df.to_csv(acc_csv_path, index=False)
+            logger.log(f"Saved accuracy dataframe to {acc_csv_path}")
+        else:
+            logger.log("No epochs recorded; skipping accuracy plot.")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        logger.log(f"Failed to create/save accuracy plot: {e}")
 
     
     # Update config with final accuracies
