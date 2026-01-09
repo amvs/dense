@@ -3,7 +3,7 @@ from .kaggle import get_kaggle_loaders
 from .base import split_train_val
 
 Loaders = ["mnist", "smohsensadeghi/curet-dataset", "roustoumabdelmoula/textures-dataset", "saurabhshahane/barkvn50",
-"prasunroy/natural-images"]
+"prasunroy/natural-images", "liewyousheng/minc2500"]
 
 def get_loaders(dataset, *args, **kwargs):
     if dataset not in Loaders:
