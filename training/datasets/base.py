@@ -2,7 +2,8 @@ from torch.utils.data import random_split, DataLoader, Subset
 from sklearn.model_selection import StratifiedShuffleSplit
 from dense.helpers import LoggerManager
 import torch
-
+import random
+from collections import defaultdict
 def stratify_split(dataset, train_size, seed=123):
     """
     Stratified random split.
@@ -37,6 +38,42 @@ def stratify_split(dataset, train_size, seed=123):
 
     return subset1, subset2
 
+def equally_split(dataset, train_size, seed=123):
+    """
+    Stratified split with EXACTLY train_size samples per class
+    """
+
+    rng = random.Random(seed)
+
+    # 1. collect indices by class
+    class_to_indices = defaultdict(list)
+    for idx in range(len(dataset)):
+        _, y = dataset[idx]
+        class_to_indices[y].append(idx)
+
+    train_indices = []
+    test_indices = []
+
+    # 2. sample per class
+    for y, indices in class_to_indices.items():
+        if len(indices) < train_size:
+            raise ValueError(
+                f"Class {y} has only {len(indices)} samples, "
+                f"cannot sample {train_size}"
+            )
+
+        rng.shuffle(indices)
+
+        train_indices.extend(indices[:train_size])
+        test_indices.extend(indices[train_size:])
+
+    # 3. construct subsets
+    train_subset = Subset(dataset, train_indices)
+    test_subset = Subset(dataset, test_indices)
+
+    return train_subset, test_subset
+
+
 def split_train_val(train_dataset, train_ratio=0.1, batch_size=64, seed=123, train_val_ratio=4, drop_last=False):
     """
     Split an existing train_dataset further into train and validation subsets
@@ -68,12 +105,17 @@ def split_train_val(train_dataset, train_ratio=0.1, batch_size=64, seed=123, tra
             train_dataset, train_size=used_len,
             seed=seed
         )
-        train_subset, val_subset = stratify_split(
-            used_dataset, train_size=train_len,
+        train_subset, val_subset = equally_split(
+            used_dataset, train_size=46,
             seed=seed
         )
+        # train_subset, val_subset = stratify_split(
+        #     used_dataset, train_size=train_len,
+        #     seed=seed
+        # )
     discard_len = total_len - len(train_subset) - len(val_subset)
     train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, drop_last=drop_last)
+    train_len = len(train_subset)
     val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, drop_last=drop_last)
     logger = LoggerManager.get_logger()
     logger.info(f"Split train dataset into train and val subsets...")

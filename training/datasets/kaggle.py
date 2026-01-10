@@ -86,7 +86,7 @@ def get_kaggle_loaders(dataset_name, resize, deeper_path, batch_size=64, train_r
     # split dataset
     train_dataset, test_dataset = stratify_split(
         dataset, train_size=train_len,
-        seed=42
+        seed=421
     )
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn, drop_last=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=True)

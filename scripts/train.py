@@ -160,6 +160,8 @@ def main():
             model, val_loader, base_loss, device
         )
 
+        
+
         logger.log(
             f"Epoch={classifier_epochs+epoch+1} "
             f"Train_Acc={train_metrics['accuracy']:.4f} "
@@ -169,6 +171,13 @@ def main():
             f"Val_Loss={val_loss:.4f} "
             f"Reg_Loss={train_metrics['reg_loss']:.4f} "
             f"Total_Loss={train_metrics['total_loss']:.4f}",
+            data=True,
+        )
+
+        test_loss, test_acc = evaluate(model, test_loader, base_loss, device)
+
+        logger.log(
+            f"--- Test_Acc={test_acc:.4f} Test_Loss={test_loss:.4f}",
             data=True,
         )
 
