@@ -26,12 +26,12 @@ wavelet_params:
 # training setting
 dataset: liewyousheng/minc2500
 deeper_path: minc-2500/images
-resize: 200
-classifier_epochs: 15
-conv_epochs: 15
+resize: 360
+classifier_epochs: 20
+conv_epochs: 20
 batch_size: 32
 lr: 0.0001
-lr_conv: 1.0e-6 # verified good choice for downsample=true and false
+lr_conv: 1.0e-5
 lambda_reg: 1.0e+4
 train_ratio: 0.1
 test_ratio: 0.15
@@ -41,7 +41,7 @@ vmap_chunk_size: 50
 normalize_reg: false
 
 # Classifier settings
-num_classes: 61
+num_classes: 23
 use_batch_norm: true
 copies: 1
 noise_std: 0.01
