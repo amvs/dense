@@ -214,19 +214,19 @@ topN = 3
 # Step 2: take top-N runs per val_ratio by validation accuracy
 # Sort by val_ratio and the specified metric
 metric = args.metric
-df = df.sort_values(["val_ratio", metric], ascending=[True, False])
+df = df.sort_values(["train_ratio", metric], ascending=[True, False])
 
 # Group by val_ratio and keep top N runs
-top_runs = df.groupby("val_ratio").head(topN)
+top_runs = df.groupby("train_ratio").head(topN)
 
-topN_csv_path = os.path.join(results_path, f"top{topN}_runs_per_val_ratio.csv")
+topN_csv_path = os.path.join(results_path, f"top{topN}_runs_per_train_ratio.csv")
 top_runs.to_csv(topN_csv_path, index=False)
-logger.info(f"Saved top-{topN} runs per val_ratio to {topN_csv_path}")
+logger.info(f"Saved top-{topN} runs per train_ratio to {topN_csv_path}")
 
 # Create a label for x-axis: "val_ratio-rank" only
 labels = []
 heights = []
-for val_ratio, group in top_runs.groupby("val_ratio"):
+for train_ratio, group in top_runs.groupby("train_ratio"):
     # sort by val_acc descending within this val_ratio
     group_sorted = group.sort_values(args.metric, ascending=False).reset_index()
     for rank, row in enumerate(group_sorted.itertuples(), 1):
