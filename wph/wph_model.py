@@ -333,7 +333,7 @@ class WPHClassifier(nn.Module):
                     del lowpass._buffers['hatphi']
                 lowpass.register_parameter('hatphi', nn.Parameter(noisy_hatphi))
 
-    def forward(self, x: torch.Tensor, vmap_chunk_size=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, vmap_chunk_size=None, return_feats=False) -> torch.Tensor:
         """
         Forward pass for the classifier.
 
@@ -356,11 +356,15 @@ class WPHClassifier(nn.Module):
 
         # Apply batch normalization if enabled
         if self.batch_norm is not None:
+            pre_bn_feats = features.clone().detach()
             features = self.batch_norm(features)
         
         # Compute logits
         logits = self.classifier(features)
-        return logits
+        if return_feats:
+            return logits, pre_bn_feats, features
+        else:
+            return logits
 
     def set_trainable(self, parts: dict):
         """
