@@ -1,4 +1,5 @@
 import torch
+import time
 
 def regularization_loss(current_params, original_params, lambda_reg=1e-3, normalize_reg=True):
     '''
@@ -78,3 +79,75 @@ def evaluate(model, loader, base_loss, device):
     avg_loss = total_loss / len(loader.dataset)
     accuracy = correct / len(loader.dataset)
     return avg_loss, accuracy
+
+
+def recompute_bn_running_stats(model, loader, device, max_batches=100, logger=None, momentum=None):
+    """Run forward-only passes to update BatchNorm running statistics.
+
+    Performs up to `max_batches` forward passes with `torch.no_grad()` while the
+    model is in train mode so BatchNorm modules update their running_mean/var
+    without modifying parameters. This is robust to loaders with fewer than
+    `max_batches` batches.
+
+    If `momentum` is provided, temporarily set each BatchNorm module's
+    `momentum` attribute to that value for the duration of the warmup and
+    restore original values afterwards. Higher momentum (closer to 1.0)
+    makes running stats track batch statistics more aggressively.
+    """
+    if logger:
+        logger.log(f"Starting BN warmup for up to {max_batches} batches", data=True)
+    # Optionally override BN momentum temporarily
+    bn_modules = []
+    old_momentums = []
+    for m in model.modules():
+        # cover BatchNorm variants
+        if isinstance(m, torch.nn.modules.batchnorm._BatchNorm):
+            bn_modules.append(m)
+            old_momentums.append(getattr(m, 'momentum', None))
+            if momentum is not None:
+                try:
+                    m.momentum = momentum
+                except Exception:
+                    pass
+
+    model.train()
+    batches = 0
+    start_t = time.time()
+    try:
+        with torch.no_grad():
+            for batch in loader:
+            # DataLoader typically yields (inputs, targets) tuples
+                if isinstance(batch, (list, tuple)):
+                    inputs = batch[0]
+                elif isinstance(batch, dict):
+                    inputs = batch.get("image") or batch.get("inputs") or next(iter(batch.values()))
+                else:
+                    inputs = batch
+                if isinstance(inputs, (list, tuple)):
+                    inputs = inputs[0]
+                try:
+                    inputs = inputs.to(device)
+                except Exception:
+                    pass
+                try:
+                    _ = model(inputs)
+                except Exception:
+                    # Best-effort: ignore forward errors during warmup
+                    pass
+                batches += 1
+                if batches >= max_batches:
+                    break
+    finally:
+        # Restore original BN momentums
+        if len(bn_modules) > 0 and len(old_momentums) == len(bn_modules):
+            for m, old in zip(bn_modules, old_momentums):
+                try:
+                    if old is None:
+                        # if there was no attribute before, delete if possible
+                        delattr(m, 'momentum')
+                    else:
+                        m.momentum = old
+                except Exception:
+                    pass
+    if logger:
+        logger.log(f"Completed BN warmup ({batches} batches) in {time.time()-start_t:.2f}s", data=True)
