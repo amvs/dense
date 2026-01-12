@@ -16,28 +16,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from configs import load_config, save_config, apply_overrides
-from training.datasets import get_loaders, split_train_val
+from configs import load_config, save_config, apply_overrides, AutoConfig
 from training import train_one_epoch, evaluate
-from wph.wph_model import WPHModel, WPHModelDownsample, WPHClassifier
+from training.base_trainer import recompute_bn_running_stats
+from training.experiment_utils import setup_experiment, log_model_parameters
+from training.data_utils import load_and_split_data
+from wph.wph_model import WPHClassifier
+from wph.model_factory import create_wph_feature_extractor
 from dense.helpers import LoggerManager
-from dense.wavelets import filter_bank
-from wph.layers.utils import apply_phase_shifts
 
-
-class AutoConfig(dict):
-    """Dictionary subclass that records default values used via `get()`.
-
-    Any call to `config.get(key, default)` where `key` is missing will
-    insert `key: default` into the dictionary and return `default`.
-    This ensures defaults become part of the saved config.
-    """
-    def get(self, key, default=None):
-        if key in self:
-            return super().get(key)
-        # Record the default into the config so it is saved later
-        super().__setitem__(key, default)
-        return default
 
 
 
@@ -96,8 +83,10 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
         None
     """
     best_acc = 0.0  # Initialize best accuracy
-    # Accuracy history per epoch for plotting
+    # Accuracy and loss history per epoch for plotting
     train_acc_hist, val_acc_hist, test_acc_hist = [], [], []
+    base_loss_hist, reg_loss_hist, total_loss_hist = [], [], []
+    l2_norm_hist = []
     for epoch in range(epochs):
         train_metrics = train_one_epoch(
             model=model,
@@ -116,8 +105,7 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
             test_loss_epoch, test_acc_epoch = evaluate(model, test_loader, criterion, device)
         else:
             test_acc_epoch = None
-        logger.log("Phase: {} Epoch: {}".format(phase, epoch+1))
-        
+        logger.log("Phase: {} Epoch: {}".format(phase, epoch+1))        
         # Step scheduler based on validation accuracy
         if scheduler is not None:
             scheduler.step(val_acc)
@@ -145,7 +133,13 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
         else:
             l2_norm = 0.0
         logger.log(f"Epoch={epoch+1} L2_Norm_Distance={l2_norm:.4f}", data=True)
-
+        
+        # Record per-epoch losses (if available) and l2 norm
+        base_loss_hist.append(float(train_metrics.get('base_loss', float('nan'))))
+        reg_loss_hist.append(float(train_metrics.get('reg_loss', float('nan'))))
+        total_loss_hist.append(float(train_metrics.get('total_loss', float('nan'))))
+        l2_norm_hist.append(float(l2_norm))
+    
     # Save final model after training completes
     final_model_path = os.path.join(exp_dir, f"final_{phase}_model_state.pt")
     torch.save(model.state_dict(), final_model_path)
@@ -156,160 +150,13 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
         'train_acc': train_acc_hist,
         'val_acc': val_acc_hist,
         'test_acc': test_acc_hist,
+        'base_loss': base_loss_hist,
+        'reg_loss': reg_loss_hist,
+        'total_loss': total_loss_hist,
+        'l2_norm': l2_norm_hist,
     }
     return best_acc, l2_norm, history
 
-def construct_filters_fullsize(config, image_shape):
-    """
-    Constructs the filters based on the configuration.
-
-    Args:
-        config (dict): Configuration dictionary.
-        image_shape (tuple): Shape of the input image.
-
-    Returns:
-        dict: Dictionary containing the constructed filters.
-    """
-    logger = LoggerManager.get_logger()
-    max_scale = config["max_scale"]
-    nb_orients = config["nb_orients"]
-    num_phases = config["num_phases"]
-    share_rotations = config.get("share_rotations", False)
-    share_channels = config.get("share_channels", True)
-    share_phases = config.get("share_phases", False)
-    num_channels = image_shape[0]
-
-    # Determine parameter shape based on sharing
-    param_nc = 1 if share_channels else num_channels
-    param_L = 1 if share_rotations else nb_orients
-    param_A = 1 if share_phases else num_phases
-
-    filter_dir = os.path.join(os.path.dirname(__file__), "../filters")
-    hatpsi_path = os.path.join(filter_dir, f"morlet_N{image_shape[1]}_J{max_scale}_L{nb_orients}.pt")
-    hatphi_path = os.path.join(filter_dir, f"morlet_lp_N{image_shape[1]}_J{max_scale}_L{nb_orients}.pt")
-
-    if config.get("random_filters", False):
-        logger.info("Initializing filters randomly.")
-        filters = {
-            "hatpsi": torch.complex(
-                torch.randn(max_scale, param_L, image_shape[1], image_shape[2]),
-                torch.randn(max_scale, param_L, image_shape[1], image_shape[2])
-            ),
-            "hatphi": torch.complex(
-                torch.randn(1, image_shape[1], image_shape[2]),
-                torch.randn(1, image_shape[1], image_shape[2])
-            )
-        }
-    else:
-        # Check if filters exist, otherwise generate them
-        if not os.path.exists(hatpsi_path) or not os.path.exists(hatphi_path):
-            logger.info("Filters not found. Generating filters...")
-            build_filters_script = os.path.join(os.path.dirname(__file__), "../wph/ops/build-filters.py")
-            os.system(f"python {build_filters_script} --N {image_shape[1]} --J {max_scale} --L {nb_orients} --wavelets morlet")
-            
-        # Load precomputed filters
-        filters = {
-            "hatpsi": torch.load(hatpsi_path, weights_only=True),
-            "hatphi": torch.load(hatphi_path, weights_only=True)
-        }
-
-    # Apply phase shifts to the filters
-    if share_rotations:
-        filters['hatpsi'] = filters['hatpsi'][:,0,...].unsqueeze(1)
-    filters["hatpsi"] = apply_phase_shifts(filters["hatpsi"], A=param_A)
-    return filters
-
-def construct_filters_downsample(config, image_shape):
-    """
-    Constructs the filters for the downsampled WPH model based on the configuration.
-
-    Args:
-        config (dict): Configuration dictionary.
-        image_shape (tuple): Shape of the input image.
-    Returns:
-        dict: Dictionary containing the constructed filters.
-    """
-    logger = LoggerManager.get_logger()
-    nb_orients = config["nb_orients"]
-    num_phases = config["num_phases"]
-    max_scale = config['max_scale']
-    share_rotations = config.get("share_rotations", False)
-    share_channels = config.get("share_channels", True)
-    share_phases = config.get("share_phases", False)
-    share_scales = config.get("share_scales", True)
-    share_scale_pairs = config.get("share_scale_pairs", True)
-    num_channels = image_shape[0]
-
-    # Determine parameter shape based on sharing
-    param_nc = 1 if share_channels else num_channels
-    param_L = 1 if share_rotations else nb_orients
-    param_A = 1 if share_phases else num_phases
-    # If share_scales=True, overrides to share pairs; otherwise respect share_scale_pairs
-    param_J = 1 if share_scales else (max_scale if share_scale_pairs else max_scale * max_scale)
-
-    if config.get("random_filters", False):
-        logger.info("Initializing filters randomly.")
-        T = config.get("wavelet_params", {}).get("S", 3)
-        filters = {
-            "psi": torch.complex(
-                torch.randn(param_J, param_L, param_A, T, T),
-                torch.randn(param_J, param_L, param_A, T, T)
-            ),
-            "hatphi": torch.complex(
-                torch.randn(1, image_shape[1], image_shape[2]),
-                torch.randn(1, image_shape[1], image_shape[2])
-            )
-        }
-    else:
-        logger.info(f"Generating filters with base wavelet: {config.get('wavelet', 'morlet')}")
-        filters = {}
-        filters['psi'] = filter_bank(
-            wavelet_name=config.get("wavelet", "morlet"),
-            max_scale=1,
-            nb_orients=nb_orients,
-            **config.get("wavelet_params", {})
-        )[0]  # Get first scale
-        filter_dir = os.path.join(os.path.dirname(__file__), "../filters")
-        hatphi_path = os.path.join(filter_dir, f"morlet_lp_N{image_shape[1]}_J1_L{nb_orients}.pt")
-        if not os.path.exists(hatphi_path):
-            logger.info("Filters not found. Generating filters...")
-            build_filters_script = os.path.join(os.path.dirname(__file__), "../wph/ops/build-filters.py")
-            os.system(f"python {build_filters_script} --N {image_shape[1]} --J {1} --L {nb_orients} --wavelets morlet")
-            
-        # Load precomputed filters
-        filters["hatphi"] = torch.load(hatphi_path, weights_only=True)
-        filters["psi"] = apply_phase_shifts(filters["psi"], A=param_A).squeeze(0) # squeeze J dim
-        T = filters['psi'].shape[-1]
-        if share_scales:
-            filters['psi'] = filters['psi'].unsqueeze(0)  # Add J dim: (1, L, A, T, T)
-        elif share_scale_pairs:
-            # Replicate same filter across J scales: (J, L, A, T, T)
-            filters['psi'] = torch.stack([filters['psi'].clone() for _ in range(max_scale)], dim=0)
-        else:
-            # Create J*J filters for pair mode with indexing: pair_index = j2 * J + j1
-            base_filter = filters['psi']  # (L, A, T, T)
-            psi_pairs = torch.zeros(max_scale * max_scale, param_L, param_A, T, T, dtype=base_filter.dtype)
-            for j1 in range(max_scale):
-                for j2 in range(max_scale):
-                    pair_index = j2 * max_scale + j1
-                    psi_pairs[pair_index] = base_filter.clone()
-            filters['psi'] = psi_pairs
-    return(filters)
-
-
-
-
-def log_model_parameters(model, logger):
-    """Logs the number of trainable parameters in the feature extractor and classifier."""
-    feature_extractor_params = 0
-    for fe in model.feature_extractors:
-        feature_extractor_params += sum(p.numel() for p in fe.parameters() if p.requires_grad)
-    classifier_params = sum(p.numel() for p in model.classifier.parameters() if p.requires_grad)
-    total_params = feature_extractor_params + classifier_params
-
-    logger.log(f"Feature_Extractor_Params={feature_extractor_params}", data=True)
-    logger.log(f"Classifier_Params={classifier_params}", data=True)
-    logger.log(f"Total_Params={total_params}", data=True)
 
 def main():
     # Parse arguments
@@ -320,116 +167,21 @@ def main():
     # record the default into the config dictionary for later saving.
     config = AutoConfig(config)
 
+    # Set up experiment (creates exp_dir, logger, device)
+    exp_dir, logger, device, seed = setup_experiment(args, config, args.wandb_project)
+    
     # Set random seed for reproducibility
-    seed = config.get("seed", None)  # Default seed is None if not provided
     set_seed(seed)
 
-    # Create output folder
-    train_ratio = config["train_ratio"]
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    # Optional GPU id suffix provided by sweep launcher to avoid log collisions
-    gpu_id_env = os.getenv("SWEEP_GPU_ID")
-    run_suffix = f"-gpu{gpu_id_env}" if gpu_id_env is not None else ""
-    if args.sweep_dir is not None:
-        if not os.path.exists(args.sweep_dir):
-            raise ValueError(f"Sweep dir {args.sweep_dir} does not exist!")
-        exp_dir = os.path.join(args.sweep_dir, f"{train_ratio=}", f"run-{timestamp}{run_suffix}")
-    else:
-        exp_dir = os.path.join("experiments", f"{train_ratio=}", f"run-{timestamp}{run_suffix}")
-    os.makedirs(exp_dir, exist_ok=True)
-
-    # Initialize logger
-    logger = LoggerManager.get_logger(log_dir=exp_dir,
-                                      wandb_project=args.wandb_project,
-                                      config=config, name=f"{train_ratio=}(run-{timestamp})")
-    sys.excepthook = LoggerManager.log_uncaught_exceptions
-    logger.log("===== Start log =====")
-
-    # Log environment details
-    logger.log(f"Python_Version={platform.python_version()}")
-    logger.log(f"PyTorch_Version={torch.__version__}")
-    logger.log(f"CUDA_Available={torch.cuda.is_available()}")
-    if torch.cuda.is_available():
-        logger.log(f"CUDA_Version={torch.version.cuda}")
-        logger.log(f"GPU={torch.cuda.get_device_name(0)}")
-    # Set up device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.log(f"Using_Device={device}")
-
     # Get data loaders
-    dataset = config["dataset"]
-    batch_size = config["batch_size"]
-    test_ratio = config["test_ratio"]
-    train_val_ratio = config.get("train_val_ratio", 4)
     # Create a worker_init_fn with seed bound using functools.partial
     worker_init_with_seed = partial(worker_init_fn, seed=seed)
-    if dataset == "mnist":
-        train_loader, test_loader, nb_class, image_shape = get_loaders(
-            dataset=dataset, batch_size=batch_size, train_ratio=1-test_ratio, worker_init_fn=worker_init_with_seed
-        )
-    else:
-        resize = config["resize"]
-        deeper_path = config["deeper_path"]
-        train_loader, test_loader, nb_class, image_shape = get_loaders(
-            dataset=dataset, resize=resize, deeper_path=deeper_path,
-            batch_size=batch_size, train_ratio=1-test_ratio, worker_init_fn=worker_init_with_seed
-        )
-    train_loader, val_loader = split_train_val(
-        train_loader.dataset, train_ratio=train_ratio, train_val_ratio=train_val_ratio, batch_size=batch_size, drop_last=True
+    train_loader, val_loader, test_loader, nb_class, image_shape = load_and_split_data(
+        config, worker_init_with_seed
     )
 
     # Initialize models
-    downsample = config.get("downsample", False)
-    if downsample:
-        filters = construct_filters_downsample(config, image_shape)
-        T = filters['psi'].shape[-1]
-        logger.info(f"Using downsampled WPH model with filter size T={T}")
-        feature_extractor = WPHModelDownsample(J=config["max_scale"],
-            L=config["nb_orients"],
-            A=config["num_phases"],
-            A_prime=config.get("num_phases_prime", 1),
-            M=image_shape[1],
-            N=image_shape[2],
-            T = T,
-            filters=filters,
-            num_channels=image_shape[0],
-            share_rotations=config["share_rotations"],
-            share_phases=config["share_phases"],
-            share_channels=config["share_channels"],
-            share_scales=config.get("share_scales", True),
-            share_scale_pairs=config.get("share_scale_pairs", True),
-            normalize_relu=config["normalize_relu"],
-            delta_j=config.get("delta_j"),
-            delta_l=config.get("delta_l"),
-            shift_mode=config["shift_mode"],
-            mask_angles=config["mask_angles"],
-            mask_union_highpass=config["mask_union_highpass"],
-        ).to(device)
-    else:
-        if config.get("wavelet", "morlet") != "morlet":
-            logger.warning("Full-size WPHModel only supports 'morlet' wavelet. Overriding to 'morlet'.")
-            config["wavelet"] = "morlet"
-        filters = construct_filters_fullsize(config, image_shape)
-        feature_extractor = WPHModel(
-            J=config["max_scale"],
-            L=config["nb_orients"],
-            A=config["num_phases"],
-            A_prime=config.get("num_phases_prime", 1),
-            M=image_shape[1],
-            N=image_shape[2],
-            filters=filters,
-            num_channels=image_shape[0],
-            share_rotations=config["share_rotations"],
-            share_phases=config["share_phases"],
-            share_channels=config["share_channels"],
-            normalize_relu=config["normalize_relu"],
-            delta_j=config.get("delta_j"),
-            delta_l=config.get("delta_l"),
-            shift_mode=config["shift_mode"],
-            mask_union=config["mask_union"],
-            mask_angles=config["mask_angles"],
-            mask_union_highpass=config["mask_union_highpass"],
-        ).to(device)
+    feature_extractor, filters = create_wph_feature_extractor(config, image_shape, device)
     model = WPHClassifier(
         feature_extractor, 
         num_classes=config["num_classes"],
@@ -443,7 +195,7 @@ def main():
     logger.log(str(model))
 
     # Log model parameters
-    log_model_parameters(model, logger)
+    log_model_parameters(model, model.classifier, logger)
 
 
     # Training setup
@@ -458,7 +210,7 @@ def main():
     ])
     
     # Create learning rate scheduler
-    scheduler_config = config.get("scheduler", {"mode": "max", "factor": 0.5, "patience": 2, "min_lr": 1e-7})
+    scheduler_config = config.get("scheduler", {"mode": "max", "factor": 0.5, "patience": 5, "min_lr": 1e-7})
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode=scheduler_config.get("mode", "max"),
@@ -480,6 +232,14 @@ def main():
     if not args.skip_classifier_training:
         logger.log("Training classifier...")
         model.set_trainable({"feature_extractor": False, "classifier": True})
+        # Warm up BatchNorm running stats before classifier training
+        bn_warmup_batches = int(config.get("bn_warmup_batches", 100))
+        try:
+            t0 = time.time()
+            recompute_bn_running_stats(model, train_loader, device, max_batches=bn_warmup_batches, logger=logger, momentum=0.9)
+            logger.log(f"BN warmup took {time.time()-t0:.2f}s", data=True)
+        except Exception as e:
+            logger.log(f"BN warmup failed: {e}", data=True)
         start_time = time.time()
         best_acc_classifier, _, hist_cls = train_model(
             model=model,
@@ -501,7 +261,10 @@ def main():
     else:
         logger.log("Skipping classifier training phase.")
         best_acc_classifier = 0.0
-        hist_cls = {'train_acc': [], 'val_acc': [], 'test_acc': []}
+        hist_cls = {
+            'train_acc': [], 'val_acc': [], 'test_acc': [],
+            'base_loss': [], 'reg_loss': [], 'total_loss': [], 'l2_norm': []
+        }
 
     # Load best classifier model and evaluate
     if not args.skip_classifier_training:
@@ -522,7 +285,12 @@ def main():
     # Fine-tune feature extractor
     if not args.skip_finetuning:
         logger.log("Fine-tuning feature extractor...")
-        model.set_trainable({"feature_extractor": True, "classifier": False})
+        # Config option to control whether the classifier remains frozen during finetuning.
+        # Default: keep previous behavior (freeze classifier)
+        freeze_classifier = config.get("freeze_classifier", True)
+        classifier_trainable = not bool(freeze_classifier)
+        model.set_trainable({"feature_extractor": True, "classifier": classifier_trainable})
+        logger.log(f"Finetune: classifier_trainable={classifier_trainable}")
         
         # Reset scheduler for feature extractor phase
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -557,7 +325,10 @@ def main():
     else:
         logger.log("Skipping fine-tuning phase.")
         best_acc_feature_extractor = 0.0
-        hist_fe = {'train_acc': [], 'val_acc': [], 'test_acc': []}
+        hist_fe = {
+            'train_acc': [], 'val_acc': [], 'test_acc': [],
+            'base_loss': [], 'reg_loss': [], 'total_loss': [], 'l2_norm': []
+        }
 
     # Aggregate history across phases
     train_acc_all = (hist_cls['train_acc'] if hist_cls else []) + (hist_fe['train_acc'] if hist_fe else [])
@@ -581,46 +352,73 @@ def main():
     logger.log(f"Classifier_Test_Accuracy={classifier_test_acc:.4f}", data=True)
     logger.log(f"Feature_Extractor_Test_Accuracy={feature_extractor_test_acc:.4f}", data=True)
 
-    # Plot accuracy history across epochs (train, val, test)
+    # Plot accuracy and losses history across epochs
     try:
         total_epochs = len(train_acc_all)
         if total_epochs > 0:
             epochs_axis = list(range(1, total_epochs + 1))
-            plt.figure(figsize=(8, 5))
-            plt.plot(epochs_axis, train_acc_all, label='Train', color='tab:blue', linewidth=2)
-            plt.plot(epochs_axis, val_acc_all, label='Val', color='tab:orange', linewidth=2)
-            # Filter out NaNs for plotting test if present
+            # Aggregate loss/l2 histories
+            base_loss_all = (hist_cls['base_loss'] if hist_cls else []) + (hist_fe['base_loss'] if hist_fe else [])
+            reg_loss_all = (hist_cls['reg_loss'] if hist_cls else []) + (hist_fe['reg_loss'] if hist_fe else [])
+            total_loss_all = (hist_cls['total_loss'] if hist_cls else []) + (hist_fe['total_loss'] if hist_fe else [])
+            l2_norm_all = (hist_cls['l2_norm'] if hist_cls else []) + (hist_fe['l2_norm'] if hist_fe else [])
+
+            fig, axs = plt.subplots(3, 1, sharex=True, figsize=(8, 15))
+            # Top: accuracy
+            axs[0].plot(epochs_axis, train_acc_all, label='Train', color='tab:blue', linewidth=2)
+            axs[0].plot(epochs_axis, val_acc_all, label='Val', color='tab:orange', linewidth=2)
             if any([not np.isnan(v) for v in test_acc_all]):
-                # Replace NaNs with None so matplotlib skips them
                 test_plot = [v if not np.isnan(v) else None for v in test_acc_all]
-                plt.plot(epochs_axis, test_plot, label='Test', color='tab:green', linewidth=2)
-            plt.xlabel('Epoch')
-            plt.ylabel('Accuracy')
-            plt.title('Accuracy per Epoch')
-            plt.legend()
-            plt.grid(True, alpha=0.3)
+                axs[0].plot(epochs_axis, test_plot, label='Test', color='tab:green', linewidth=2)
+            axs[0].set_ylabel('Accuracy')
+            axs[0].set_title('Accuracy per Epoch')
+            axs[0].legend()
+            axs[0].grid(True, alpha=0.3)
+
+            # Bottom: losses and l2 norm
+            axs[1].plot(epochs_axis, base_loss_all, label='Base Loss', color='tab:red', linewidth=1.5)
+            axs[1].plot(epochs_axis, total_loss_all, label='Total Loss', color='tab:brown', linewidth=1.5)
+            axs[1].set_ylabel('Loss')
+            axs[1].set_xlabel('Epoch')
+            axs[1].set_yscale('log')
+            axs[1].legend()
+            axs[1].grid(True, alpha=0.3)
+
+             # Bottom: losses and l2 norm
+            axs[2].plot(epochs_axis, reg_loss_all, label='Reg Loss', color='tab:purple', linewidth=1.5)
+            axs[2].plot(epochs_axis, l2_norm_all, label='L2 Norm', color='tab:gray', linestyle='--', linewidth=1.5)
+            axs[2].set_ylabel('Loss / L2')
+            axs[2].set_xlabel('Epoch')
+            axs[2].set_yscale('log')
+            axs[2].legend()
+            axs[2].grid(True, alpha=0.3)
+
             plt.tight_layout()
             acc_plot_path = os.path.join(exp_dir, 'accuracy.png')
             plt.savefig(acc_plot_path)
             plt.close()
-            logger.log(f"Saved accuracy plot to {acc_plot_path}")
+            logger.log(f"Saved accuracy+loss plot to {acc_plot_path}")
 
-            # Save accuracy per-epoch as a DataFrame (CSV)
+            # Save per-epoch metrics as a DataFrame (CSV)
             df = pd.DataFrame({
                 'epoch': epochs_axis,
                 'train_acc': train_acc_all,
                 'val_acc': val_acc_all,
                 'test_acc': test_acc_all,
+                'base_loss': base_loss_all,
+                'reg_loss': reg_loss_all,
+                'total_loss': total_loss_all,
+                'l2_norm': l2_norm_all,
             })
             acc_csv_path = os.path.join(exp_dir, 'accuracy.csv')
             df.to_csv(acc_csv_path, index=False)
-            logger.log(f"Saved accuracy dataframe to {acc_csv_path}")
+            logger.log(f"Saved accuracy+loss dataframe to {acc_csv_path}")
         else:
             logger.log("No epochs recorded; skipping accuracy plot.")
     except Exception as e:
         import traceback
         traceback.print_exc()
-        logger.log(f"Failed to create/save accuracy plot: {e}")
+        logger.log(f"Failed to create/save accuracy+loss plot: {e}")
 
     
     # Update config with final accuracies
