@@ -36,7 +36,7 @@ def log_model_parameters(model, classifier=None, logger=None):
         classifier_params = sum(p.numel() for p in classifier.parameters() if p.requires_grad)
     elif hasattr(classifier, 'named_steps'):
         # sklearn pipeline (for SVM)
-        classifier_params = _count_svm_parameters(classifier)
+        classifier_params = count_svm_parameters(classifier)
     else:
         classifier_params = 0
     
@@ -47,7 +47,7 @@ def log_model_parameters(model, classifier=None, logger=None):
     logger.log(f"Total_Params={total_params}", data=True)
 
 
-def _count_svm_parameters(svm_pipeline):
+def count_svm_parameters(svm_pipeline):
     """Count the number of parameters in the trained SVM classifier."""
     svm = svm_pipeline.named_steps['svm']
     

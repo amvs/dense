@@ -18,7 +18,7 @@ load_dotenv()
 
 from configs import load_config, save_config, apply_overrides, AutoConfig
 from training.base_trainer import recompute_bn_running_stats
-from training.experiment_utils import setup_experiment, log_model_parameters
+from training.experiment_utils import setup_experiment, log_model_parameters, count_svm_parameters
 from training.data_utils import load_and_split_data
 from wph.wph_model import WPHSvm
 from wph.model_factory import create_wph_feature_extractor
