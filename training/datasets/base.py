@@ -20,8 +20,33 @@ def stratify_split(dataset, train_size, seed=123):
         subset1, subset2 = stratify_split(dataset, train_size, seed=42)
     """
     total_len = len(dataset)
-    # extract targets, assuming dataset[i] (__getitem__(i)) returns (x, y)
-    targets = [dataset[i][1] for i in range(total_len)]
+
+    # Fast-path: try to obtain labels without calling dataset[i] (which may open files).
+    # Handle Subset-like wrappers by unwrapping to the base dataset and using indices.
+    base_ds = getattr(dataset, 'dataset', dataset)
+    indices = getattr(dataset, 'indices', None)
+
+    def _labels_from_base(base, idxs):
+        # base may expose targets, labels, y, or samples
+        if hasattr(base, 'targets'):
+            lab = base.targets
+        elif hasattr(base, 'labels'):
+            lab = base.labels
+        elif hasattr(base, 'y'):
+            lab = base.y
+        elif hasattr(base, 'samples'):
+            # samples is often list of (path, class)
+            lab = [s[1] for s in base.samples]
+        else:
+            return None
+        if idxs is not None:
+            return [lab[i] for i in idxs]
+        return list(lab)
+
+    targets = _labels_from_base(base_ds, indices)
+    if targets is None:
+        # Fallback: iterate and call __getitem__ (expensive)
+        targets = [dataset[i][1] for i in range(total_len)]
 
     # Single stratified split
     sss = StratifiedShuffleSplit(
