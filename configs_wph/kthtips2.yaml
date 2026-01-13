@@ -6,10 +6,10 @@ num_phases: 2
 num_phases_prime: 1
 random_filters: false
 share_rotations: false
-share_channels: true
+share_channels: false
 share_phases: false
 normalize_relu: true
-delta_j: null
+delta_j: 1
 delta_l: null
 shift_mode: samec
 mask_union: false
@@ -30,19 +30,20 @@ fold: 0
 resize: 200
 classifier_epochs: 15
 conv_epochs: 15
-batch_size: 32
+batch_size: 16
 lr: 0.0001
 lr_conv: 1.0e-6 # verified good choice for downsample=true and false
 lambda_reg: 1.0e+5
 train_ratio: 1.0 # train_ratio is % of training samples used (val and test samples already separate)
 test_ratio: 0.15
 seed: 42
-vmap_chunk_size: 10
+vmap_chunk_size: 2
 normalize_reg: false
 ce_smooth: 0.1
 # Finetuning behavior
 # If true (default), keep the classifier frozen during the feature-extractor finetuning stage.
 freeze_classifier: true
+spatial_attn: false
 
 # Classifier settings
 num_classes: 11

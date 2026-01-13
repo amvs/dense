@@ -23,6 +23,7 @@ wavelet_params:
   T: 8
   w0: 2.7646
 spatial_attn: true
+freeze_classifier: true
 
 # training setting
 dataset: liewyousheng/minc2500
