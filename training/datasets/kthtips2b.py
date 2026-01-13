@@ -80,7 +80,7 @@ class KHTTips2bDataset(Dataset):
         return image, label
 
 
-def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, fold=None):
+def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, fold=None, train_ratio=1.0):
     """
     Load KTH-TIPS2-b dataset with leave-one-sample-out cross-validation.
     
@@ -96,6 +96,7 @@ def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, 
         batch_size: Batch size for data loaders
         worker_init_fn: Worker initialization function
         fold: Fold index (0-3). If None, uses all samples with standard train/val/test split.
+        train_ratio: Fraction of training data to use (default 1.0). Set to < 1.0 to reduce training set.
         
     Returns:
         train_loader, val_loader, test_loader, nb_class, sample_img.shape
@@ -105,6 +106,9 @@ def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, 
         (once for each fold) and average the results.
     """
     logger = LoggerManager.get_logger()
+    
+    if not 0.0 < train_ratio <= 1.0:
+        raise ValueError(f"train_ratio must be in (0, 1], got {train_ratio}")
     
     samples = ['sample_a', 'sample_b', 'sample_c', 'sample_d']
     
@@ -149,6 +153,13 @@ def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, 
         
         train_dataset, val_test_dataset = stratify_split(full_dataset, train_size=train_len, seed=42)
         val_dataset, test_dataset = stratify_split(val_test_dataset, train_size=val_len, seed=42)
+    
+    # Apply train_ratio to reduce training data if needed
+    if train_ratio < 1.0:
+        original_train_len = len(train_dataset)
+        reduced_train_len = int(original_train_len * train_ratio)
+        train_dataset, _ = stratify_split(train_dataset, train_size=reduced_train_len, seed=42)
+        logger.info(f"Reduced training set from {original_train_len} to {len(train_dataset)} samples (train_ratio={train_ratio})")
     
     # Compute (or load cached) mean and std from TRAIN set only (no data leakage)
     logger.info(f"Computing/loading normalization statistics from {len(train_dataset)} training samples...")
