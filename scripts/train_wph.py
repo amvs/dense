@@ -146,7 +146,9 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
             best_acc = val_acc
             best_model_path = os.path.join(exp_dir, f"best_{phase}_model_state.pt")
             torch.save(model.state_dict(), best_model_path)
-            logger.log(f"New best {phase} model saved (Val_Acc={val_acc:.4f}) to {best_model_path}", data=True)
+            # Log a clean metrics line for cloud parsing and a human-readable message separately
+            logger.log(f"Best_Val_Acc={val_acc:.4f}", data=True)
+            logger.log(f"New best {phase} model saved to {best_model_path}")
 
         base_loss_hist.append(float(train_metrics.get('base_loss', float('nan'))))
         reg_loss_hist.append(float(train_metrics.get('reg_loss', float('nan'))))

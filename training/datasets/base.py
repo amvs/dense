@@ -78,6 +78,8 @@ def split_train_val(train_dataset, train_ratio=0.1, batch_size=64, seed=123, tra
     """
     total_len = len(train_dataset)
     train_len = int(total_len * train_ratio)
+    # Clamp train_len to ensure StratifiedShuffleSplit has room for validation
+    train_len = min(train_len, max(1, total_len - 1))
     val_len = train_len // train_val_ratio
     used_len = train_len + val_len
     if used_len > total_len:
