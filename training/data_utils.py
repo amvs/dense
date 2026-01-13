@@ -32,6 +32,19 @@ def load_and_split_data(config, worker_init_fn, batch_size=None):
             train_ratio=1-test_ratio,
             worker_init_fn=worker_init_fn
         )
+    elif dataset == 'kthtips2b':
+        root_dir = config["root_dir"]
+        train_loader, val_loader, test_loader, nb_class, image_shape = get_loaders(
+            dataset=dataset,
+            root_dir=root_dir,
+            resize=config["resize"],
+            batch_size=batch_size,
+            train_ratio=config["train_ratio"],
+            worker_init_fn=worker_init_fn,
+            fold=config.get("fold", None)
+        )
+        # kthtips2b loader already returns train/val/test split, no need to split further
+        return train_loader, val_loader, test_loader, nb_class, image_shape
     else:
         resize = config["resize"]
         deeper_path = config["deeper_path"]
@@ -43,8 +56,7 @@ def load_and_split_data(config, worker_init_fn, batch_size=None):
             train_ratio=1-test_ratio,
             worker_init_fn=worker_init_fn
         )
-    
-    # Split train into train/val
+    # Split train into train/val (only for non-kthtips2b datasets)
     train_loader, val_loader = split_train_val(
         train_loader.dataset,
         train_ratio=train_ratio,

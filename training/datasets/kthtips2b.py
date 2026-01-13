@@ -137,6 +137,7 @@ def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, 
     
     # Create datasets for each split
     if fold is not None:
+        # Each dataset uses a separate sample - test and val are held out, not derived from train
         train_dataset = KHTTips2bDataset(root_dir, transform=transform, sample_filter=train_samples)
         val_dataset = KHTTips2bDataset(root_dir, transform=transform, sample_filter=[val_sample])
         test_dataset = KHTTips2bDataset(root_dir, transform=transform, sample_filter=[test_sample])
@@ -149,12 +150,11 @@ def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, 
         total_len = len(full_dataset)
         train_len = int(total_len * 0.7)
         val_len = int(total_len * 0.15)
-        test_len = total_len - train_len - val_len
         
         train_dataset, val_test_dataset = stratify_split(full_dataset, train_size=train_len, seed=42)
         val_dataset, test_dataset = stratify_split(val_test_dataset, train_size=val_len, seed=42)
     
-    # Apply train_ratio to reduce training data if needed
+    # Apply train_ratio to reduce training data if needed (test_dataset is held out separately)
     if train_ratio < 1.0:
         original_train_len = len(train_dataset)
         reduced_train_len = int(original_train_len * train_ratio)

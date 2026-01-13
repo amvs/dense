@@ -26,6 +26,7 @@ wavelet_params:
 # training setting
 dataset: kthtips2b
 root_dir: data/datasets/KTH-TIPS2-b
+fold: 0
 resize: 200
 classifier_epochs: 15
 conv_epochs: 15
@@ -33,11 +34,10 @@ batch_size: 32
 lr: 0.0001
 lr_conv: 1.0e-6 # verified good choice for downsample=true and false
 lambda_reg: 1.0e+5
-train_ratio: 0.1
+train_ratio: 1.0 # train_ratio is % of training samples used (val and test samples already separate)
 test_ratio: 0.15
-train_val_ratio: 2
 seed: 42
-vmap_chunk_size: 50
+vmap_chunk_size: 10
 normalize_reg: false
 ce_smooth: 0.1
 # Finetuning behavior
