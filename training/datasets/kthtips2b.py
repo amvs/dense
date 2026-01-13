@@ -36,11 +36,19 @@ class KHTTips2bDataset(Dataset):
             material_2/
                 ...
     """
-    def __init__(self, root_dir, transform=None):
+    def __init__(self, root_dir, transform=None, sample_filter=None):
+        """
+        Args:
+            root_dir: Path to dataset root
+            transform: Transform to apply to images
+            sample_filter: List of sample names to include (e.g., ['sample_a', 'sample_b'])
+                          If None, includes all samples
+        """
         self.root_dir = Path(root_dir)
         self.transform = transform
         self.image_paths = []
         self.labels = []
+        self.sample_filter = sample_filter
 
         # Materials are the top-level subdirectories
         self.classes = sorted([d.name for d in self.root_dir.iterdir() if d.is_dir()])
@@ -51,6 +59,9 @@ class KHTTips2bDataset(Dataset):
             material_path = self.root_dir / material
             for sample_dir in sorted(material_path.iterdir()):
                 if not sample_dir.is_dir():
+                    continue
+                # Filter samples if needed
+                if self.sample_filter is not None and sample_dir.name not in self.sample_filter:
                     continue
                 # Collect all image files (png, jpg, etc.)
                 for img_file in sorted(sample_dir.glob("*.png")) + sorted(sample_dir.glob("*.jpg")) + sorted(sample_dir.glob("*.JPG")):
@@ -69,21 +80,49 @@ class KHTTips2bDataset(Dataset):
         return image, label
 
 
-def get_kthtips2b_loaders(root_dir, resize, batch_size=64, train_ratio=0.8, worker_init_fn=None):
+def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, fold=None):
     """
-    Load KTH-TIPS2-b dataset with appropriate transforms.
+    Load KTH-TIPS2-b dataset with leave-one-sample-out cross-validation.
+    
+    Uses 4-fold cross-validation where each fold holds out a different sample:
+    - Fold 0: test=sample_a, val=sample_b, train=sample_c+sample_d
+    - Fold 1: test=sample_b, val=sample_c, train=sample_a+sample_d
+    - Fold 2: test=sample_c, val=sample_d, train=sample_a+sample_b
+    - Fold 3: test=sample_d, val=sample_a, train=sample_b+sample_c
     
     Args:
         root_dir: Path to KTH-TIPS2-b dataset root
         resize: Target size for resizing (e.g., 200)
         batch_size: Batch size for data loaders
-        train_ratio: Ratio of training to total data
         worker_init_fn: Worker initialization function
+        fold: Fold index (0-3). If None, uses all samples with standard train/val/test split.
         
     Returns:
-        train_loader, test_loader, nb_class, sample_img.shape
+        train_loader, val_loader, test_loader, nb_class, sample_img.shape
+        
+    Note:
+        For proper leave-one-sample-out cross-validation, train the model 4 times 
+        (once for each fold) and average the results.
     """
     logger = LoggerManager.get_logger()
+    
+    samples = ['sample_a', 'sample_b', 'sample_c', 'sample_d']
+    
+    if fold is not None:
+        if not 0 <= fold <= 3:
+            raise ValueError(f"fold must be 0-3, got {fold}")
+        
+        # Determine which sample goes to which split
+        test_sample = samples[fold]
+        val_sample = samples[(fold + 1) % 4]
+        train_samples = [samples[(fold + 2) % 4], samples[(fold + 3) % 4]]
+        
+        logger.info(f"Using fold {fold}: test={test_sample}, val={val_sample}, train={train_samples}")
+    else:
+        logger.info("No fold specified, using all samples with standard train/val/test split")
+        test_sample = None
+        val_sample = None
+        train_samples = None
     
     # Initial transform: center crop to square, then to tensor and resize
     transform = transforms.Compose([
@@ -92,25 +131,31 @@ def get_kthtips2b_loaders(root_dir, resize, batch_size=64, train_ratio=0.8, work
         transforms.Resize((resize, resize)),
     ])
     
-    dataset = KHTTips2bDataset(root_dir, transform=transform)
-    
-    # Compute split sizes
-    total_len = len(dataset)
-    train_len = int(total_len * train_ratio)
-    test_len = total_len - train_len
-    
-    # Split dataset FIRST, before computing statistics
-    train_dataset, test_dataset = stratify_split(
-        dataset, train_size=train_len,
-        seed=42
-    )
+    # Create datasets for each split
+    if fold is not None:
+        train_dataset = KHTTips2bDataset(root_dir, transform=transform, sample_filter=train_samples)
+        val_dataset = KHTTips2bDataset(root_dir, transform=transform, sample_filter=[val_sample])
+        test_dataset = KHTTips2bDataset(root_dir, transform=transform, sample_filter=[test_sample])
+        
+        # Use the train dataset for computing statistics
+        full_dataset = train_dataset
+    else:
+        # Standard split: use all samples, compute statistics, then split
+        full_dataset = KHTTips2bDataset(root_dir, transform=transform)
+        total_len = len(full_dataset)
+        train_len = int(total_len * 0.7)
+        val_len = int(total_len * 0.15)
+        test_len = total_len - train_len - val_len
+        
+        train_dataset, val_test_dataset = stratify_split(full_dataset, train_size=train_len, seed=42)
+        val_dataset, test_dataset = stratify_split(val_test_dataset, train_size=val_len, seed=42)
     
     # Compute (or load cached) mean and std from TRAIN set only (no data leakage)
     logger.info(f"Computing/loading normalization statistics from {len(train_dataset)} training samples...")
-    mean, std = load_or_compute_mean_std(train_dataset, resize=resize, root_dir=root_dir)
+    mean, std = load_or_compute_mean_std(train_dataset, resize=resize, root_dir=root_dir, fold=fold)
     logger.info(f"Normalization stats - mean: {mean}, std: {std}")
     
-    # Apply normalization using train statistics to both train and test
+    # Apply normalization using train statistics to all splits
     normalized_transform = transforms.Compose([
         CenterCropToSquare(),
         transforms.ToTensor(),
@@ -118,19 +163,22 @@ def get_kthtips2b_loaders(root_dir, resize, batch_size=64, train_ratio=0.8, work
         transforms.Normalize(mean, std)
     ])
     
-    # Update the base dataset's transform so both subsets use it
-    dataset.transform = normalized_transform
-    logger.info(f"Updated dataset transform with normalization")
+    # Update datasets' transforms
+    train_dataset.transform = normalized_transform
+    val_dataset.transform = normalized_transform
+    test_dataset.transform = normalized_transform
+    logger.info(f"Updated dataset transforms with normalization")
     
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn, drop_last=True, num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=False, num_workers=4)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=False, num_workers=4)
     
-    nb_class = len(dataset.classes)
+    nb_class = len(full_dataset.classes)
     sample_img, _ = train_dataset[0]
-    logger.info(f"[Ratio:{train_ratio}] Train size: {len(train_dataset)}, Test size: {len(test_dataset)}")
+    logger.info(f"Train size: {len(train_dataset)}, Val size: {len(val_dataset)}, Test size: {len(test_dataset)}")
     logger.info(f"# class: {nb_class}, shape {sample_img.shape}")
     
-    return train_loader, test_loader, nb_class, sample_img.shape
+    return train_loader, val_loader, test_loader, nb_class, sample_img.shape
 
 
 def compute_mean_std(dataset):
@@ -167,19 +215,20 @@ def _stats_cache_path(identifier: str, resize: int, cache_dir: str = "data/stats
     return p / f"meanstd_{h}_r{resize}.npz"
 
 
-def _make_kthtips2b_identifier(dataset, root_dir) -> str:
+def _make_kthtips2b_identifier(dataset, root_dir, fold=None) -> str:
     base_dir = root_dir
     classes = getattr(dataset, 'classes', None)
-    return f"kthtips2b|{base_dir}|n={len(dataset)}|classes={','.join(classes) if classes is not None else 'none'}"
+    fold_str = f"|fold={fold}" if fold is not None else ""
+    return f"kthtips2b|{base_dir}|n={len(dataset)}|classes={','.join(classes) if classes is not None else 'none'}{fold_str}"
 
 
-def load_or_compute_mean_std(dataset, resize: int, root_dir: str = None, force_recompute: bool = False):
+def load_or_compute_mean_std(dataset, resize: int, root_dir: str = None, fold: int = None, force_recompute: bool = False):
     """Load cached mean/std if present and compatible, otherwise compute and cache.
     
     For RGB images, returns tuple of 3 values (one per channel).
     """
     logger = LoggerManager.get_logger()
-    identifier = _make_kthtips2b_identifier(dataset, root_dir)
+    identifier = _make_kthtips2b_identifier(dataset, root_dir, fold=fold)
     cache_path = _stats_cache_path(identifier, resize)
 
     if cache_path.exists() and not force_recompute:
@@ -209,5 +258,6 @@ def load_or_compute_mean_std(dataset, resize: int, root_dir: str = None, force_r
 
 if __name__ == "__main__":
     # Script to run and compute statistics for KTH-TIPS2-b
+    # Example: Use fold 0 for leave-one-sample-out cross-validation
     root_dir = "data/datasets/KTH-TIPS2-b"
-    train_loader, test_loader, nb_class, img_shape = get_kthtips2b_loaders(root_dir, resize=200, batch_size=64)
+    train_loader, val_loader, test_loader, nb_class, img_shape = get_kthtips2b_loaders(root_dir, resize=200, batch_size=64, fold=0)
