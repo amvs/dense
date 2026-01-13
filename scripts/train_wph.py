@@ -61,7 +61,7 @@ def worker_init_fn(worker_id, seed=None):
     if seed is not None:
         np.random.seed(seed + worker_id)
 
-def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion, device, epochs, logger, phase, configs, exp_dir, original_fe_params=None, test_loader=None):
+def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion, device, epochs, logger, phase, configs, exp_dir, original_fe_params=None, original_classifier_params=None, test_loader=None, freeze_classifier=True):
     """
     A reusable function for training the model.
 
@@ -78,6 +78,8 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
         phase (str): Phase of training (e.g., 'classifier', 'feature_extractor').
         configs (dict): Configuration dictionary.
         original_fe_params (list[torch.Tensor], optional): Original feature-extractor parameters for regularization during fine-tuning.
+        original_classifier_params (list[torch.Tensor], optional): Original classifier parameters for regularization during fine-tuning.
+        freeze_classifier (bool): Whether classifier is frozen during feature extractor phase.
 
     Returns:
         None
@@ -112,29 +114,40 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
             current_lr = [group['lr'] for group in optimizer.param_groups]
             # logger.log(f"Epoch={epoch+1} LR={current_lr[0]:.6e} LR_Conv={current_lr[1]:.6e}")
         
-        logger.log(f"Epoch={epoch+1} Train_Acc={train_metrics['accuracy']:.4f} Val_Acc={val_acc:.4f} Base_Loss={train_metrics['base_loss']:.4e} Reg_Loss={train_metrics['reg_loss']:.4e} Total_Loss={train_metrics['total_loss']:.4e}" + (f" Test_Acc={test_acc_epoch:.4f}" if test_acc_epoch is not None else ""), data=True)
-
-        # Record history
-        train_acc_hist.append(float(train_metrics['accuracy']))
+        # Record history metrics
+        train_acc_hist.append(float(train_metrics.get('accuracy', float('nan'))))
         val_acc_hist.append(float(val_acc))
         test_acc_hist.append(float(test_acc_epoch) if test_acc_epoch is not None else float('nan'))
 
-        # Track best accuracy and save state_dict only when validation improves
+        # Build log message with metrics and L2 norms
+        log_msg = f"Epoch={epoch+1} Train_Acc={train_metrics['accuracy']:.4f} Val_Acc={val_acc:.4f} Base_Loss={train_metrics['base_loss']:.4e} Reg_Loss={train_metrics['reg_loss']:.4e} Total_Loss={train_metrics['total_loss']:.4e}"
+        if test_acc_epoch is not None:
+            log_msg += f" Test_Acc={test_acc_epoch:.4f}"
+        
+        # Add L2 norms if in feature extractor phase
+        if phase == 'feature_extractor' and original_fe_params is not None:
+            current_fe_params = list(model.feature_extractors.parameters())
+            l2_norm_fe = sum((p - o).norm().item() for p, o in zip(current_fe_params, original_fe_params))
+            l2_norm = l2_norm_fe
+            log_msg += f" L2_Norm_FE={l2_norm_fe:.4f}"
+            
+            # Also add classifier L2 norm if classifier is trainable (not frozen)
+            if not freeze_classifier and original_classifier_params is not None:
+                current_classifier_params = list(model.classifier.parameters())
+                l2_norm_classifier = sum((p - o).norm().item() for p, o in zip(current_classifier_params, original_classifier_params))
+                log_msg += f" L2_Norm_Classifier={l2_norm_classifier:.4f}"
+        else:
+            l2_norm = 0.0
+        
+        logger.log(log_msg, data=True)
+
+        # Track best model by validation accuracy
         if val_acc > best_acc:
             best_acc = val_acc
             best_model_path = os.path.join(exp_dir, f"best_{phase}_model_state.pt")
             torch.save(model.state_dict(), best_model_path)
-            logger.log(f"Saved best {phase} model state_dict to {best_model_path}")
+            logger.log(f"New best {phase} model saved (Val_Acc={val_acc:.4f}) to {best_model_path}", data=True)
 
-        # Log L2 norm distance for feature extractor phase (feature extractor only)
-        if phase == 'feature_extractor' and original_fe_params is not None:
-            current_fe_params = list(model.feature_extractors.parameters())
-            l2_norm = sum((p - o).norm().item() for p, o in zip(current_fe_params, original_fe_params))
-        else:
-            l2_norm = 0.0
-        logger.log(f"Epoch={epoch+1} L2_Norm_Distance={l2_norm:.4f}", data=True)
-        
-        # Record per-epoch losses (if available) and l2 norm
         base_loss_hist.append(float(train_metrics.get('base_loss', float('nan'))))
         reg_loss_hist.append(float(train_metrics.get('reg_loss', float('nan'))))
         total_loss_hist.append(float(train_metrics.get('total_loss', float('nan'))))
@@ -226,12 +239,13 @@ def main():
     # Clone original parameters for regularization during fine-tuning
     with torch.no_grad():
         original_fe_params = [p.clone().detach() for p in model.feature_extractors.parameters()]
+        original_classifier_params = [p.clone().detach() for p in model.classifier.parameters()]
     l2_norm = 0.0
 
     # Train classifier
     if not args.skip_classifier_training:
         logger.log("Training classifier...")
-        model.set_trainable({"feature_extractor": False, "classifier": True})
+        model.set_trainable({"feature_extractor": False, "classifier": True, "spatial_attn": config.get("spatial_attn", False)})
         # Warm up BatchNorm running stats before classifier training
         bn_warmup_batches = int(config.get("bn_warmup_batches", 100))
         try:
@@ -318,7 +332,9 @@ def main():
             configs=config,
             exp_dir=exp_dir,
             original_fe_params=original_fe_params,
+            original_classifier_params=original_classifier_params,
             test_loader=test_loader,
+            freeze_classifier=freeze_classifier,
         )
         elapsed_time = time.time() - start_time
         logger.log(f"Feature extractor fine-tuning completed in {elapsed_time:.2f} seconds.")
