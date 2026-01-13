@@ -21,7 +21,8 @@ class ScatterParams:
     out_size: int # -1 means no global pooling on scatter features
     # PCA
     pca_dim: int
-
+    # depth
+    depth: int = -1  # -1 means full scatter
     #
     random: bool = False
 
@@ -118,10 +119,24 @@ class dense(nn.Module):
 
         self.in_channels_per_block = []
         in_channels = params.in_channels
+        if in_channels != 1:
+            raise ValueError("Only support grayscale input (in_channels=1)")
+
         for _ in range(self.n_scale):
             self.in_channels_per_block.append(in_channels)
             in_channels = in_channels * (self.n_orient + 1)
         self.out_channels = in_channels
+
+        if self.depth != -1 and self.depth != self.n_scale: # 相等时是完整 scatter，没必要裁剪
+            if self.depth < 2 or self.depth > self.n_scale:
+                raise ValueError("depth should be in [2, n_scale]")
+            keep_idx, keep_len = self.build_keep_idx()
+            for i, idx in enumerate(keep_idx):
+                self.register_buffer(f"keep_idx_{i}", idx)
+            self.in_channels_per_block = keep_len[:-1]  # 最后一层不需要
+            self.out_channels = keep_len[-1]        
+        # print("in_channels_per_block:", self.in_channels_per_block)
+        # print("out_channels:", self.out_channels)
         self.blocks = nn.ModuleList(
             [
                 ScatterBlock(
@@ -139,10 +154,11 @@ class dense(nn.Module):
             self.global_pool = nn.AdaptiveAvgPool2d((out_size,out_size))
         else:
             self.out_dim = self.out_channels * (self.in_size // 2**self.n_scale)**2
-        #self.linear = nn.Linear(self.out_dim, self.n_class)
+        self.linear = nn.Linear(self.out_dim, self.n_class)
 
-        self.register_buffer("class_means", None)   # [C, D]
-        self.register_buffer("pca_bases", None)     # [C, D, k]
+        # self.register_buffer("class_means", None)   # [C, D]
+        # self.register_buffer("pca_bases", None)     # [C, D, k]
+
     
     @torch.no_grad()
     def fit(self, dataloader, device):
@@ -220,6 +236,51 @@ class dense(nn.Module):
 
         return torch.stack(pca_bases)  # [C, D, k]
 
+    def build_keep_idx(self):
+        d = self.depth
+        all_out_groups, input_lens = self.compute_out_groups()
+
+        keep_idx = []
+        for groups in all_out_groups:
+            idx = []
+            for dep, start, end in groups:
+                if dep <= d - 1:
+                    idx.extend(range(start, end))
+            keep_idx.append(torch.tensor(idx, dtype=torch.long))
+            
+        return keep_idx, input_lens
+
+    def compute_out_groups(self):
+        J = self.n_scale
+        dmax = self.depth
+        K = self.n_orient
+        # inputs: list of (depth, channels)
+        inputs_groups = [(0, 1)]  # img first, channel is gray
+
+        all_out_groups = [[(0, 0, 1)]]  # first layer: only img
+        inputs_len = [1]
+        for ind in range(J):
+            out_groups = []
+            ch_ptr = 0
+
+            for dep, ch in inputs_groups:
+                new_dep = dep + 1
+                new_ch = ch * K
+                out_groups.append((new_dep, ch_ptr, ch_ptr + new_ch))
+                ch_ptr += new_ch
+
+            all_out_groups.append(out_groups)
+
+            # build next inputs
+            next_inputs = []
+
+            for new_dep, start, end in out_groups:
+                if new_dep <= dmax - 1:
+                    next_inputs.append((new_dep, end - start))
+
+            inputs_groups.extend(next_inputs)
+            inputs_len.append(sum([ch for _, ch in inputs_groups]))
+        return all_out_groups, inputs_len
 
 
     def set_filters(self):
@@ -266,15 +327,31 @@ class dense(nn.Module):
 
     def scatter_forward(self, img):
         inputs = [img]
+        outputs = [img]
         for ind, block in enumerate(self.blocks):
             #out = checkpoint(block, *inputs) if ind != 0 else block(*inputs)
             out = block(*inputs)
-            inputs.append(out)
+            outputs.append(out) # save results from all blocks outputs[-1]
+            # 若depth无限制，则全部输出传递到下一层
+            if self.depth == -1:
+                outputs = [self.pooling(i) for i in outputs]
+                inputs = outputs
+                continue
+            # 若depth有限制
+            ## 当前尺度的输出不在最后一层，也把全部输出传递到下一层
+            if ind + 1 < self.depth:
+                next_in = outputs[-1]
+            else: ## 否则只传递部分输出到下一层
+                idx = getattr(self, f"keep_idx_{ind+1}")
+                next_in = outputs[-1][:, idx, :, :]
+            inputs.append(next_in)
+            # 池化输出，低通和保持shape一样
+            outputs = [self.pooling(i) for i in outputs]    
             inputs = [self.pooling(i) for i in inputs]
         if self.out_size != -1:
-            features = self.global_pool(torch.cat(inputs, dim=1)).reshape(img.shape[0], -1)
+            features = self.global_pool(torch.cat(outputs, dim=1)).reshape(img.shape[0], -1)
         else:
-            features = torch.cat(inputs, dim=1).reshape(img.shape[0], -1)
+            features = torch.cat(outputs, dim=1).reshape(img.shape[0], -1)
         return features #self.linear(features) #self.linear(F.normalize(features, p=2, dim=1))
 
     def forward(self, imgs):

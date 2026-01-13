@@ -45,8 +45,6 @@ def train_one_epoch(model, loader, optimizer, base_loss, device, original_params
             loss += reg_loss_value
         loss.backward()
         optimizer.step()
-        # if original_params is not None:
-        #     project_weights(model, original_params, r)
 
         total_base_loss += base_loss_value.item() * inputs.size(0)
         total_reg_loss += reg_loss_value.item() * inputs.size(0)

@@ -105,14 +105,14 @@ def split_train_val(train_dataset, train_ratio=0.1, batch_size=64, seed=123, tra
             train_dataset, train_size=used_len,
             seed=seed
         )
-        train_subset, val_subset = equally_split(
-            used_dataset, train_size=46,
-            seed=seed
-        )
-        # train_subset, val_subset = stratify_split(
-        #     used_dataset, train_size=train_len,
+        # train_subset, val_subset = equally_split(
+        #     used_dataset, train_size=23,
         #     seed=seed
         # )
+        train_subset, val_subset = stratify_split(
+            used_dataset, train_size=train_len,
+            seed=seed
+        )
     discard_len = total_len - len(train_subset) - len(val_subset)
     train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, drop_last=drop_last)
     train_len = len(train_subset)

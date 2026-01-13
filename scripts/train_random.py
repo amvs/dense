@@ -79,9 +79,10 @@ def main():
     max_scale = config["max_scale"]
     nb_orients = config["nb_orients"]
     wavelet = config["wavelet"]
-    efficient = config["efficient"]
     out_size = config["out_size"]
     n_copies = config["n_copies"]
+    pca_dim  = config["pca_dim"]
+    depth = config["depth"]
     share_channels = config.get("share_channels", False)
     params = ScatterParams(
         n_scale=max_scale,
@@ -93,6 +94,8 @@ def main():
         share_channels=share_channels,
         in_size=image_shape[1],
         out_size=out_size,
+        depth=depth,
+        pca_dim=pca_dim,
         random=True
     )
     model = dense(params).to(device)
@@ -183,12 +186,11 @@ def main():
 
     #
     test_loss, test_acc = evaluate(model, test_loader, base_loss, device)
-    train_test_gap = abs(test_loss - best_train_loss)
-    val_test_gap = abs(test_loss - best_val_loss)
+    
     logger.log(f"Finish testing task.")
     logger.log(f"Test_Acc={test_acc:.4f} Ini_Test_Acc={ini_test_acc:.4f} Train_Ratio={train_ratio:.4f} "
     f"Test_Loss={test_loss:.4f} Best_Train_Loss={best_train_loss:.4f} Best_Val_Loss={best_val_loss:.4f} "
-    f"weight_decays={weight_decays:.5f} Out_dim={model.out_dim} val_test_gap={val_test_gap:5f} train_test_gap={train_test_gap:5f} dist={dist}", data=True)
+    f"weight_decays={weight_decays:.5f} Out_dim={model.out_dim} dist={dist}", data=True)
     #
     save_fine_tuned = os.path.join(exp_dir, "trained.pt")
     torch.save(model.state_dict(), save_fine_tuned)
@@ -203,8 +205,7 @@ def main():
     config["test_loss"] = test_loss
     config["best_train_loss"] = best_train_loss
     config["best_val_loss"] = best_val_loss
-    config["train_test_gap"] = train_test_gap
-    config["val_test_gap"] = val_test_gap
+
     config["n_tuned_params"] = n_tuned_params
     config["n_linear_params"] = model.out_dim * model.n_class
     config["random"] = True
