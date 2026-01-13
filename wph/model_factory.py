@@ -193,6 +193,7 @@ def create_wph_feature_extractor(config, image_shape, device):
             shift_mode=config["shift_mode"],
             mask_angles=config["mask_angles"],
             mask_union_highpass=config["mask_union_highpass"],
+            spatial_attn=config.get("spatial_attn", False),
         ).to(device)
     else:
         if config.get("wavelet", "morlet") != "morlet":

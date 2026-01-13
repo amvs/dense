@@ -4,13 +4,16 @@ from typing import Optional, Literal, Union, Tuple
 from torch.fft import fft2, ifft2
 import copy
 import warnings
+import numpy as np
 
 from wph.layers.wave_conv_layer import WaveConvLayer, WaveConvLayerDownsample
 from wph.layers.relu_center_layer import ReluCenterLayer, ReluCenterLayerDownsample, ReluCenterLayerDownsamplePairs
 from wph.layers.corr_layer import CorrLayer, CorrLayerDownsample, CorrLayerDownsamplePairs
 from wph.layers.lowpass_layer import LowpassLayer
 from wph.layers.highpass_layer import HighpassLayer
+from wph.layers.spatial_attent_layer import SpatialAttentionLayer
 from dense.helpers import LoggerManager
+from training.pca_classifier import PCAClassifier, pca_log_probs_torch
 
 class WPHFeatureBase(nn.Module):
     def __init__(self,
@@ -31,6 +34,7 @@ class WPHFeatureBase(nn.Module):
                 shift_mode: Literal["samec", "all", "strict"] = "samec",
                 mask_angles: int = 4,
                 mask_union_highpass: bool = True,
+                spatial_attn: bool = False,
         ):
         super().__init__()
         self.J = J
@@ -53,6 +57,7 @@ class WPHFeatureBase(nn.Module):
         self.mask_angles = mask_angles
         self.mask_union_highpass = mask_union_highpass
         self.normalize_relu = normalize_relu
+        self.spatial_attn = spatial_attn
 
     def forward(self, x: torch.Tensor):
         raise NotImplementedError("Subclasses should implement this!")
@@ -121,11 +126,15 @@ class WPHModel(WPHFeatureBase):
             mask_union=self.mask_union,
             mask_union_highpass=self.mask_union_highpass,
         )
+        if self.spatial_attn:
+            self.attent = SpatialAttentionLayer()
         self.nb_moments = self.corr.nb_moments + self.lowpass.nb_moments + self.highpass.nb_moments
         
     def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         nb = x.shape[0]
         xpsi = self.wave_conv(x)
+        if self.spatial_attn:
+            xpsi = self.attent(xpsi)
         xrelu = self.relu_center(xpsi)
         xcorr = self.corr(xrelu.view(nb, self.num_channels * self.J * self.L * self.A, self.M, self.N), flatten=flatten, vmap_chunk_size=vmap_chunk_size)
         hatx_c = fft2(x)
@@ -215,11 +224,15 @@ class WPHModelDownsample(WPHFeatureBase):
                                      hatphi=filters["hatphi"],
                                      mask_angles=self.mask_angles,
                                      mask_union=False)
+        if self.spatial_attn:
+            self.attent = SpatialAttentionLayer()
         self.nb_moments = self.corr.nb_moments + self.lowpass.nb_moments + self.highpass.nb_moments
             
     def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> torch.Tensor:
         if self.share_scale_pairs:
             xpsi = self.wave_conv(x)
+            if self.spatial_attn:
+                xpsi = [self.attent(x) for x in xpsi]
             xrelu = self.relu_center(xpsi)
             xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
         else:
@@ -227,6 +240,8 @@ class WPHModelDownsample(WPHFeatureBase):
             # warm up indices by accessing property (built in __init__)
             needed_pairs = sorted(self.corr.grouped_indices.keys())
             xpsi_nested = self.wave_conv(x, scale_pairs=needed_pairs)
+            if self.spatial_attn:
+                xpsi_nested = [self.attent(x) for x in xpsi_nested]
             xrelu = self.relu_center(xpsi_nested)
             xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
         hatx_c = fft2(x)
@@ -384,6 +399,13 @@ class WPHClassifier(nn.Module):
             for param in self.classifier.parameters():
                 param.requires_grad = parts['classifier']
 
+        if self.feature_extractors[0].spatial_attn and 'spatial_attn' in parts:
+            trainable = parts['spatial_attn']
+            for fe in self.feature_extractors:
+                if hasattr(fe, 'attent'):
+                    for param in fe.attent.parameters():
+                        param.requires_grad = trainable
+
     def fine_tuned_params(self):
         """
         Get parameters of the feature extractor that are set to be trainable.
@@ -395,4 +417,86 @@ class WPHClassifier(nn.Module):
         for fe in self.feature_extractors:
             params.extend([param for param in fe.parameters() if param.requires_grad])
         return params
+
+
+class WPHSvm(nn.Module):
+    """Feature-extractor wrapper for SVM training.
+
+    Mirrors the multi-copy behavior of `WPHClassifier` but omits batch-norm and
+    the linear classifier. Exposes `extract_features` used with an external
+    sklearn SVM.
+    """
+
+    def __init__(self, feature_extractor: WPHFeatureBase, copies: int = 1, noise_std: float = 0.01):
+        super().__init__()
+        self.copies = copies
+        self.noise_std = noise_std
+
+        self.feature_extractors = nn.ModuleList([feature_extractor])
+        if copies > 1:
+            extra_copies = [copy.deepcopy(feature_extractor) for _ in range(copies - 1)]
+            for fe_copy in extra_copies:
+                WPHClassifier._add_noise_to_copy(fe_copy, noise_std)
+            self.feature_extractors.extend(extra_copies)
+
+    @property
+    def nb_moments(self):
+        return self.feature_extractors[0].nb_moments
+
+    def extract_features(self, x: torch.Tensor, vmap_chunk_size=None) -> torch.Tensor:
+        feats = [fe(x, flatten=True, vmap_chunk_size=vmap_chunk_size) for fe in self.feature_extractors]
+        if len(feats) == 1:
+            return feats[0]
+        return torch.stack(feats, dim=0).mean(dim=0)
+
+    def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> torch.Tensor:
+        # For SVM use we always flatten; `flatten` retained for API parity.
+        return self.extract_features(x, vmap_chunk_size=vmap_chunk_size)
+
+
+class WPHPca(nn.Module):
+    """Feature-extractor wrapper for PCA/affine space classification."""
+
+    def __init__(self, feature_extractor: WPHFeatureBase, copies: int = 1, noise_std: float = 0.01):
+        super().__init__()
+        self.copies = copies
+        self.noise_std = noise_std
+        self.pca_classifier: Optional[PCAClassifier] = None
+
+        self.feature_extractors = nn.ModuleList([feature_extractor])
+        if copies > 1:
+            extra_copies = [copy.deepcopy(feature_extractor) for _ in range(copies - 1)]
+            for fe_copy in extra_copies:
+                WPHClassifier._add_noise_to_copy(fe_copy, noise_std)
+            self.feature_extractors.extend(extra_copies)
+
+    @property
+    def nb_moments(self):
+        return self.feature_extractors[0].nb_moments
+
+    def set_classifier(self, pca_classifier: PCAClassifier):
+        self.pca_classifier = pca_classifier
+
+    def extract_features(self, x: torch.Tensor, vmap_chunk_size=None) -> torch.Tensor:
+        feats = [fe(x, flatten=True, vmap_chunk_size=vmap_chunk_size) for fe in self.feature_extractors]
+        if len(feats) == 1:
+            return feats[0]
+        return torch.stack(feats, dim=0).mean(dim=0)
+
+    def predict(self, x: torch.Tensor, vmap_chunk_size=None) -> np.ndarray:
+        if self.pca_classifier is None:
+            raise RuntimeError("PCA classifier has not been set")
+        with torch.no_grad():
+            features = self.extract_features(x, vmap_chunk_size=vmap_chunk_size)
+        return self.pca_classifier.predict(features.cpu().numpy())
+
+    def predict_log_probs(self, x: torch.Tensor, device, vmap_chunk_size=None) -> torch.Tensor:
+        if self.pca_classifier is None:
+            raise RuntimeError("PCA classifier has not been set")
+        with torch.no_grad():
+            features = self.extract_features(x, vmap_chunk_size=vmap_chunk_size)
+        return pca_log_probs_torch(self.pca_classifier, features, device)
+
+    def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> torch.Tensor:
+        return self.extract_features(x, vmap_chunk_size=vmap_chunk_size)
 
