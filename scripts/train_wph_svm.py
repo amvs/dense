@@ -20,14 +20,15 @@ from configs import load_config, save_config, apply_overrides, AutoConfig
 from training.base_trainer import recompute_bn_running_stats
 from training.experiment_utils import setup_experiment, log_model_parameters, count_svm_parameters
 from training.data_utils import load_and_split_data
-from wph.wph_model import WPHSvm
+from wph.wph_model import WPHClassifier
+from wph.classifiers import SVMClassifier
 from wph.model_factory import create_wph_feature_extractor
 from dense.helpers import LoggerManager
 from train_wph import set_seed, worker_init_fn
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train WPHSvm with config")
+    parser = argparse.ArgumentParser(description="Train WPH with SVM classifier using config")
     parser.add_argument(
         "--config", type=str, required=True,
         help="Path to YAML config file (e.g. configs/mnist.yaml)"
@@ -54,7 +55,7 @@ def extract_all_features(model, loader, device, vmap_chunk_size=None):
     Extract features from all samples in the loader.
 
     Args:
-        model (WPHSvm): The model with feature extractors.
+        model (WPHClassifier): The model with feature extractors.
         loader (DataLoader): Data loader.
         device (torch.device): Device to use.
         vmap_chunk_size (int, optional): Chunk size for vmap operations.
@@ -149,39 +150,43 @@ def create_svm_classifier(n_samples, n_features, n_classes, svm_type="auto", sca
     return pipeline
 
 
-def svm_predict_proba_torch(svm_pipeline, features_tensor, device):
-    """
-    Get class probabilities from SVM for PyTorch tensors (for computing cross-entropy loss).
-    
-    Args:
-        svm_pipeline: Trained sklearn pipeline with SVM.
-        features_tensor: PyTorch tensor of features.
-        device: Device for computation.
-        
-    Returns:
-        torch.Tensor: Log probabilities for each class (for use with NLLLoss or CrossEntropyLoss).
-    """
-    # Convert to numpy for sklearn
-    features_np = features_tensor.detach().cpu().numpy()
-    
-    # Get decision function or predict_proba
+def svm_predict_log_probs_torch(svm_pipeline, features_tensor, device):
+    """Differentiable log-probabilities for linear/SGD SVM. Falls back to numpy (no grad) otherwise."""
+    logger = LoggerManager.get_logger()
     svm = svm_pipeline.named_steps['svm']
-    if hasattr(svm_pipeline, 'decision_function'):
-        # For LinearSVC and SGDClassifier, use decision function
-        decision_values = svm_pipeline.decision_function(features_np)
-        # Convert to log probabilities using softmax
-        decision_tensor = torch.tensor(decision_values, dtype=torch.float32, device=device)
-        log_probs = torch.nn.functional.log_softmax(decision_tensor, dim=1)
+    scaler = svm_pipeline.named_steps.get('scaler')
+
+    # Apply scaling in torch if present
+    if scaler is not None:
+        mean = torch.tensor(scaler.mean_, device=device, dtype=features_tensor.dtype)
+        scale = torch.tensor(scaler.scale_, device=device, dtype=features_tensor.dtype)
+        features = (features_tensor - mean) / scale
     else:
-        # For SVC with probability=True
-        probs = svm_pipeline.predict_proba(features_np)
-        log_probs = torch.tensor(np.log(probs + 1e-10), dtype=torch.float32, device=device)
-    
-    return log_probs
+        features = features_tensor
+
+    # Linear models: LinearSVC or SGDClassifier with linear hinge
+    if isinstance(svm, (LinearSVC, SGDClassifier)):
+        coef = torch.tensor(svm.coef_, device=device, dtype=features.dtype)
+        intercept = torch.tensor(svm.intercept_, device=device, dtype=features.dtype)
+        logits = features @ coef.T + intercept
+        # Binary case: produce two-class logits
+        if logits.shape[1] == 1:
+            logits = torch.cat([-logits, logits], dim=1)
+        return torch.nn.functional.log_softmax(logits, dim=1)
+
+    # Fallback: non-differentiable path (e.g., RBF SVC). Warn once per run.
+    logger.warning("Using non-differentiable SVM log-probs; gradients will be zero (use linear SVM for fine-tuning).")
+    features_np = features_tensor.detach().cpu().numpy()
+    if hasattr(svm_pipeline, 'decision_function'):
+        decision_values = svm_pipeline.decision_function(features_np)
+        decision_tensor = torch.tensor(decision_values, dtype=torch.float32, device=device)
+        return torch.nn.functional.log_softmax(decision_tensor, dim=1)
+    probs = svm_pipeline.predict_proba(features_np)
+    return torch.tensor(np.log(probs + 1e-10), dtype=torch.float32, device=device)
 
 
 def finetune_feature_extractor(model, svm_pipeline, train_loader, val_loader, device, 
-                                epochs, lr, lambda_reg, logger, config, exp_dir, original_fe_params):
+                                epochs, lr, lambda_reg, logger, config, exp_dir, original_fe_params, freeze_classifier: bool):
     """
     Fine-tune the feature extractor using the trained SVM as a frozen classifier.
     
@@ -191,7 +196,7 @@ def finetune_feature_extractor(model, svm_pipeline, train_loader, val_loader, de
     3. Compute loss and backprop through feature extractor only
     
     Args:
-        model: WPHSvm model with feature extractors
+        model (WPHClassifier): WPH model with feature extractors
         svm_pipeline: Trained sklearn SVM pipeline
         train_loader: Training data loader
         val_loader: Validation data loader
@@ -232,6 +237,15 @@ def finetune_feature_extractor(model, svm_pipeline, train_loader, val_loader, de
     l2_norm = 0.0  # Initialize L2 norm
     
     for epoch in range(epochs):
+        # Optionally refit SVM each epoch using current features
+        if not freeze_classifier:
+            model.eval()
+            with torch.no_grad():
+                train_features_np, train_labels_np = extract_all_features(model, train_loader, device, vmap_chunk_size)
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=UserWarning)
+                svm_pipeline.fit(train_features_np, train_labels_np)
+
         model.train()
         epoch_loss = 0.0
         epoch_base_loss = 0.0
@@ -249,7 +263,7 @@ def finetune_feature_extractor(model, svm_pipeline, train_loader, val_loader, de
             features = model.extract_features(inputs, vmap_chunk_size=vmap_chunk_size)
             
             # Get SVM predictions as log probabilities
-            log_probs = svm_predict_proba_torch(svm_pipeline, features, device)
+            log_probs = svm_predict_log_probs_torch(svm_pipeline, features, device)
             
             # Compute base loss
             base_loss = criterion(log_probs, labels)
@@ -298,7 +312,7 @@ def finetune_feature_extractor(model, svm_pipeline, train_loader, val_loader, de
                 labels = labels.to(device)
                 
                 features = model.extract_features(inputs, vmap_chunk_size=vmap_chunk_size)
-                log_probs = svm_predict_proba_torch(svm_pipeline, features, device)
+                log_probs = svm_predict_log_probs_torch(svm_pipeline, features, device)
                 loss = criterion(log_probs, labels)
                 val_loss += loss.item()
                 
@@ -366,8 +380,13 @@ def main():
     # Initialize feature extractor
     feature_extractor, filters = create_wph_feature_extractor(config, image_shape, device)
     
-    model = WPHSvm(
-        feature_extractor,
+    # Create SVM classifier placeholder
+    nb_moments_int = int(feature_extractor.nb_moments)
+    svm_classifier = SVMClassifier(input_dim=nb_moments_int, num_classes=nb_class)
+    
+    model = WPHClassifier(
+        feature_extractor=feature_extractor,
+        classifier=svm_classifier,
         copies=int(config.get("copies", 1)),
         noise_std=float(config.get("noise_std", 0.01)),
     ).to(device)
@@ -478,7 +497,8 @@ def main():
             logger=logger,
             config=config,
             exp_dir=exp_dir,
-            original_fe_params=original_fe_params
+            original_fe_params=original_fe_params,
+            freeze_classifier=freeze_classifier,
         )
         elapsed_time = time.time() - start_time
         logger.log(f"Feature extractor fine-tuning completed in {elapsed_time:.2f} seconds.")

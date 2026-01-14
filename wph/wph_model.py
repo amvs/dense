@@ -13,7 +13,6 @@ from wph.layers.lowpass_layer import LowpassLayer
 from wph.layers.highpass_layer import HighpassLayer
 from wph.layers.spatial_attent_layer import SpatialAttentionLayer
 from dense.helpers import LoggerManager
-from training.pca_classifier import PCAClassifier, pca_log_probs_torch
 
 class WPHFeatureBase(nn.Module):
     def __init__(self,
@@ -255,23 +254,21 @@ class WPHModelDownsample(WPHFeatureBase):
         
 
 class WPHClassifier(nn.Module):
-    def __init__(self, feature_extractor: WPHFeatureBase, num_classes: int, use_batch_norm: bool = False, copies: int = 1, noise_std: float = 0.01):
+    def __init__(self, feature_extractor: WPHFeatureBase, classifier: nn.Module, use_batch_norm: bool = False, copies: int = 1, noise_std: float = 0.01):
         """
-        A wrapper class for classification using WPHModel as a feature extractor.
+        Lightweight wrapper for classification using WPHModel as a feature extractor.
 
         Args:
             feature_extractor (nn.Module): The feature extractor model (e.g., WPHModel or WPHModelDownsample).
-            num_classes (int): Number of classes for classification.
-            use_batch_norm (bool): Whether to include a batch normalization layer before the classifier.
-            copies (int): Number of feature extractor copies to ensemble. Default is 1 (no ensembling).
+            classifier (nn.Module): The classifier module (e.g., LinearClassifier, HyperNetworkClassifier, etc.).
+            use_batch_norm (bool): Whether to use batch normalization. Default is False.
             noise_std (float): Standard deviation of noise added to filters for each copy. Default is 0.01.
         """
         super().__init__()
-        self.num_classes = num_classes
-        self.use_batch_norm = use_batch_norm
         self.copies = copies
         self.noise_std = noise_std
-
+        self.classifier = classifier
+        self.use_batch_norm = use_batch_norm
         # store copies of feature extractor in module list
         self.feature_extractors = nn.ModuleList([feature_extractor])
 
@@ -294,9 +291,6 @@ class WPHClassifier(nn.Module):
             self.batch_norm = nn.BatchNorm1d(nb_moments_int)
         else:
             self.batch_norm = None
-
-        # Define the classifier layer
-        self.classifier = nn.Linear(nb_moments_int, num_classes)
 
     @staticmethod
     def _deep_copy_feature_extractor(feature_extractor):
@@ -348,6 +342,30 @@ class WPHClassifier(nn.Module):
                     del lowpass._buffers['hatphi']
                 lowpass.register_parameter('hatphi', nn.Parameter(noisy_hatphi))
 
+    def extract_features(self, x: torch.Tensor, vmap_chunk_size=None) -> torch.Tensor:
+        """
+        Extract features from the input using the feature extractor(s).
+        
+        Args:
+            x (torch.Tensor): Input tensor.
+            vmap_chunk_size (int, optional): Chunk size for vmap operations.
+            
+        Returns:
+            torch.Tensor: Extracted features of shape (batch_size, nb_moments).
+        """
+        features_list = [fe(x, flatten=True, vmap_chunk_size=vmap_chunk_size) for fe in self.feature_extractors]
+
+        if self.ensemble_weights is None:
+            return features_list[0]
+        
+        if len(features_list) == 1:
+            return features_list[0]
+        
+        # Stack features: (batch_size, nb_moments, copies)
+        features_stack = torch.stack(features_list, dim=2)
+        # Apply trainable averaging: (batch_size, nb_moments, 1)
+        return self.ensemble_weights(features_stack).squeeze(2)
+
     def forward(self, x: torch.Tensor, vmap_chunk_size=None, return_feats=False) -> torch.Tensor:
         """
         Forward pass for the classifier.
@@ -355,29 +373,20 @@ class WPHClassifier(nn.Module):
         Args:
             x (torch.Tensor): Input tensor.
             vmap_chunk_size (int, optional): Chunk size for vmap operations when computing correlations.
+            return_feats (bool): Whether to return features along with logits.
 
         Returns:
-            torch.Tensor: Classification logits.
+            torch.Tensor: Classification logits (or tuple if return_feats=True).
         """
-        features_list = [fe(x, flatten=True, vmap_chunk_size=vmap_chunk_size) for fe in self.feature_extractors]
-
-        if self.ensemble_weights is None:
-            features = features_list[0]
-        else:
-            # Stack features: (batch_size, nb_moments, copies)
-            features_stack = torch.stack(features_list, dim=2)
-            # Apply trainable averaging: (batch_size, nb_moments, 1)
-            features = self.ensemble_weights(features_stack).squeeze(2)
-
-        # Apply batch normalization if enabled
+        features = self.extract_features(x, vmap_chunk_size=vmap_chunk_size)
         if self.batch_norm is not None:
-            pre_bn_feats = features.clone().detach()
             features = self.batch_norm(features)
         
-        # Compute logits
+        # Pass features to classifier
         logits = self.classifier(features)
+        
         if return_feats:
-            return logits, pre_bn_feats, features
+            return logits, features
         else:
             return logits
 
@@ -385,8 +394,8 @@ class WPHClassifier(nn.Module):
         """
         Set trainable status for different parts of the model.
 
-        Args:
-            parts (dict): A dictionary with keys 'feature_extractor' and 'classifier',
+        Args:   
+            parts (dict): A dictionary with keys 'feature_extractor', 'classifier', and optionally 'spatial_attn',
                           and boolean values indicating whether each part should be trainable.
         """
         if 'feature_extractor' in parts:
@@ -399,7 +408,7 @@ class WPHClassifier(nn.Module):
             for param in self.classifier.parameters():
                 param.requires_grad = parts['classifier']
 
-        if self.feature_extractors[0].spatial_attn and 'spatial_attn' in parts:
+        if 'spatial_attn' in parts and hasattr(self.feature_extractors[0], 'spatial_attn') and self.feature_extractors[0].spatial_attn:
             trainable = parts['spatial_attn']
             for fe in self.feature_extractors:
                 if hasattr(fe, 'attent'):
@@ -417,86 +426,8 @@ class WPHClassifier(nn.Module):
         for fe in self.feature_extractors:
             params.extend([param for param in fe.parameters() if param.requires_grad])
         return params
-
-
-class WPHSvm(nn.Module):
-    """Feature-extractor wrapper for SVM training.
-
-    Mirrors the multi-copy behavior of `WPHClassifier` but omits batch-norm and
-    the linear classifier. Exposes `extract_features` used with an external
-    sklearn SVM.
-    """
-
-    def __init__(self, feature_extractor: WPHFeatureBase, copies: int = 1, noise_std: float = 0.01):
-        super().__init__()
-        self.copies = copies
-        self.noise_std = noise_std
-
-        self.feature_extractors = nn.ModuleList([feature_extractor])
-        if copies > 1:
-            extra_copies = [copy.deepcopy(feature_extractor) for _ in range(copies - 1)]
-            for fe_copy in extra_copies:
-                WPHClassifier._add_noise_to_copy(fe_copy, noise_std)
-            self.feature_extractors.extend(extra_copies)
-
+    
     @property
     def nb_moments(self):
+        """Get the number of moments/features from the feature extractor."""
         return self.feature_extractors[0].nb_moments
-
-    def extract_features(self, x: torch.Tensor, vmap_chunk_size=None) -> torch.Tensor:
-        feats = [fe(x, flatten=True, vmap_chunk_size=vmap_chunk_size) for fe in self.feature_extractors]
-        if len(feats) == 1:
-            return feats[0]
-        return torch.stack(feats, dim=0).mean(dim=0)
-
-    def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> torch.Tensor:
-        # For SVM use we always flatten; `flatten` retained for API parity.
-        return self.extract_features(x, vmap_chunk_size=vmap_chunk_size)
-
-
-class WPHPca(nn.Module):
-    """Feature-extractor wrapper for PCA/affine space classification."""
-
-    def __init__(self, feature_extractor: WPHFeatureBase, copies: int = 1, noise_std: float = 0.01):
-        super().__init__()
-        self.copies = copies
-        self.noise_std = noise_std
-        self.pca_classifier: Optional[PCAClassifier] = None
-
-        self.feature_extractors = nn.ModuleList([feature_extractor])
-        if copies > 1:
-            extra_copies = [copy.deepcopy(feature_extractor) for _ in range(copies - 1)]
-            for fe_copy in extra_copies:
-                WPHClassifier._add_noise_to_copy(fe_copy, noise_std)
-            self.feature_extractors.extend(extra_copies)
-
-    @property
-    def nb_moments(self):
-        return self.feature_extractors[0].nb_moments
-
-    def set_classifier(self, pca_classifier: PCAClassifier):
-        self.pca_classifier = pca_classifier
-
-    def extract_features(self, x: torch.Tensor, vmap_chunk_size=None) -> torch.Tensor:
-        feats = [fe(x, flatten=True, vmap_chunk_size=vmap_chunk_size) for fe in self.feature_extractors]
-        if len(feats) == 1:
-            return feats[0]
-        return torch.stack(feats, dim=0).mean(dim=0)
-
-    def predict(self, x: torch.Tensor, vmap_chunk_size=None) -> np.ndarray:
-        if self.pca_classifier is None:
-            raise RuntimeError("PCA classifier has not been set")
-        with torch.no_grad():
-            features = self.extract_features(x, vmap_chunk_size=vmap_chunk_size)
-        return self.pca_classifier.predict(features.cpu().numpy())
-
-    def predict_log_probs(self, x: torch.Tensor, device, vmap_chunk_size=None) -> torch.Tensor:
-        if self.pca_classifier is None:
-            raise RuntimeError("PCA classifier has not been set")
-        with torch.no_grad():
-            features = self.extract_features(x, vmap_chunk_size=vmap_chunk_size)
-        return pca_log_probs_torch(self.pca_classifier, features, device)
-
-    def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> torch.Tensor:
-        return self.extract_features(x, vmap_chunk_size=vmap_chunk_size)
-

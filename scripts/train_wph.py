@@ -22,6 +22,7 @@ from training.base_trainer import recompute_bn_running_stats
 from training.experiment_utils import setup_experiment, log_model_parameters
 from training.data_utils import load_and_split_data
 from wph.wph_model import WPHClassifier
+from wph.classifiers import LinearClassifier, HyperNetworkClassifier
 from wph.model_factory import create_wph_feature_extractor
 from dense.helpers import LoggerManager
 
@@ -197,12 +198,33 @@ def main():
 
     # Initialize models
     feature_extractor, filters = create_wph_feature_extractor(config, image_shape, device)
+    
+    # Create linear classifier
+    nb_moments = int(feature_extractor.nb_moments)
+    if config["model_type"] == "wph":
+        classifier = LinearClassifier(
+            input_dim=nb_moments,
+            num_classes=config["num_classes"],
+        )
+    elif config["model_type"] == "wph_hypernetwork":
+        classifier = HyperNetworkClassifier(
+            input_dim=nb_moments,
+            num_classes=config["num_classes"],
+            metadata_dim=config.get("metadata_dim", 10),
+        )
+    elif config["model_type"] == "wph_pca":
+        raise ValueError("PCA classifier should be trained via train_wph_pca.py")
+    elif config["model_type"] == "wph_svm":
+        raise ValueError("SVM classifier should be trained via train_wph_svm.py")
+    else:
+        raise ValueError(f"Unknown model_type: {config['model_type']}")
+
     model = WPHClassifier(
-        feature_extractor, 
-        num_classes=config["num_classes"],
-        use_batch_norm=config.get("use_batch_norm", False),
+        feature_extractor=feature_extractor,
+        classifier=classifier,
         copies=int(config.get("copies", 1)),
         noise_std=float(config.get("noise_std", 0.01)),
+        use_batch_norm=config.get("use_batch_norm", False)
     ).to(device)
 
     # Log model architecture
