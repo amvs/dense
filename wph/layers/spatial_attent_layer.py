@@ -34,5 +34,5 @@ class SpatialAttentionLayer(nn.Module):
         attn = torch.cat([avg_out, max_out], dim=1)
         attn = self.sigmoid(self.conv(attn))
         
-        out = x * attn # Only the important pixels 'survive' for correlation
+        out = x * (1 + attn)  # Only the important pixels 'survive' for correlation - add 1 for residual attention
         return out.reshape(shape)
