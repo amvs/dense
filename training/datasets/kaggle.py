@@ -60,7 +60,7 @@ class KaggleDataset(Dataset):
 
 
 
-def get_kaggle_loaders(dataset_name, resize, deeper_path, batch_size=64, train_ratio=0.8, worker_init_fn=None):
+def get_kaggle_loaders(dataset_name, resize, deeper_path, batch_size=64, train_ratio=0.8, worker_init_fn=None, drop_last=True):
     logger = LoggerManager.get_logger()
     # Early check: try to load cached mean/std using a deterministic identifier
     try:
@@ -120,7 +120,7 @@ def get_kaggle_loaders(dataset_name, resize, deeper_path, batch_size=64, train_r
     # Update the base dataset's transform so both subsets use it
     dataset.transform = normalized_transform
     logger.info(f"Updated dataset transform with normalization")
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn, drop_last=True, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn, drop_last=drop_last, num_workers=4)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=False, num_workers=4)
     nb_class = len(dataset.classes)
     sample_img, _ = train_dataset[0]

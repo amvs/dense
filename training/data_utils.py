@@ -4,6 +4,7 @@ Used by train_wph.py and train_wph_svm.py.
 """
 from functools import partial
 from training.datasets import get_loaders, split_train_val
+from training.datasets.outex import get_available_problems
 
 
 def load_and_split_data(config, worker_init_fn, batch_size=None):
@@ -25,12 +26,14 @@ def load_and_split_data(config, worker_init_fn, batch_size=None):
     train_ratio = config["train_ratio"]
     
     # Load dataset
+    drop_last = config.get("drop_last", True)
     if dataset == "mnist":
         train_loader, test_loader, nb_class, image_shape = get_loaders(
             dataset=dataset,
             batch_size=batch_size,
             train_ratio=1-test_ratio,
-            worker_init_fn=worker_init_fn
+            worker_init_fn=worker_init_fn,
+            drop_last=drop_last
         )
     elif dataset == 'kthtips2b':
         root_dir = config["root_dir"]
@@ -41,13 +44,15 @@ def load_and_split_data(config, worker_init_fn, batch_size=None):
             batch_size=batch_size,
             train_ratio=config["train_ratio"],
             worker_init_fn=worker_init_fn,
-            fold=config.get("fold", None)
+            fold=config.get("fold", None),
+            drop_last=drop_last
         )
         # kthtips2b loader already returns train/val/test split, no need to split further
         return train_loader, val_loader, test_loader, nb_class, image_shape
     elif dataset.startswith('outex'):
         root_dir = config["root_dir"]
-        problem_id = config.get("problem_id", '000')
+        available_problems = get_available_problems(root_dir)
+        problem_id = available_problems[config.get("fold", '000')]
         train_loader, test_loader, nb_class, image_shape = get_loaders(
             dataset=dataset,
             root_dir=root_dir,
@@ -55,7 +60,8 @@ def load_and_split_data(config, worker_init_fn, batch_size=None):
             batch_size=batch_size,
             train_ratio=config["train_ratio"],
             worker_init_fn=worker_init_fn,
-            problem_id=problem_id
+            problem_id=problem_id,
+            drop_last=drop_last
         )
     else:
         resize = config["resize"]
@@ -66,7 +72,8 @@ def load_and_split_data(config, worker_init_fn, batch_size=None):
             deeper_path=deeper_path,
             batch_size=batch_size,
             train_ratio=1-test_ratio,
-            worker_init_fn=worker_init_fn
+            worker_init_fn=worker_init_fn,
+            drop_last=drop_last
         )
     
     # Split train into train/val (only for datasets that don't return val_loader)
@@ -76,7 +83,7 @@ def load_and_split_data(config, worker_init_fn, batch_size=None):
             train_ratio=train_ratio,
             train_val_ratio=train_val_ratio,
             batch_size=batch_size,
-            drop_last=True
+            drop_last=drop_last
         )
     
     return train_loader, val_loader, test_loader, nb_class, image_shape

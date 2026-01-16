@@ -82,7 +82,7 @@ class OutexDataset(Dataset):
         return image, label
 
 
-def get_outex_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, problem_id='000', train_ratio=1.0):
+def get_outex_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, problem_id='000', train_ratio=1.0, drop_last=True):
     """
     Load Outex dataset with train/test splits.
     
@@ -148,7 +148,7 @@ def get_outex_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, prob
     test_dataset.transform = normalized_transform
     logger.info(f"Updated dataset transforms with normalization")
     
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn, drop_last=True, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn, drop_last=drop_last, num_workers=4)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=False, num_workers=4)
     
     sample_img, _ = train_dataset[0]
