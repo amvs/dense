@@ -52,17 +52,20 @@ def load_and_split_data(config, worker_init_fn, batch_size=None):
     elif dataset.startswith('outex'):
         root_dir = config["root_dir"]
         available_problems = get_available_problems(root_dir)
-        problem_id = available_problems[config.get("fold", '000')]
-        train_loader, test_loader, nb_class, image_shape = get_loaders(
+        problem_id = available_problems[config.get("fold", 0)]
+        train_loader, val_loader, test_loader, nb_class, image_shape = get_loaders(
             dataset=dataset,
             root_dir=root_dir,
             resize=config["resize"],
             batch_size=batch_size,
             train_ratio=config["train_ratio"],
+            train_val_ratio=train_val_ratio,
             worker_init_fn=worker_init_fn,
             problem_id=problem_id,
             drop_last=drop_last
         )
+        # outex loader already returns train/val/test split, no need to split further
+        return train_loader, val_loader, test_loader, nb_class, image_shape
     else:
         resize = config["resize"]
         deeper_path = config["deeper_path"]
@@ -77,7 +80,7 @@ def load_and_split_data(config, worker_init_fn, batch_size=None):
         )
     
     # Split train into train/val (only for datasets that don't return val_loader)
-    if dataset not in ['kthtips2b']:
+    if dataset not in ['kthtips2b'] and not dataset.startswith('outex'):
         train_loader, val_loader = split_train_val(
             train_loader.dataset,
             train_ratio=train_ratio,

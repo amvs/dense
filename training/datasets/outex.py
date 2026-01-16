@@ -82,15 +82,12 @@ class OutexDataset(Dataset):
         return image, label
 
 
-def get_outex_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, problem_id='000', train_ratio=1.0, drop_last=True):
+def get_outex_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, problem_id='000', train_ratio=1.0, train_val_ratio=4, drop_last=True):
     """
-    Load Outex dataset with train/test splits.
+    Load Outex dataset with train/val/test splits.
     
     For multi-problem datasets (e.g., TC-00012), can run multiple experiments
     using different problem configurations for cross-validation.
-    
-    Note: Validation split should be created externally using split_train_val,
-    similar to MNIST dataset workflow.
     
     Args:
         root_dir: Path to Outex dataset root
@@ -100,9 +97,11 @@ def get_outex_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, prob
         problem_id: Problem configuration ID (e.g., '000', '001', '002'). 
                    If None, lists available problems.
         train_ratio: Fraction of training data to use (default 1.0). Set to < 1.0 to reduce training set.
+        train_val_ratio: Ratio of training to validation data (default 4, meaning train:val = 4:1).
+        drop_last: Whether to drop the last incomplete batch in training loader (default True).
         
     Returns:
-        train_loader, test_loader, nb_class, sample_img.shape
+        train_loader, val_loader, test_loader, nb_class, sample_img.shape
     """
     logger = LoggerManager.get_logger()
     
@@ -124,7 +123,15 @@ def get_outex_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, prob
     # Get number of classes before any splitting (Subset objects don't have .classes attribute)
     nb_class = len(test_dataset.classes)
     
-    # Apply train_ratio to reduce training data if needed
+    # Create validation split from training data BEFORE reducing training data
+    # This ensures we don't lose too much data in small datasets
+    # train_val_ratio determines the ratio train:val (e.g., 4 means train:val = 4:1)
+    total_len = len(train_dataset)
+    val_len = total_len // (train_val_ratio + 1)
+    train_len = total_len - val_len
+    train_dataset, val_dataset = stratify_split(train_dataset, train_size=train_len, seed=42)
+    
+    # Apply train_ratio to reduce training data if needed (after validation split)
     if train_ratio < 1.0:
         original_train_len = len(train_dataset)
         reduced_train_len = int(original_train_len * train_ratio)
@@ -145,17 +152,19 @@ def get_outex_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, prob
     
     # Update datasets' transforms
     train_dataset.transform = normalized_transform
+    val_dataset.transform = normalized_transform
     test_dataset.transform = normalized_transform
     logger.info(f"Updated dataset transforms with normalization")
     
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn, drop_last=drop_last, num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=False, num_workers=4)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=False, num_workers=4)
     
     sample_img, _ = train_dataset[0]
-    logger.info(f"Train size: {len(train_dataset)}, Test size: {len(test_dataset)}")
+    logger.info(f"Train size: {len(train_dataset)}, Val size: {len(val_dataset)}, Test size: {len(test_dataset)}")
     logger.info(f"# class: {nb_class}, shape {sample_img.shape}")
     
-    return train_loader, test_loader, nb_class, sample_img.shape
+    return train_loader, val_loader, test_loader, nb_class, sample_img.shape
 
 
 def get_available_problems(root_dir):
