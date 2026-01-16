@@ -6,7 +6,7 @@ from .base import split_train_val
 from dense.helpers.logger import LoggerManager
 
 Loaders = ["mnist", "smohsensadeghi/curet-dataset", "roustoumabdelmoula/textures-dataset", "saurabhshahane/barkvn50",
-"prasunroy/natural-images", "liewyousheng/minc2500", "kthtips2b", "outex10", "outex12"]
+"prasunroy/natural-images", "liewyousheng/minc2500", "kthtips2b", "outex10", "outex12", "jmexpert/describable-textures-dataset-dtd"]
 
 def get_loaders(dataset, *args, **kwargs):
     if dataset not in Loaders:
