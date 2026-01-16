@@ -22,9 +22,20 @@ def stratify_split(dataset, train_size, seed=123):
     total_len = len(dataset)
 
     # Fast-path: try to obtain labels without calling dataset[i] (which may open files).
-    # Handle Subset-like wrappers by unwrapping to the base dataset and using indices.
-    base_ds = getattr(dataset, 'dataset', dataset)
+    # Handle nested Subset-like wrappers (up to 5 levels) by unwrapping and composing indices.
+    base_ds = dataset
     indices = getattr(dataset, 'indices', None)
+    for _ in range(5):
+        parent = getattr(base_ds, 'dataset', None)
+        if parent is None:
+            break
+        parent_indices = getattr(parent, 'indices', None)
+        # Compose indices if both current and parent indices exist
+        if indices is not None and parent_indices is not None:
+            indices = [parent_indices[i] for i in indices]
+        elif indices is None and parent_indices is not None:
+            indices = parent_indices
+        base_ds = parent
 
     def _labels_from_base(base, idxs):
         # base may expose targets, labels, y, or samples
