@@ -1,0 +1,21 @@
+backbone: vgg16
+batch_size: 16
+dataset: mnist
+exp_dir: experiments_fvcnn/mnist-vgg16-20260119-232225
+exp_root: experiments_fvcnn
+feature_layer: conv5_3
+framework: fvcnn
+gmm_components: 32
+gmm_samples: 5000
+l2_normalize: true
+max_sqrt_hw: 1024
+min_edge: 32
+pca_dim: null
+resize: 224
+root_dir: data/MNIST
+scales:
+- 1.0
+- 0.7071
+seed: 42
+signed_sqrt: true
+svm_C: 1.0

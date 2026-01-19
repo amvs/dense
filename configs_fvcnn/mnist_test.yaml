@@ -1,0 +1,32 @@
+# FV-CNN configuration for MNIST (test)
+# Minimal config for testing the pipeline
+
+# dataset settings
+dataset: mnist
+root_dir: data/MNIST
+resize: 224
+batch_size: 16
+seed: 42
+
+# feature extractor
+framework: fvcnn
+backbone: vgg16
+feature_layer: conv5_3
+
+# multi-scale settings
+scales: [1.0, 0.7071]
+min_edge: 32
+max_sqrt_hw: 1024
+
+# IFV encoder settings
+gmm_components: 32
+pca_dim: null
+signed_sqrt: true
+l2_normalize: true
+
+# training
+svm_C: 1.0
+gmm_samples: 5000
+
+# logging
+exp_root: experiments_fvcnn

@@ -1,0 +1,36 @@
+# FV-CNN configuration for CUReT (image-level classification)
+
+# dataset
+dataset: smohsensadeghi/curet-dataset
+deeper_path: CUReT/curetgrey/
+resize: 200
+train_ratio: 0.1
+test_ratio: 0.15
+train_val_ratio: 2
+seed: 42
+num_classes: 61
+
+# feature extractor
+framework: fvcnn
+backbone: vgg16
+feature_layer: conv5_3
+
+# multi-scale
+scales: [1.4142, 1.0, 0.7071, 0.5, 0.3536, 0.25, 0.1768, 0.125, 0.0884, 0.0625]
+min_edge: 30
+max_sqrt_hw: 1024
+
+# IFV encoder
+encoder_type: fv
+gmm_components: 64
+pca_dim: null
+signed_sqrt: true
+l2_normalize: true
+
+# training
+batch_size: 32
+svm_C: 1.0
+svm_calibration: false
+
+# logging
+vmap_chunk_size: 50

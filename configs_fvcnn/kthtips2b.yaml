@@ -1,0 +1,37 @@
+# FV-CNN configuration for KTH-TIPS2b (image-level classification)
+
+# dataset
+dataset: kthtips2b
+root_dir: data/datasets/KTH-TIPS2-b
+fold: 0
+resize: 200
+train_ratio: 1.0
+test_ratio: 0.15
+drop_last: false
+seed: 42
+num_classes: 11
+
+# feature extractor
+framework: fvcnn
+backbone: resnet50
+feature_layer: layer4
+
+# multi-scale
+scales: [1.4142, 1.0, 0.7071, 0.5, 0.3536, 0.25, 0.1768, 0.125, 0.0884, 0.0625]
+min_edge: 30
+max_sqrt_hw: 1024
+
+# IFV encoder
+encoder_type: fv
+gmm_components: 64
+pca_dim: null
+signed_sqrt: true
+l2_normalize: true
+
+# training
+batch_size: 16
+svm_C: 1.0
+svm_calibration: false
+
+# logging
+vmap_chunk_size: 2
