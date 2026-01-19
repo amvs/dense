@@ -5,7 +5,7 @@ import math
 
 
 class HyperNetworkClassifier(nn.Module):
-    def __init__(self, num_classes, metadata_dim = 10, hidden_dim=64):
+    def __init__(self, num_classes, metadata_dim = 10, hidden_dim=64, feature_metadata_dim=11):
         """
         Initialize the HyperNetwork.
         Instead of learning a linear classifier, which might be large (num_features x num_classes),
@@ -21,21 +21,21 @@ class HyperNetworkClassifier(nn.Module):
         self.num_classes = num_classes
         self.metadata_dim = metadata_dim
         self.hidden_dim = hidden_dim
-        self.feature_metadata = None
+        self.feature_metadata_dim = feature_metadata_dim
         
         self.net = nn.Sequential(
-            nn.Linear(metadata_dim, hidden_dim),
+            nn.Linear(metadata_dim * feature_metadata_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, num_classes)
         )
 
     def forward(self, features, return_weights=False):
         # features shape: [Batch, Num_Features]
-        # metadata shape: [Num_Features, Metadata_Dim]
+        # pe shape: [Num_Features, Metadata_Dim * Feature_Metadata_Dim]
         
-        # 1. Predict all weights at once
+        # 1. Predict all weights at once using positional encoding
         # thetas shape: [Num_Features, Num_Classes]
-        thetas = self.net(self.feature_metadata) 
+        thetas = self.net(self.pe) 
         
         # 2. Perform the classification via Einstein Summation
         # b: batch, f: features, c: classes
@@ -59,7 +59,7 @@ class HyperNetworkClassifier(nn.Module):
         if feature_metadata.dim() == 1:
             return self._get_positional_encoding_single(feature_metadata, dims)
         else:
-            return torch.cat([self._get_positional_encoding_single(feature_metadata[i], dims) for i in range(feature_metadata.shape[0])], dim=0)
+            return torch.cat([self._get_positional_encoding_single(feature_metadata[i], dims) for i in range(feature_metadata.shape[0])], dim=1)
 
     def set_feature_metadata(self, metadata: torch.Tensor):
         """
@@ -67,8 +67,13 @@ class HyperNetworkClassifier(nn.Module):
         structure is known.
         
         Args:
-            metadata (torch.Tensor): Metadata tensor of shape (num_features, metadata_dim).
+            metadata (torch.Tensor): Metadata tensor of shape (feature_metadata_dim, num_features).
+                                     E.g., (8, nb_moments) for 8D metadata per each of nb_moments features.
         """
-        self.feature_metadata = metadata
-        self.pe = self.get_positional_encoding(metadata, self.metadata_dim)
+
+
+        assert metadata.shape[0] == self.feature_metadata_dim, \
+            f"Expected metadata shape ({self.feature_metadata_dim}, num_features), got {metadata.shape}"
+        self.register_buffer('feature_metadata', metadata.float())
+        self.register_buffer('pe', self.get_positional_encoding(metadata, self.metadata_dim))
 

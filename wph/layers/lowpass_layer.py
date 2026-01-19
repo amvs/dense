@@ -61,6 +61,28 @@ class LowpassLayer(nn.Module):
         mask_flat = mask.expand(shape).reshape(nb, -1).bool()
         return signal[mask_flat].reshape(nb, -1)
 
+    def flat_metadata(self):
+        """Return metadata aligned with flattened output order."""
+        mask = self.masks_shift[-1, ...]
+        mask_positions = torch.nonzero(mask, as_tuple=False)
+        n_shifts = len(mask_positions)
+        
+        meta = {
+            "channel1": [],   # First channel in cross-correlation
+            "channel2": [],   # Second channel in cross-correlation
+            "mask_pos": [],   # Position in the mask
+        }
+        
+        # Iterate in same order as forward pass: compute correlations between all (c1,c2) pairs across all positions
+        # The forward pass applies a single lowpass filter to all channels, then correlates all channel pairs
+        for c1 in range(self.num_channels):
+            for c2 in range(self.num_channels):
+                for pos_idx in range(n_shifts):
+                    meta["channel1"].append(c1)
+                    meta["channel2"].append(c2)
+                    meta["mask_pos"].append(pos_idx)
+        return meta
+
     def forward(self, hatx_c: torch.Tensor) -> torch.Tensor:
         nb, nc = hatx_c.shape[:2]
         hatxphi_c = hatx_c * self.hatphi.expand(nb, nc, -1, -1)  # (nb,nc,M,N)

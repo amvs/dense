@@ -201,23 +201,27 @@ def main():
     
     # Create linear classifier
     nb_moments = int(feature_extractor.nb_moments)
-    if config["model_type"] == "wph":
+    model_type = config.get("model_type", "wph")
+    if model_type == "wph":
         classifier = LinearClassifier(
             input_dim=nb_moments,
             num_classes=config["num_classes"],
         )
-    elif config["model_type"] == "wph_hypernetwork":
+    elif model_type == "wph_hypernetwork":
         classifier = HyperNetworkClassifier(
-            input_dim=nb_moments,
             num_classes=config["num_classes"],
             metadata_dim=config.get("metadata_dim", 10),
+            hidden_dim=config.get("hidden_dim", 128)
         )
-    elif config["model_type"] == "wph_pca":
+        feature_metadata = feature_extractor.flat_metadata()
+        feature_metadata = list(feature_metadata.values())
+        classifier.set_feature_metadata(metadata = torch.tensor(feature_metadata))
+    elif model_type == "wph_pca":
         raise ValueError("PCA classifier should be trained via train_wph_pca.py")
-    elif config["model_type"] == "wph_svm":
+    elif model_type == "wph_svm":
         raise ValueError("SVM classifier should be trained via train_wph_svm.py")
     else:
-        raise ValueError(f"Unknown model_type: {config['model_type']}")
+        raise ValueError(f"Unknown model_type: {model_type}")
 
     model = WPHClassifier(
         feature_extractor=feature_extractor,
