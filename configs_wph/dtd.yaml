@@ -25,16 +25,16 @@ wavelet_params:
 spatial_attn: false
 
 # training setting
-dataset: smohsensadeghi/curet-dataset
-deeper_path: CUReT/curetgrey/
-resize: 200
+dataset: jmexpert/describable-textures-dataset-dtd
+deeper_path: dtd/images/
+resize: 200 # orig images are between 300x300 and 640x640
 classifier_epochs: 15
 conv_epochs: 15
 batch_size: 32
 lr: 0.0001
 lr_conv: 1.0e-6 # verified good choice for downsample=true and false
 lambda_reg: 1.0e+5
-train_ratio: 0.1
+train_ratio: 0.5
 test_ratio: 0.15
 train_val_ratio: 2
 seed: 42
@@ -47,7 +47,7 @@ model_type: wph
 freeze_classifier: true
 
 # Classifier settings
-num_classes: 61
+num_classes: 47
 use_batch_norm: true
 copies: 1
 noise_std: 0.01

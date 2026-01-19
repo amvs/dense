@@ -22,32 +22,29 @@ wavelet_params:
   S: 15
   T: 8
   w0: 2.7646
-spatial_attn: false
+spatial_attn: true
+freeze_classifier: true
+model_type: wph
 
 # training setting
-dataset: smohsensadeghi/curet-dataset
-deeper_path: CUReT/curetgrey/
-resize: 200
-classifier_epochs: 15
-conv_epochs: 15
+dataset: liewyousheng/minc2500
+deeper_path: minc-2500/images
+resize: 360
+classifier_epochs: 20
+conv_epochs: 20
 batch_size: 32
 lr: 0.0001
-lr_conv: 1.0e-6 # verified good choice for downsample=true and false
-lambda_reg: 1.0e+5
+lr_conv: 1.0e-5
+lambda_reg: 1.0e+4
 train_ratio: 0.1
 test_ratio: 0.15
 train_val_ratio: 2
 seed: 42
 vmap_chunk_size: 50
 normalize_reg: false
-ce_smooth: 0.1
-model_type: wph
-# Finetuning behavior
-# If true (default), keep the classifier frozen during the feature-extractor finetuning stage.
-freeze_classifier: true
 
 # Classifier settings
-num_classes: 61
+num_classes: 23
 use_batch_norm: true
 copies: 1
 noise_std: 0.01

@@ -53,8 +53,10 @@ def calc_wph_activations(model, x, flatten=False, vmap_chunk_size=None):
     """
     from wph.wph_model import WPHModel, WPHModelDownsample
     acts = {}
-    # If model is WPHClassifier, get feature_extractor
-    if hasattr(model, 'feature_extractor'):
+    # If model is WPHClassifier, use the first feature extractor
+    if hasattr(model, 'feature_extractors'):
+        fe = model.feature_extractors[0]
+    elif hasattr(model, 'feature_extractor'):
         fe = model.feature_extractor
     else:
         fe = model
@@ -67,12 +69,20 @@ def calc_wph_activations(model, x, flatten=False, vmap_chunk_size=None):
         acts['relu_center'] = xrelu.detach().cpu()
         xcorr = fe.corr(xrelu.view(nb, fe.num_channels * fe.J * fe.L * fe.A, fe.M, fe.N), flatten=flatten, vmap_chunk_size=vmap_chunk_size)
         acts['corr'] = xcorr.detach().cpu()
-    elif type(fe) is WPHModelDownsample:
-        acts['wave_conv'] = [x.detach().cpu() for x in xpsi]
+    elif type(fe) is WPHModelDownsample and fe.share_scale_pairs:
+        # xpsi, xrelu, xcorr are lists of lists of tensors; flatten into a single list
+        acts['wave_conv'] = [t.detach().cpu() for t in xpsi]
         xrelu = fe.relu_center(xpsi)
-        acts['relu_center'] = [x.detach().cpu() for x in xrelu]
+        acts['relu_center'] = [t.detach().cpu() for t in xrelu]
         xcorr = fe.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
-        acts['corr'] = [x.detach().cpu() for x in xcorr]
+        acts['corr'] = [t.detach().cpu() for t in xcorr]
+    elif type(fe) is WPHModelDownsample and not fe.share_scale_pairs:
+        # xpsi, xrelu, xcorr are lists of lists of tensors; flatten into a single list
+        acts['wave_conv'] = [t.detach().cpu() for inner in xpsi for t in inner]
+        xrelu = fe.relu_center(xpsi)
+        acts['relu_center'] = [t.detach().cpu() for inner in xrelu for t in inner]
+        xcorr = fe.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
+        acts['corr'] = [t.detach().cpu() for t in xcorr]
     
     # FFT
     hatx_c = torch.fft.fft2(x)
@@ -362,6 +372,7 @@ def visualize_main(exp_dir, model_type="dense", origin_filename="origin.pt", tun
                 share_phases=config["share_phases"],
                 share_channels=config["share_channels"],
                 share_scales=config['share_scales'],
+                share_scale_pairs=config.get('share_scale_pairs', True),
                 normalize_relu=config["normalize_relu"],
                 delta_j=config.get("delta_j"),
                 delta_l=config.get("delta_l"),
@@ -382,6 +393,7 @@ def visualize_main(exp_dir, model_type="dense", origin_filename="origin.pt", tun
                 share_phases=config["share_phases"],
                 share_channels=config["share_channels"],
                 share_scales=config['share_scales'],
+                share_scale_pairs=config.get('share_scale_pairs', True),
                 normalize_relu=config["normalize_relu"],
                 delta_j=config.get("delta_j"),
                 delta_l=config.get("delta_l"),
@@ -430,18 +442,21 @@ def visualize_main(exp_dir, model_type="dense", origin_filename="origin.pt", tun
             mask_angles=config["mask_angles"],
             mask_union_highpass=config["mask_union_highpass"],
         )
+        copies = int(config.get("copies", 1))
         origin_model = WPHClassifier(feature_extractor=origin_fe,
-                                     num_classes=config["num_classes"],
-                                     use_batch_norm=config["use_batch_norm"]).to(device)
-        origin_model.feature_extractor.wave_conv.get_full_filters()
+                 num_classes=config["num_classes"],
+                 use_batch_norm=config["use_batch_norm"],
+                 copies=copies).to(device)
+        origin_model.feature_extractors[0].wave_conv.get_full_filters()
         
         tuned_model = WPHClassifier(feature_extractor=tuned_fe,
-                                    num_classes=config["num_classes"],
-                                    use_batch_norm=config["use_batch_norm"]).to(device)
-        tuned_model.feature_extractor.wave_conv.get_full_filters()
+                num_classes=config["num_classes"],
+                use_batch_norm=config["use_batch_norm"],
+                copies=copies).to(device)
+        tuned_model.feature_extractors[0].wave_conv.get_full_filters()
         logger.log("Loading model weights...")
-        origin_state = torch.load(origin_path, map_location=device)
-        tuned_state = torch.load(tuned_path, map_location=device)
+        origin_state = torch.load(origin_path, map_location=device, weights_only=True)
+        tuned_state = torch.load(tuned_path, map_location=device, weights_only=True)
         origin_model.load_state_dict(origin_state)
         tuned_model.load_state_dict(tuned_state)
     else:

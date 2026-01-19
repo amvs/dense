@@ -3,7 +3,9 @@
 base_config: configs_wph/mnist.yaml
 sweep:
   downsample: [true]
-  train_ratio: [0.05, 0.85]
-  lr_conv: [1.0e-12, 1.0e-11, 1.0e-10,1.0e-9, 1.0e-8,]
+  copies: [1,5,10]
+  share_scale_pairs: [true]
+  train_ratio: [0.1]
+  lr_conv: [1.0e-6, 1.0e-5, 1.0e-4, 1.0e-3]
 
 

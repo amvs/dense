@@ -40,22 +40,11 @@ from torch import nn
 class SubInitSpatialMean(nn.Module):
     def __init__(self):
         super().__init__()
-        # Use an empty tensor as initial value
-        self.register_buffer('minput', torch.empty(0), persistent=False)
 
     def forward(self, input):
-        if self.minput.numel() == 0:
-            minput = input.clone().detach()
-            minput = torch.mean(minput, -1, True)
-            minput = torch.mean(minput, -2, True)
-            self.minput = minput
-        elif self.minput.shape != input.shape:
-            warnings.warn('overwriting minput')
-            minput = input.clone().detach()
-            minput = torch.mean(minput, -1, True)
-            minput = torch.mean(minput, -2, True)
-            self.minput = minput
-        output = input - self.minput
+        minput = input.clone().detach()
+        minput = torch.mean(minput, dim=(-2, -1), keepdim=True)
+        output = input - minput
         return output
 
 
@@ -63,30 +52,17 @@ class SubInitSpatialMean(nn.Module):
 class DivInitStd(nn.Module):
     def __init__(self, stdcut=1e-9):
         super().__init__()
-        # Use an empty tensor as initial value
-        self.register_buffer('stdinput', torch.empty(0), persistent=False)
         self.eps = stdcut
 
     def forward(self, input):
-        if self.stdinput.numel() == 0:
-            stdinput = input.clone().detach()  # input size:(...,M,N)
-            m = torch.mean(torch.mean(stdinput, -1, True), -2, True)
-            stdinput = stdinput - m
-            d = input.shape[-1]*input.shape[-2]
-            stdinput = torch.norm(stdinput, dim=(-2,-1), keepdim=True)
-            self.stdinput = stdinput / torch.sqrt(torch.tensor(d, dtype=stdinput.dtype, device=stdinput.device))
-            self.stdinput = self.stdinput + self.eps
-        elif self.stdinput.shape != input.shape:
-            warnings.warn('overwriting stdinput')
-            stdinput = input.clone().detach()  # input size:(...,M,N)
-            m = torch.mean(torch.mean(stdinput, -1, True), -2, True)
-            stdinput = stdinput - m
-            d = input.shape[-1]*input.shape[-2]
-            stdinput = torch.norm(stdinput, dim=(-2,-1), keepdim=True)
-            self.stdinput = stdinput / torch.sqrt(torch.tensor(d, dtype=stdinput.dtype, device=stdinput.device))
-            self.stdinput = self.stdinput + self.eps
-
-        output = input/self.stdinput
+        stdinput = input.clone().detach()
+        m = torch.mean(stdinput, dim=(-2, -1), keepdim=True)
+        stdinput = stdinput - m
+        d = input.shape[-1] * input.shape[-2]
+        stdinput = torch.norm(stdinput, dim=(-2, -1), keepdim=True)
+        stdinput = stdinput / torch.sqrt(torch.tensor(d, dtype=stdinput.dtype, device=stdinput.device))
+        stdinput = stdinput + self.eps
+        output = input / stdinput
         return output
 
 

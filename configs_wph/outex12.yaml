@@ -1,6 +1,6 @@
 # model setting
 wavelet: morlet
-max_scale: 5
+max_scale: 4
 nb_orients: 4
 num_phases: 2
 num_phases_prime: 1
@@ -25,9 +25,9 @@ wavelet_params:
 spatial_attn: false
 
 # training setting
-dataset: smohsensadeghi/curet-dataset
-deeper_path: CUReT/curetgrey/
-resize: 200
+dataset: outex12
+root_dir: data/datasets/Outex-TC-00012-bmp
+resize: 128
 classifier_epochs: 15
 conv_epochs: 15
 batch_size: 32
@@ -36,6 +36,7 @@ lr_conv: 1.0e-6 # verified good choice for downsample=true and false
 lambda_reg: 1.0e+5
 train_ratio: 0.1
 test_ratio: 0.15
+drop_last: false
 train_val_ratio: 2
 seed: 42
 vmap_chunk_size: 50
@@ -45,9 +46,10 @@ model_type: wph
 # Finetuning behavior
 # If true (default), keep the classifier frozen during the feature-extractor finetuning stage.
 freeze_classifier: true
+fold: 0
 
 # Classifier settings
-num_classes: 61
+num_classes: 24
 use_batch_norm: true
 copies: 1
 noise_std: 0.01

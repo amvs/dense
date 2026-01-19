@@ -57,14 +57,62 @@ def apply_overrides(config, overrides):
     return config
 
 def save_config(folder:str, config):
-    if not isinstance(config, dict):
-        raise ValueError("config must be a dictionary")
+    # Ensure config is a mapping (AutoConfig subclasses dict are accepted)
+    from collections.abc import Mapping
+    if not isinstance(config, Mapping):
+        raise ValueError("config must be a dictionary/mapping")
+
+    # Prefer a conversion method on config if provided (e.g., AutoConfig.to_plain)
+    if hasattr(config, "to_plain") and callable(getattr(config, "to_plain")):
+        plain_config = config.to_plain()
+    else:
+        plain_config = config
     os.makedirs(folder, exist_ok=True)
     file_path = os.path.join(folder, "config.yaml")
     try:
         with open(file_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(config, f, sort_keys=False)
+            yaml.safe_dump(plain_config, f, sort_keys=False)
     except Exception as e:
         raise OSError(f"Failed to save config to {file_path}: {e}")
     logger = LoggerManager.get_logger()
     logger.log(f"Saving config file {file_path}")
+
+
+
+class AutoConfig(dict):
+    """Dictionary subclass that records default values used via `get()`.
+
+    Any call to `config.get(key, default)` where `key` is missing will
+    insert `key: default` into the dictionary and return `default`.
+    This ensures defaults become part of the saved config.
+    """
+    def get(self, key, default=None):
+        if key in self:
+            return super().get(key)
+        # Record the default into the config so it is saved later
+        super().__setitem__(key, default)
+        return default
+
+    def to_plain(self):
+        """Return a plain Python dict/list/scalar representation of this config.
+
+        This recursively converts nested mappings (including other AutoConfig
+        instances), lists/tuples, and NumPy scalar types to native Python
+        types so the result can be safely dumped to YAML.
+        """
+        from collections.abc import Mapping
+
+        def _make_plain(obj):
+            if isinstance(obj, Mapping):
+                return {k: _make_plain(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)):
+                return [_make_plain(v) for v in obj]
+            try:
+                import numpy as _np
+                if isinstance(obj, _np.generic):
+                    return obj.item()
+            except Exception:
+                pass
+            return obj
+
+        return _make_plain(self)

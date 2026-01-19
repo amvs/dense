@@ -348,6 +348,34 @@ class CorrLayer(BaseCorrLayer):
                 xpsi, flatten=flatten, vmap_chunk_size=vmap_chunk_size
             )
 
+    def flat_metadata(self):
+        """Return metadata aligned with flattened output order."""
+        meta = {
+            "scale1": [],
+            "scale2": [],
+            "rotation1": [],
+            "rotation2": [],
+            "phase1": [],
+            "phase2": [],
+            "mask_pos": [],
+        }
+        la1 = self.idx_wph["la1"].tolist()
+        la2 = self.idx_wph["la2"].tolist()
+        shifted = self.idx_wph["shifted"].tolist()
+        for p, (i1, i2, s) in enumerate(zip(la1, la2, shifted)):
+            p1 = self.params_la1[p]
+            p2 = self.params_la2[p]
+            mask_indices = self.mask_to_union[s].tolist()
+            for m in mask_indices:
+                meta["scale1"].append(p1["j"])
+                meta["scale2"].append(p2["j"])
+                meta["rotation1"].append(p1["l"])
+                meta["rotation2"].append(p2["l"])
+                meta["phase1"].append(p1["a"])
+                meta["phase2"].append(p2["a"])
+                meta["mask_pos"].append(int(m))
+        return meta
+
 
 class CorrLayerDownsample(BaseCorrLayer):
     def __init__(self, *args, **kwargs):
@@ -400,6 +428,13 @@ class CorrLayerDownsample(BaseCorrLayer):
         # 5. CRITICAL STEP: Re-run compute_idx
         # The first run (in super) used bad/fallback values. 
         self.idx_wph = self.compute_idx()
+
+    def _decode_cla(self, idx: int):
+        c = idx // (self.A * self.L)
+        rem = idx % (self.A * self.L)
+        l = rem // self.A
+        a = rem % self.A
+        return c, l, a
 
     def get_mask_for_scale(self, j):
         if hasattr(self, f'mask_scale_{j}'):
@@ -582,6 +617,35 @@ class CorrLayerDownsample(BaseCorrLayer):
                 final_output.append(combined)
                 
             return final_output
+
+    def flat_metadata(self):
+        """Return metadata aligned with flattened output order."""
+        meta = {
+            "scale1": [],
+            "scale2": [],
+            "rotation1": [],
+            "rotation2": [],
+            "phase1": [],
+            "phase2": [],
+            "mask_pos": [],
+        }
+        for (j1, j2), global_idxs in self.grouped_indices.items():
+            for g_idx in global_idxs.tolist():
+                la1_j, la1_idx = self.idx_wph["la1"][g_idx].tolist()
+                la2_j, la2_idx = self.idx_wph["la2"][g_idx].tolist()
+                shift_type = int(self.idx_wph["shifted"][g_idx].item())
+                _, l1, a1 = self._decode_cla(la1_idx)
+                _, l2, a2 = self._decode_cla(la2_idx)
+                mask_indices = getattr(self, f"mask_idx_map_{shift_type}").tolist()
+                for m in mask_indices:
+                    meta["scale1"].append(la1_j)
+                    meta["scale2"].append(la2_j)
+                    meta["rotation1"].append(l1)
+                    meta["rotation2"].append(l2)
+                    meta["phase1"].append(a1)
+                    meta["phase2"].append(a2)
+                    meta["mask_pos"].append(int(m))
+        return meta
         
 
 
@@ -634,6 +698,13 @@ class CorrLayerDownsamplePairs(BaseCorrLayer):
 
         # Recompute indices with correct downsampled masks
         self.idx_wph = self.compute_idx()
+
+    def _decode_cla(self, idx: int):
+        c = idx // (self.A * self.L)
+        rem = idx % (self.A * self.L)
+        l = rem // self.A
+        a = rem % self.A
+        return c, l, a
 
     def get_mask_for_scale(self, j):
         if hasattr(self, f'mask_scale_{j}'):
@@ -789,3 +860,32 @@ class CorrLayerDownsamplePairs(BaseCorrLayer):
                 combined = torch.cat(batches, dim=1)
                 final_output.append(combined)
             return final_output
+
+    def flat_metadata(self):
+        """Return metadata aligned with flattened output order."""
+        meta = {
+            "scale1": [],
+            "scale2": [],
+            "rotation1": [],
+            "rotation2": [],
+            "phase1": [],
+            "phase2": [],
+            "mask_pos": [],
+        }
+        for (j1, j2), global_idxs in self.grouped_indices.items():
+            for g_idx in global_idxs.tolist():
+                la1_j, la1_idx = self.idx_wph["la1"][g_idx].tolist()
+                la2_j, la2_idx = self.idx_wph["la2"][g_idx].tolist()
+                shift_type = int(self.idx_wph["shifted"][g_idx].item())
+                _, l1, a1 = self._decode_cla(la1_idx)
+                _, l2, a2 = self._decode_cla(la2_idx)
+                mask_indices = getattr(self, f"mask_idx_map_{shift_type}").tolist()
+                for m in mask_indices:
+                    meta["scale1"].append(la1_j)
+                    meta["scale2"].append(la2_j)
+                    meta["rotation1"].append(l1)
+                    meta["rotation2"].append(l2)
+                    meta["phase1"].append(a1)
+                    meta["phase2"].append(a2)
+                    meta["mask_pos"].append(int(m))
+        return meta

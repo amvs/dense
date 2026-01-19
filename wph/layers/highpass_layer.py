@@ -44,9 +44,7 @@ class HighpassBase(nn.Module):
         psi[2, 2, 1] = 1 / 4
         hathaar2d[2, :, :] = fft.fft2(torch.view_as_complex(psi))
 
-        self.divinitstdH = [None] * 3 * self.num_channels
-        for hid in range(3 * self.num_channels):
-            self.divinitstdH[hid] = DivInitStd()
+        self.divinitstdH = nn.ModuleList([DivInitStd() for _ in range(3 * self.num_channels)])
         
         return(hathaar2d)
     
@@ -60,6 +58,34 @@ class HighpassBase(nn.Module):
         mask_flat = mask.expand(shape).reshape(nb, -1).bool()
 
         return signal[mask_flat].reshape(nb, -1)
+
+    def flat_metadata(self):
+        """Return metadata aligned with flattened output order."""
+        # Match the mask used in forward pass
+        if self.mask_union_highpass:
+            mask = (self.masks_shift.sum(dim=0) > 0).to(dtype=torch.int32)
+        else:
+            mask = self.masks_shift[-1, ...]
+        
+        mask_positions = torch.nonzero(mask, as_tuple=False)
+        n_shifts = len(mask_positions)
+        
+        meta = {
+            "rotation1": [],  # Haar filter index (0, 1, or 2)
+            "channel1": [],   # Input channel to which Haar filter is applied
+            "mask_pos": [],   # Position in the mask
+        }
+        
+        # Iterate in same order as forward pass: for each input channel, apply all 3 Haar filters
+        for idx in range(len(self.divinitstdH)):
+            input_channel = idx // 3  # which input channel to filter
+            haar_filter_idx = idx % 3  # which of 3 Haar filters
+            for pos_idx in range(n_shifts):
+                meta["rotation1"].append(haar_filter_idx)
+                meta["channel1"].append(input_channel)
+                meta["mask_pos"].append(pos_idx)
+        
+        return meta
 
 class HighpassLayer(HighpassBase):
     def __init__(
