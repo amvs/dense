@@ -39,6 +39,7 @@ normalize_reg: false
 # Finetuning behavior
 # If true (default), keep the classifier frozen during the feature-extractor finetuning stage.
 freeze_classifier: true
+model_type: wph
 
 # Classifier settings
 num_classes: 10

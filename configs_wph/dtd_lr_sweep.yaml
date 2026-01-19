@@ -1,6 +1,6 @@
 # This is a sweep config file for hyperparameter tuning on MNIST dataset
 # It uses the base configuration from mnist.yaml and overrides specific parameters for the sweep
-base_config: configs_wph/outex10.yaml
+base_config: configs_wph/dtd.yaml
 sweep:
   downsample: [true]
   train_ratio: [0.8]

@@ -24,6 +24,7 @@ wavelet_params:
   w0: 2.7646
 spatial_attn: true
 freeze_classifier: true
+model_type: wph
 
 # training setting
 dataset: liewyousheng/minc2500

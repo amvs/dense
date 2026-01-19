@@ -36,6 +36,7 @@ lr_conv: 1.0e-6 # verified good choice for downsample=true and false
 lambda_reg: 1.0e+5
 train_ratio: 1.0 # train_ratio is % of training samples used (val and test samples already separate)
 test_ratio: 0.15
+drop_last: false
 seed: 42
 vmap_chunk_size: 2
 normalize_reg: false
@@ -44,6 +45,7 @@ ce_smooth: 0.1
 # If true (default), keep the classifier frozen during the feature-extractor finetuning stage.
 freeze_classifier: true
 spatial_attn: false
+model_type: wph
 
 # Classifier settings
 num_classes: 11

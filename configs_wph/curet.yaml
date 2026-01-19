@@ -41,6 +41,7 @@ seed: 42
 vmap_chunk_size: 50
 normalize_reg: false
 ce_smooth: 0.1
+model_type: wph
 # Finetuning behavior
 # If true (default), keep the classifier frozen during the feature-extractor finetuning stage.
 freeze_classifier: true
