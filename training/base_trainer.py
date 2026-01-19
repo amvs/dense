@@ -43,6 +43,7 @@ def train_one_epoch(model, loader, optimizer, base_loss, device, original_params
             reg_loss_value = regularization_loss(model.fine_tuned_params(), original_params, lambda_reg)
             loss += reg_loss_value
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)            
         optimizer.step()
 
         total_base_loss += base_loss_value.item() * inputs.size(0)
