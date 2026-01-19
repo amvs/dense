@@ -123,20 +123,20 @@ def get_outex_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, prob
     # Get number of classes before any splitting (Subset objects don't have .classes attribute)
     nb_class = len(test_dataset.classes)
     
-    # Create validation split from training data BEFORE reducing training data
-    # This ensures we don't lose too much data in small datasets
-    # train_val_ratio determines the ratio train:val (e.g., 4 means train:val = 4:1)
-    total_len = len(train_dataset)
-    val_len = total_len // (train_val_ratio + 1)
-    train_len = total_len - val_len
-    train_dataset, val_dataset = stratify_split(train_dataset, train_size=train_len, seed=42)
-    
-    # Apply train_ratio to reduce training data if needed (after validation split)
+    # Apply train_ratio to reduce training data if needed
     if train_ratio < 1.0:
         original_train_len = len(train_dataset)
         reduced_train_len = int(original_train_len * train_ratio)
         train_dataset, _ = stratify_split(train_dataset, train_size=reduced_train_len, seed=42)
         logger.info(f"Reduced training set from {original_train_len} to {len(train_dataset)} samples (train_ratio={train_ratio})")
+    
+    # Create validation split from TEST data instead of train data
+    # This preserves all training data and makes sure val data includes rotations/illumination changes
+    # train_val_ratio determines the ratio test:val (e.g., 4 means test:val = 4:1)
+    total_test_len = len(test_dataset)
+    val_len = total_test_len // (train_val_ratio + 1)
+    test_len = total_test_len - val_len
+    test_dataset, val_dataset = stratify_split(test_dataset, train_size=test_len, seed=42)
     
     # Compute (or load cached) mean and std from TRAIN set only (no data leakage)
     logger.info(f"Computing/loading normalization statistics from {len(train_dataset)} training samples...")

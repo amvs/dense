@@ -32,7 +32,7 @@ classifier_epochs: 15
 conv_epochs: 15
 batch_size: 32
 lr: 0.0001
-lr_conv: 1.0e-6 # verified good choice for downsample=true and false
+lr_conv: 1.0e-4
 lambda_reg: 1.0e+5
 train_ratio: 0.5
 test_ratio: 0.15

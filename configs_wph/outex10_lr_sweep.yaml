@@ -5,12 +5,13 @@ sweep:
   downsample: [true]
   train_ratio: [0.8]
   share_scale_pairs: [true]
+  num_phases: [2, 4]
+  nb_orients: [4, 8, 10]
+  mask_angles: [4, 8]
   wavelet_params:
     - {S: 9, w0: 2.7646}  # 0.88 * pi
-    - {S: 15, w0: 2.7646}  # 0.88 * pi
+    # - {S: 15, w0: 2.7646}  # 0.88 * pi
   copies: [1]
   freeze_classifier: [false]
-  lr: [1.0e-2, 1.0e-3, 1.0e-4, 1.0e-5]
-  lr_conv: [1.0e-3, 1.0e-4, 1.0e-5, 1.0e-6]
 
 
