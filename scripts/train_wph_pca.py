@@ -52,20 +52,54 @@ def extract_all_features(model, loader, device, vmap_chunk_size=None):
     return np.vstack(all_features), np.concatenate(all_labels)
 
 
-def resolve_n_components(arg_components, config_components, n_features):
+def resolve_n_components(arg_components, config_components, n_features, n_samples=None, n_classes=None):
+    """Resolve number of PCA components considering features, samples, and classes.
+    
+    Args:
+        arg_components: Components from command line args
+        config_components: Components from config file
+        n_features: Number of input features
+        n_samples: Total number of samples (optional)
+        n_classes: Number of classes (optional, for per-class PCA)
+    
+    Returns:
+        int: Number of components to use
+    """
     source = arg_components if arg_components is not None else config_components
+    
+    # Calculate safe upper bound considering per-class PCA
+    # PCA can't have more components than min(n_features, n_samples_per_class - 1)
+    safe_upper_bound = n_features
+    if n_samples is not None and n_classes is not None and n_classes > 0:
+        # Estimate average samples per class
+        avg_samples_per_class = n_samples // n_classes
+        # Conservative estimate: use 80% to account for imbalanced classes
+        min_samples_per_class = max(1, int(0.8 * avg_samples_per_class))
+        # PCA needs at least 2 samples, max components is n_samples - 1
+        safe_upper_bound = min(n_features, max(1, min_samples_per_class - 1))
+    
     if source is None or str(source).lower() == "auto":
-        return min(n_features, 50)
+        # Auto mode: use conservative default
+        return min(safe_upper_bound, 50)
+    
     try:
         if isinstance(source, str) and "." in source:
+            # Fractional specification (e.g., "0.5")
             frac = float(source)
-            return max(1, int(frac * n_features))
-        value = float(source)
-        if 0 < value <= 1:
-            return max(1, int(value * n_features))
-        return int(value)
+            requested = max(1, int(frac * n_features))
+        else:
+            value = float(source)
+            if 0 < value <= 1:
+                # Fractional value
+                requested = max(1, int(value * n_features))
+            else:
+                # Absolute number
+                requested = int(value)
+        
+        # Cap at safe upper bound
+        return min(requested, safe_upper_bound)
     except ValueError:
-        return min(n_features, 50)
+        return min(safe_upper_bound, 50)
 
 
 def finetune_feature_extractor(model, train_loader, val_loader, device,
@@ -99,6 +133,8 @@ def finetune_feature_extractor(model, train_loader, val_loader, device,
             train_feats_np = train_feats.cpu().numpy() if isinstance(train_feats, torch.Tensor) else train_feats
             train_lbls_np = train_lbls.cpu().numpy() if isinstance(train_lbls, torch.Tensor) else train_lbls
             model.classifier.fit(train_feats_np, train_lbls_np)
+            # Move newly fitted classifier parameters to device
+            model = model.to(device)
 
         model.train()
         epoch_loss = 0.0
@@ -195,8 +231,15 @@ def main():
 
     feature_extractor, filters = create_wph_feature_extractor(config, image_shape, device)
     
-    # Create PCA classifier wrapper
-    n_components = resolve_n_components(args.pca_components, config.get("pca_components", None), 1000)  # Will be updated after feature extraction
+    # Create PCA classifier wrapper with initial n_components estimate
+    # Will be updated after feature extraction with actual sample counts
+    n_components = resolve_n_components(
+        args.pca_components, 
+        config.get("pca_components", None), 
+        n_features=1000,  # Placeholder, will be updated
+        n_samples=None,
+        n_classes=nb_class
+    )
     scale_features = not args.no_scale
     whiten = bool(config.get("pca_whiten", False))
     
@@ -247,23 +290,53 @@ def main():
     test_features, test_labels = extract_all_features(model, test_loader, device, vmap_chunk_size)
     logger.log(f"Test features shape: {test_features.shape}")
 
-    n_components = resolve_n_components(args.pca_components, config.get("pca_components", None), train_features.shape[1])
+    # Resolve n_components with actual feature dimensions and sample counts
+    n_components = resolve_n_components(
+        args.pca_components, 
+        config.get("pca_components", None), 
+        n_features=train_features.shape[1],
+        n_samples=train_features.shape[0],
+        n_classes=nb_class
+    )
+    logger.log(f"Resolved PCA components: {n_components} (n_features={train_features.shape[1]}, n_samples={train_features.shape[0]}, n_classes={nb_class})")
+    
     scale_features = not args.no_scale
     whiten = bool(config.get("pca_whiten", False))
+    
+    # Update classifier's n_components to match resolved value
+    model.classifier.n_components = n_components
+    
+    # CRITICAL: Update config with actual resolved n_components
+    config["pca_components"] = n_components
 
     logger.log("Training PCA classifier...")
     train_features_np = train_features.cpu().numpy() if isinstance(train_features, torch.Tensor) else train_features
     train_labels_np = train_labels.cpu().numpy() if isinstance(train_labels, torch.Tensor) else train_labels
     model.classifier.fit(train_features_np, train_labels_np)
+    # Move newly fitted classifier parameters to device
+    model = model.to(device)
     logger.log("PCA training completed")
 
-    log_model_parameters(model, model.classifier.count_parameters(), logger)
+    # Verify classifier is fitted
+    logger.log(f"Classifier fitted: {model.classifier._is_fitted}")
+    logger.log(f"Number of classes in classifier: {len(model.classifier.classes_) if model.classifier.classes_ is not None else 0}")
+    
+    # Calculate classifier parameters after fitting
+    classifier_params = model.classifier.count_parameters()
+    logger.log(f"PCA Classifier Parameters: {classifier_params}")
+    logger.log(f"  - PCA components: {n_components} per class × {nb_class} classes")
+    logger.log(f"  - Scale features: {scale_features}")
+    
+    if classifier_params == 0:
+        logger.log("WARNING: Classifier parameters counted as 0! This may indicate the classifier was not properly fitted.")
+    
+    log_model_parameters(model, classifier_params, logger)
 
-    val_predictions = model.classifier.predict(torch.tensor(val_features, dtype=torch.float32))
+    val_predictions = model.classifier.predict(torch.tensor(val_features, dtype=torch.float32, device=device))
     val_accuracy = accuracy_score(val_labels, val_predictions)
     logger.log(f"Validation_Accuracy={val_accuracy:.4f}", data=True)
 
-    test_predictions = model.classifier.predict(torch.tensor(test_features, dtype=torch.float32))
+    test_predictions = model.classifier.predict(torch.tensor(test_features, dtype=torch.float32, device=device))
     pca_test_accuracy = accuracy_score(test_labels, test_predictions)
     logger.log(f"PCA Test Accuracy: {pca_test_accuracy:.4f}")
 
@@ -303,7 +376,7 @@ def main():
 
     logger.log("Extracting features from test set with fine-tuned model...")
     test_features_finetuned, test_labels_finetuned = extract_all_features(model, test_loader, device, vmap_chunk_size)
-    test_predictions_finetuned = model.classifier.predict(torch.tensor(test_features_finetuned, dtype=torch.float32))
+    test_predictions_finetuned = model.classifier.predict(torch.tensor(test_features_finetuned, dtype=torch.float32, device=device))
     feature_extractor_test_acc = accuracy_score(test_labels_finetuned, test_predictions_finetuned)
     logger.log(f"Feature Extractor Test Accuracy={feature_extractor_test_acc:.4f}", data=True)
 

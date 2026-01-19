@@ -34,6 +34,8 @@ def df_from_logs(args):
     os.makedirs(results_path, exist_ok=True)
 
     df = pd.DataFrame(rows)
+    if ('model_type' in df.columns) and (df.model_type.unique()[0] == "wph_pca"):
+        df["classifier_test_acc"] = df["pca_test_acc"]
     df["finetuning_gain"] = df["feature_extractor_test_acc"] - df["classifier_test_acc"]
     df.to_csv(os.path.join(results_path, "sweep_results.csv"), index=False)
     return df
@@ -122,7 +124,10 @@ def plot_all_boxplots(
 ):
     metrics = ["feature_extractor_test_acc", "classifier_test_acc", "finetuning_gain"]
     for metric in metrics:
-        boxplot_metric_vs_ratio(df, metric, group_cols, sweep_dir, fname_suffix)
+        try:
+            boxplot_metric_vs_ratio(df, metric, group_cols, sweep_dir, fname_suffix)
+        except KeyError as e:
+            print(f"Error plotting {metric}: {e}")
 
 
 def pair_boxplots(
