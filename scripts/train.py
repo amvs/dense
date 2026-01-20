@@ -84,10 +84,12 @@ def main():
     wavelet = config["wavelet"]
     efficient = config["efficient"]
     share_channels = config.get("share_channels", False)
-    out_size = config["out_size"]
+    # out_size = config["out_size"]
     n_copies = config["n_copies"]
-    pca_dim  = config["pca_dim"]
+    pooling_option = config["pooling_option"]
     depth = config["depth"]
+    rank_factor = config["rank_factor"]
+    
     params = ScatterParams(
         n_scale=max_scale,
         n_orient=nb_orients,
@@ -97,8 +99,9 @@ def main():
         n_class=nb_class,
         share_channels=share_channels,
         in_size=image_shape[1],
-        out_size=out_size,
-        pca_dim=pca_dim,
+        rank_factor=rank_factor,
+        pooling_option=pooling_option,
+        # out_size=out_size,
         depth=depth,
     )
     model = dense(params).to(device)
@@ -106,27 +109,72 @@ def main():
     # Train classifier
     lr = float(config["lr"])
     #lr = min(lr, radius * 0.5)
-    lambda_reg = float(config["lambda_reg"])
+    linear_lr = float(config["linear_lr"])
+    weight_decays = float(config["weight_decays"]) / linear_lr # cancel lr effect in weight decay
+    # radius = float(config["radius"])
+    lambda_reg = float(config["lambda_reg"]) / lr # cancel lr effect in regularization
     
-    classifier_epochs = 0 #config["classifier_epochs"]
+    classifier_epochs = config["classifier_epochs"]
     conv_epochs = config["conv_epochs"]
 
     ##
-    conv_patience = config.get("conv_patience", 3)
+    classifier_patience = config.get("classifier_patience", 8)
+    conv_patience = config.get("conv_patience", 8)
     ##
 
     base_loss = nn.CrossEntropyLoss()
     with torch.no_grad():
         original_params = [p.clone().detach() for p in model.fine_tuned_params()]
     n_tuned_params = model.n_tuned_params()
-    logger.log(f"n_tuned_params={n_tuned_params} n_linear_params={model.out_dim*model.n_class*model.pca_dim}", data=True)
-    logger.log("Training linear(PCA) classifier...") 
-    model.fit(train_loader, device)
+    n_linear_params = model.n_classifier_params()
+    logger.log(f"n_tuned_params={n_tuned_params} n_linear_params={n_linear_params}", data=True)
+    logger.log("Training linear classifier...") 
+    model.train_classifier()
+    ##
+    
+    optimizer_cls = torch.optim.Adam(
+        model.linear.parameters(),
+        lr=linear_lr, # linear layer needs larger lr
+        #weight_decay=weight_decays,
+    )
+    best_val_acc = 0.0
+    best_state = None
+    patience_counter = 0
+    best_val_loss = float("inf")
+    for epoch in range(classifier_epochs):
+        train_metrics = train_one_epoch(
+            model, train_loader, optimizer_cls, base_loss, device
+        )
+        val_loss, val_acc = evaluate(
+            model, val_loader, base_loss, device
+        )
+
+        logger.log(
+            f"Epoch={epoch+1} "
+            f"Train_Acc={train_metrics['accuracy']:.4f} "
+            f"Train_Loss={train_metrics['total_loss']:.4f} "
+            f"Base_Loss={train_metrics['base_loss']:.4f} "
+            f"Val_Acc={val_acc:.4f} "
+            f"Val_Loss={val_loss:.4f} ",
+            data=True,
+        )
+
+        # ---- Early stopping on validation accuracy
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= classifier_patience:
+                logger.log("Early stopping classifier training.")
+                break
     # Restore best classifier
-    logger.log("Finish linear(PCA) layer training task.")
+    model.load_state_dict(best_state)
+    logger.log("Finish linear layer training task.")
 
     ini_test_loss, ini_test_acc = evaluate(model, test_loader, base_loss, device)
-    logger.log(f"pca_test_acc={ini_test_acc:.4f} pca_test_loss={ini_test_loss:.4f}", data=True)
+    logger.log(f"linear_test_acc={ini_test_acc:.4f} linear_test_loss={ini_test_loss:.4f}", data=True)
     save_original = os.path.join(exp_dir, "origin.pt")
     torch.save(model.state_dict(), save_original)
     logger.log(f"Save model to {save_original}")
@@ -137,7 +185,7 @@ def main():
     ##
     optimizer_conv = torch.optim.Adam(
         model.fine_tuned_params(),
-        lr=lr*0.005,
+        lr=lr,
     )
     best_val_loss = float("inf")
     best_train_loss = float("inf")
@@ -153,9 +201,9 @@ def main():
             optimizer_conv,
             base_loss,
             device,
-            original_params,
+            original_params = original_params,
             #r=radius,
-            lambda_reg,
+            lambda_reg=lambda_reg,
         )
 
         val_loss, val_acc = evaluate(
@@ -180,10 +228,9 @@ def main():
         
 
         # ---- Early stopping on validation loss
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_train_loss = train_metrics['base_loss']
+        if val_acc > best_val_acc:
             best_val_acc = val_acc
+            best_train_loss = train_metrics['base_loss']
             best_train_acc = train_metrics['accuracy']
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             patience_counter = 0
@@ -214,7 +261,7 @@ def main():
     logger.log(f"Test_Acc={test_acc:.4f} Ini_Test_Acc={ini_test_acc:.4f} Train_Ratio={train_ratio:.4f}"
     f" Best_Val_Acc={best_val_acc:.4f}"
     f" Test_Loss={test_loss:.4f} Best_Train_Loss={best_train_loss:.4f} Best_Val_Loss={best_val_loss:.4f}"
-    f" lambda_reg={lambda_reg} Out_dim={model.out_dim} LR={lr:.4f} dist={dist}", data=True)
+    f" lambda_reg={lambda_reg} LR={lr:.4f} dist={dist}", data=True)
     #
     save_fine_tuned = os.path.join(exp_dir, "trained.pt")
     torch.save(model.state_dict(), save_fine_tuned)
@@ -224,7 +271,7 @@ def main():
     config["dist"] = dist.item()
     config["nb_class"] = nb_class
     config["n_tuned_params"] = n_tuned_params
-    config["n_linear_params"] = model.out_dim * model.n_class
+    config["n_linear_params"] = n_linear_params
     config["linear_test_acc"] = ini_test_acc
     config["linear_test_loss"] = ini_test_loss
     config["image_shape"] = list(image_shape)

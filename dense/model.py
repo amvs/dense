@@ -6,7 +6,7 @@ from torch import Tensor
 import torch.nn.functional as F
 import random
 from collections import defaultdict
-
+import math
 from .helpers import checkpoint
 @dataclass
 class ScatterParams:
@@ -18,9 +18,9 @@ class ScatterParams:
     n_class: int
     share_channels: bool
     in_size: int
-    out_size: int # -1 means no global pooling on scatter features
-    # PCA
-    pca_dim: int
+    #out_size: int # -1 means no global pooling on scatter features
+    pooling_option: str
+    rank_factor: float
     # depth
     depth: int = -1  # -1 means full scatter
     #
@@ -106,6 +106,37 @@ class ScatterBlock(nn.Module):
         return result.reshape(imgs.shape[0], self.conv.out_channel//self.n_copies, 
                              self.n_copies, imgs.shape[-1], imgs.shape[-1]).mean(dim=2)
 
+class LowRankClassifier(nn.Module):
+    def __init__(self, 
+            C, 
+            num_classes,
+            feature_kernel_size: int = 7,
+            pooling: str = "avg",
+            rank_factor: float = 1.0):
+        super().__init__()
+
+        param_budget = (feature_kernel_size ** 2) * C
+
+        # 自动计算 rank
+        self.rank = math.floor(param_budget / ((C + num_classes) * rank_factor)) 
+        print(f"LowRankClassifier: param_budget={param_budget}, factor={rank_factor}, rank={self.rank}")
+        if self.rank < 1:
+            raise ValueError(f"Parameter budget too small to support a classifier.")
+        if pooling == "avg":
+            self.pool = nn.AdaptiveAvgPool2d(1)
+        elif pooling == "max":
+            self.pool = nn.AdaptiveMaxPool2d(1)
+        else:
+            raise ValueError("Unsupported pooling")
+        self.proj = nn.Linear(C, self.rank, bias=False)
+        self.cls  = nn.Linear(self.rank, num_classes, bias=False)
+
+    def forward(self, x):
+        x = self.pool(x).flatten(1)
+        x = self.proj(x)             # B × r
+        x = self.cls(x)              # B × 61
+        return x
+
 class dense(nn.Module):
 
     def __init__(self, params: ScatterParams):
@@ -134,9 +165,9 @@ class dense(nn.Module):
             for i, idx in enumerate(keep_idx):
                 self.register_buffer(f"keep_idx_{i}", idx)
             self.in_channels_per_block = keep_len[:-1]  # 最后一层不需要
-            self.out_channels = keep_len[-1]        
-        # print("in_channels_per_block:", self.in_channels_per_block)
-        # print("out_channels:", self.out_channels)
+                   
+        print("in_channels_per_block:", self.in_channels_per_block)
+        print("out_channels:", self.out_channels)
         self.blocks = nn.ModuleList(
             [
                 ScatterBlock(
@@ -148,14 +179,16 @@ class dense(nn.Module):
                 for scale in range(self.n_scale)
             ]
         )
-        out_size = self.out_size
-        if out_size != -1:
-            self.out_dim = self.out_channels * out_size**2 #* (self.in_size // 2**self.n_scale)**2 
-            self.global_pool = nn.AdaptiveAvgPool2d((out_size,out_size))
-        else:
-            self.out_dim = self.out_channels * (self.in_size // 2**self.n_scale)**2
-        self.linear = nn.Linear(self.out_dim, self.n_class)
-
+        
+        # self.out_dim = self.out_channels * out_size**2 #* (self.in_size // 2**self.n_scale)**2 
+            # self.global_pool = nn.AdaptiveAvgPool2d((out_size,out_size))
+        
+        #self.linear = nn.Linear(self.out_dim, self.n_class)
+        self.linear = LowRankClassifier(
+            C=self.out_channels, 
+            num_classes=self.n_class,
+            rank_factor=self.rank_factor,
+            pooling=self.pooling_option)
         # self.register_buffer("class_means", None)   # [C, D]
         # self.register_buffer("pca_bases", None)     # [C, D, k]
 
@@ -247,7 +280,7 @@ class dense(nn.Module):
                 if dep <= d - 1:
                     idx.extend(range(start, end))
             keep_idx.append(torch.tensor(idx, dtype=torch.long))
-            
+        self.out_channels = sum([out_group[-1][-1] for out_group in all_out_groups])
         return keep_idx, input_lens
 
     def compute_out_groups(self):
@@ -325,7 +358,7 @@ class dense(nn.Module):
         return y
 
 
-    def scatter_forward(self, img):
+    def forward(self, img):
         inputs = [img]
         outputs = [img]
         for ind, block in enumerate(self.blocks):
@@ -348,61 +381,62 @@ class dense(nn.Module):
             # 池化输出，低通和保持shape一样
             outputs = [self.pooling(i) for i in outputs]    
             inputs = [self.pooling(i) for i in inputs]
-        if self.out_size != -1:
-            features = self.global_pool(torch.cat(outputs, dim=1)).reshape(img.shape[0], -1)
-        else:
-            features = torch.cat(outputs, dim=1).reshape(img.shape[0], -1)
-        return features #self.linear(features) #self.linear(F.normalize(features, p=2, dim=1))
+        features = torch.cat(outputs, dim=1)
+        # if self.out_size != -1:
+        #     features = self.global_pool(torch.cat(outputs, dim=1))
+        # else:
+        #     features = torch.cat(outputs, dim=1)
+        return self.linear(features) #self.linear(F.normalize(features, p=2, dim=1))
 
-    def forward(self, imgs):
-        """
-        imgs: [B, ...]
-        return: logits [B, C] (负重构误差)
-        """
-        feats = self.scatter_forward(imgs)  # [B, D]
+    # def forward(self, imgs):
+    #     """
+    #     imgs: [B, ...]
+    #     return: logits [B, C] (负重构误差)
+    #     """
+    #     feats = self.scatter_forward(imgs)  # [B, D]
 
-        B, D = feats.shape
+    #     B, D = feats.shape
 
-        C = self.n_class
+    #     C = self.n_class
 
-        scores = feats.new_empty(B, C)
+    #     scores = feats.new_empty(B, C)
 
-        for c in range(C):
-            mean = self.class_means[c]     # [D]
-            V = self.pca_bases[c]          # [D, k]
+    #     for c in range(C):
+    #         mean = self.class_means[c]     # [D]
+    #         V = self.pca_bases[c]          # [D, k]
 
-            x = feats - mean               # [B, D]
+    #         x = feats - mean               # [B, D]
 
-            # low-dim coordinates: [B, k]
-            alpha = x @ V                  # O(B D k)
+    #         # low-dim coordinates: [B, k]
+    #         alpha = x @ V                  # O(B D k)
 
-            # reconstruction: [B, D]
-            recon = alpha @ V.T
+    #         # reconstruction: [B, D]
+    #         recon = alpha @ V.T
 
-            residual = x - recon
-            scores[:, c] = -residual.norm(dim=1)
+    #         residual = x - recon
+    #         scores[:, c] = -residual.norm(dim=1)
 
-        # for c in range(C):
-        #     x = feats - self.class_means[c]    # [B, D]
-        #     alpha = x @ self.pca_bases[c]      # [B, k]
+    #     # for c in range(C):
+    #     #     x = feats - self.class_means[c]    # [B, D]
+    #     #     alpha = x @ self.pca_bases[c]      # [B, k]
 
-        #     dist2 = (x ** 2).sum(dim=1) - (alpha ** 2).sum(dim=1)
-        #     scores[:, c] = -torch.sqrt(dist2 + 1e-8)
+    #     #     dist2 = (x ** 2).sum(dim=1) - (alpha ** 2).sum(dim=1)
+    #     #     scores[:, c] = -torch.sqrt(dist2 + 1e-8)
 
-        return scores
+    #     return scores
 
 
     def train_classifier(self):
         for param in self.blocks.parameters():
             param.requires_grad = False
-        # for param in self.linear.parameters():
-        #     param.requires_grad = True
+        for param in self.linear.parameters():
+            param.requires_grad = True
 
     def train_conv(self):
         for param in self.blocks.parameters():
             param.requires_grad = True
-        # for param in self.linear.parameters():
-        #     param.requires_grad = False
+        for param in self.linear.parameters():
+            param.requires_grad = False
 
     def full_train(self):
         for param in self.parameters():
@@ -417,5 +451,11 @@ class dense(nn.Module):
     def n_tuned_params(self):
         total_params = 0
         for param in self.blocks.parameters():
+            total_params += param.numel()
+        return total_params
+
+    def n_classifier_params(self):
+        total_params = 0
+        for param in self.linear.parameters():
             total_params += param.numel()
         return total_params

@@ -1,28 +1,30 @@
 
 base_config: configs/curet.yaml
 sweep:
-  resize: 200 #128
-  classifier_epochs: [30]
-  depth: [2]
-  conv_epochs: [40]
-  max_scale: [7]
-  nb_orients: [6]
-  out_size: [-1] #, 2]
-  n_copies: [1] #, 12]
-  #lr: [0.01, 0.001, 0.0001]
-  lr: [0.01, 0.025]
-  lambda_reg: [100, 1, 1e-2]
-  weight_decays: [1e-3]
-  #radius: [0.05, 0.1, 1.0]
-  seed: [123] #, 456, 789]
-  share_channels: false
-  pca_dim: [1]
   train_ratio:
     # start: 0.2949 
     # stop: 0.1
     # step: -0.06
     start: 0.6 #0.46 #0.5899
-    stop: 0.2 #0.2
+    stop: 0.4 #0.2
     step: -0.05
-  
+  resize: 200 #128
+  classifier_epochs: [80]
+  depth: [2, 3]
+  conv_epochs: [60]
+  max_scale: [7, 6, 5]
+  nb_orients: [6]
+  # out_size: [2, -1] #, 2]
+  n_copies: [1] #, 12]
+  #lr: [0.01, 0.001, 0.0001]
+  lr: [1e-5]
+  linear_lr: [0.01]
+  weight_decays: [1e-4]
+  #radius: [0.05, 0.1, 1.0]
+  seed: [123] #, 456, 789]
+  share_channels: false
+  pooling_option: ["avg", "max"]
+  lambda_reg: [1e-2, 1e-4]
+  rank_factor: [1.0, 2.0, 4.0]
+  wavelet: ["morlet"]
 

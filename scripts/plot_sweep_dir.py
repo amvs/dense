@@ -110,6 +110,63 @@ def pair_boxplots(
     plt.close()
     print(f"Paired boxplot saved to {plot_path}")
 
+def marginal_side_by_side_boxplots(
+    df,
+    factor,
+    metrics,
+    facet_col="train_ratio",
+    sweep_dir=None,
+    fname_suffix="",
+    kind="box",   # "box" or "violin" or "strip"
+):
+    """
+    Side-by-side marginal plots:
+    Shows effect of ONE factor, marginalizing over all others.
+    """
+
+    assert factor in df.columns
+    assert facet_col in df.columns
+
+    # Melt metrics
+    df_melted = df.melt(
+        id_vars=[factor, facet_col],
+        value_vars=metrics,
+        var_name="metric",
+        value_name="value",
+    )
+
+    g = sns.catplot(
+        data=df_melted,
+        x=factor,
+        y="value",
+        hue="metric",
+        col=facet_col,
+        kind=kind,
+        col_wrap=2,
+        sharey=True,
+        height=4,
+        aspect=1.4,
+    )
+
+    g.set_titles(f"{facet_col} = {{col_name}}")
+    g.set_axis_labels(factor, "accuracy")
+
+    for ax in g.axes.flat:
+        ax.tick_params(axis="x", rotation=45)
+
+    plt.tight_layout()
+
+    if sweep_dir:
+        path = os.path.join(
+            sweep_dir,
+            "results",
+            f"marginal_{factor}_{fname_suffix}.png",
+        )
+        plt.savefig(path)
+        plt.close()
+        print(f"Saved to {path}")
+
+
 def side_by_side_boxplots(
     df,
     metrics,
@@ -245,6 +302,148 @@ def plot_generalization_error(df, sweep_dir, fname_suffix="", use_best=True):
     plt.close()
     print(f"Generalization error plot saved to {plot_path}")
 
+def prepare_metric_long(df, metrics):
+    """
+    Convert dataframe into long format with metric column
+    """
+    id_vars = [c for c in df.columns if c not in metrics]
+    return df.melt(
+        id_vars=id_vars,
+        value_vars=metrics,
+        var_name="metric",
+        value_name="value"
+    )
+
+def plot_factor_effect_by_train_ratio(
+    df,
+    factor,
+    metrics=("test_acc", "linear_test_acc"),
+    train_ratios=(0.1, 0.2, 0.3, 0.5),
+    agg="mean",
+    sweep_dir=None,
+    fname=None,
+):
+    """
+    Visualize marginal effect of a factor under different train ratios.
+    Aggregates over all other variables.
+    """
+    assert factor in df.columns
+    df_long = prepare_metric_long(df, metrics)
+
+    if agg == "mean":
+        df_plot = (
+            df_long
+            .groupby(["train_ratio", factor, "metric"], as_index=False)
+            .value.mean()
+        )
+    elif agg == "median":
+        df_plot = (
+            df_long
+            .groupby(["train_ratio", factor, "metric"], as_index=False)
+            .value.median()
+        )
+    else:
+        raise ValueError("agg must be 'mean' or 'median'")
+
+    g = sns.relplot(
+        data=df_plot,
+        x=factor,
+        y="value",
+        hue="metric",
+        col="train_ratio",
+        kind="line",
+        marker="o",
+        col_wrap=2,
+        height=4,
+        aspect=1.4,
+        facet_kws=dict(sharey=True),
+    )
+
+    g.set_titles("train_ratio = {col_name}")
+    g.set_axis_labels(factor, "accuracy")
+    g.tight_layout()
+
+    if sweep_dir and fname:
+        path = os.path.join(sweep_dir, "results", fname)
+        plt.savefig(path)
+        print(f"Saved to {path}")
+        plt.close()
+
+def plot_factor_distribution(
+    df,
+    factor,
+    metrics=("test_acc", "linear_test_acc"),
+    sweep_dir=None,
+    fname=None,
+):
+    df_long = prepare_metric_long(df, metrics)
+
+    g = sns.catplot(
+        data=df_long,
+        x=factor,
+        y="value",
+        hue="metric",
+        col="train_ratio",
+        kind="box",
+        col_wrap=2,
+        height=4,
+        aspect=1.3,
+        sharey=True,
+    )
+
+    g.set_titles("train_ratio = {col_name}")
+    g.set_axis_labels(factor, "accuracy")
+    g.tight_layout()
+
+    if sweep_dir and fname:
+        path = os.path.join(sweep_dir, "results", fname)
+        plt.savefig(path)
+        print(f"Saved to {path}")
+        plt.close()
+
+def compute_factor_sensitivity(
+    df,
+    factors,
+    metric="test_acc"
+):
+    """
+    Computes variance explained by each factor under each train_ratio
+    """
+    records = []
+
+    for tr in sorted(df.train_ratio.unique()):
+        df_tr = df[df.train_ratio == tr]
+
+        for f in factors:
+            grouped = df_tr.groupby(f)[metric].mean()
+            var = grouped.var()
+            records.append({
+                "train_ratio": tr,
+                "factor": f,
+                "variance": var
+            })
+
+    return pd.DataFrame(records)
+
+def plot_sensitivity_heatmap(df_sens, sweep_dir=None):
+    pivot = df_sens.pivot(
+        index="factor",
+        columns="train_ratio",
+        values="variance"
+    )
+
+    plt.figure(figsize=(8, 4))
+    sns.heatmap(pivot, annot=True, fmt=".3g", cmap="viridis")
+    plt.title("Hyperparameter Sensitivity (variance of mean accuracy)")
+    plt.tight_layout()
+
+    if sweep_dir:
+        path = os.path.join(sweep_dir, "results", "sensitivity_heatmap.png")
+        plt.savefig(path)
+        print(f"Saved to {path}")
+        plt.close()
+
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Plot sweep results.")
@@ -339,13 +538,103 @@ if __name__ == "__main__":
     #     sweep_dir=args.sweep_dir,
     #     fname_suffix="fullsize",
     # )
-    side_by_side_boxplots(
+    # side_by_side_boxplots(
+    #     df,
+    #     metrics=['test_acc', 'linear_test_acc'],
+    #     group_cols=['lambda_reg', 'train_ratio'],
+    #     facet_col='train_ratio',
+    #     sweep_dir=args.sweep_dir,
+    #     fname_suffix='downsample',
+    # )
+
+    # side_by_side_boxplots(
+    #     df,
+    #     metrics=['test_acc', 'linear_test_acc'],
+    #     group_cols=['rank_factor', 'train_ratio'],
+    #     facet_col='train_ratio',
+    #     sweep_dir=args.sweep_dir,
+    #     fname_suffix='2',
+    # )
+
+    plot_factor_effect_by_train_ratio(
         df,
-        metrics=['test_acc', 'linear_test_acc'],
-        group_cols=['lambda_reg', 'train_ratio'],
-        facet_col='train_ratio',
+        factor="rank_factor",
+        fname="rank_factor_effect.png",
+        sweep_dir=args.sweep_dir
+    )
+
+    plot_factor_effect_by_train_ratio(
+        df,
+        factor="depth",
+        fname="depth_effect.png",
+        sweep_dir=args.sweep_dir
+    )
+
+    plot_factor_effect_by_train_ratio(
+        df,
+        factor="lambda_reg",
+        fname="lambda_reg_effect.png",
+        sweep_dir=args.sweep_dir
+    )
+
+    plot_factor_effect_by_train_ratio(
+        df,
+        factor="max_scale",
+        fname="max_scale_effect.png",
+        sweep_dir=args.sweep_dir
+    )
+
+    plot_factor_effect_by_train_ratio(
+        df,
+        factor="pooling_option",
+        fname="pooling_option_effect.png",
+        sweep_dir=args.sweep_dir
+    )
+
+    sens = compute_factor_sensitivity(
+        df,
+        factors=["depth", "max_scale", "lambda_reg", "rank_factor", "pooling_option"]
+    )
+    plot_sensitivity_heatmap(sens, args.sweep_dir)
+
+    marginal_side_by_side_boxplots(
+        df,
+        factor="lambda_reg",
+        metrics=["test_acc", "linear_test_acc"],
         sweep_dir=args.sweep_dir,
-        fname_suffix='downsample',
+        fname_suffix="lambda_reg",
+    )
+
+    marginal_side_by_side_boxplots(
+        df,
+        factor="rank_factor",
+        metrics=["test_acc", "linear_test_acc"],
+        sweep_dir=args.sweep_dir,
+        fname_suffix="rank_factor",
+    )
+
+    marginal_side_by_side_boxplots(
+        df,
+        factor="depth",
+        metrics=["test_acc", "linear_test_acc"],
+        sweep_dir=args.sweep_dir,
+        fname_suffix="depth",
+    )
+
+    marginal_side_by_side_boxplots(
+        df,
+        factor="max_scale",
+        metrics=["test_acc", "linear_test_acc"],
+        sweep_dir=args.sweep_dir,
+        fname_suffix="max_scale",
+    )
+
+    marginal_side_by_side_boxplots(
+        df,
+        factor="pooling_option",
+        metrics=["test_acc", "linear_test_acc"],
+        sweep_dir=args.sweep_dir,
+        fname_suffix="pooling_option",
     )
 
     # Plot generalization errors
