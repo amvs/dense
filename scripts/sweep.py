@@ -26,7 +26,7 @@ def parse_args():
         "--random", action="store_true",
         help="If set, use random filters"
     )
-    parser.add_argument('--model-type', type=str, choices=['wph', 'scat', 'wph_pca', 'wph_hypernetwork'], default='scat',
+    parser.add_argument('--model-type', type=str, choices=['wph', 'scat', 'wph_pca', 'wph_hypernetwork', 'fvcnn', 'fccnn'], default='scat',
                         help='Type of model to train (default: scat (dense))')
     parser.add_argument('--name', type=str, default='',
                         help='Optional short name for the sweep folder')
@@ -106,6 +106,8 @@ def run_single_trial(run_idx, total_runs, values, keys, base_config, sweep_dir, 
         file = "scripts/train_wph.py"
     elif args.model_type == 'wph_pca':
         file = "scripts/train_wph_pca.py"
+    elif args.model_type in ['fvcnn', 'fccnn']:
+        file = "scripts/train_fvcnn.py"
     else:
         raise ValueError(f"Unknown model type: {args.model_type}")
     
@@ -121,6 +123,10 @@ def run_single_trial(run_idx, total_runs, values, keys, base_config, sweep_dir, 
     ]
     if wandb_project is not None:
         cmd.extend(["--wandb_project", wandb_project])
+    
+    # For fvcnn/fccnn, ensure framework is set correctly
+    if args.model_type in ['fvcnn', 'fccnn']:
+        cmd.extend(["--override", f"framework={args.model_type}"])
     
     # Set up environment with GPU assignment and export GPU id for run suffix
     env = os.environ.copy()

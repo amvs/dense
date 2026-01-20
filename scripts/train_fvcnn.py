@@ -18,6 +18,8 @@ from training.datasets.kthtips2b import KHTTips2bDataset, CenterCropToSquare
 from training.datasets.base import stratify_split
 from torchvision.datasets import MNIST
 from dense.helpers import LoggerManager
+from training.experiment_utils import log_model_parameters
+from configs import save_config
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
@@ -253,15 +255,9 @@ def prepare_experiment(cfg: Dict[str, Any]) -> tuple[str, LoggerManager]:
     return exp_dir, logger
 
 
-def save_artifacts(exp_dir: str, encoder, clf: LinearSVC, metrics: Dict[str, float]) -> None:
-    metrics_path = os.path.join(exp_dir, "metrics.yaml")
-    with open(metrics_path, "w") as f:
-        yaml.safe_dump({k: float(v) for k, v in metrics.items()}, f)
-    svm_path = os.path.join(exp_dir, "svm.joblib")
-    joblib.dump(clf, svm_path)
-    if encoder is not None:
-        encoder_path = os.path.join(exp_dir, "encoder.pt")
-        encoder.save(encoder_path)
+def save_artifacts(exp_dir: str, cfg: Dict[str, Any]) -> None:
+    """Save unified config with all results."""
+    save_config(exp_dir, cfg)
 
 
 def train_and_eval(cfg: Dict[str, Any], logger) -> None:
@@ -297,29 +293,66 @@ def train_and_eval(cfg: Dict[str, Any], logger) -> None:
         train_codes, train_labels = encode_split(train_loader, extractor, encoder)
         val_codes, val_labels = encode_split(val_loader, extractor, encoder)
         test_codes, test_labels = encode_split(test_loader, extractor, encoder)
+        # Calculate feature dimension
+        nb_moments = train_codes.shape[1]
     elif framework == "fccnn":
         extractor = FCFeatureExtractor(backbone=backbone, fc_layer=feature_layer)
         encoder = None
         train_codes, train_labels = encode_split(train_loader, extractor, None)
         val_codes, val_labels = encode_split(val_loader, extractor, None)
         test_codes, test_labels = encode_split(test_loader, extractor, None)
+        # Calculate feature dimension
+        nb_moments = train_codes.shape[1]
     else:
         raise ValueError(f"Unsupported framework {framework}")
+
+    # Log model information
+    logger.log("Feature Extractor:")
+    logger.log(str(extractor))
+    if encoder is not None:
+        logger.log("Fisher Vector Encoder:")
+        logger.log(str(encoder))
+    logger.log(f"Number of output features (nb_moments): {nb_moments}")
+    
+    # Calculate and log parameter counts
+    extractor_params = sum(p.numel() for p in extractor.parameters())
+    logger.log(f"Feature extractor parameters: {extractor_params}")
+    
+    if encoder is not None:
+        encoder_params = sum(p.numel() if hasattr(p, 'numel') else 0 for p in encoder.parameters() if hasattr(encoder, 'parameters'))
+        logger.log(f"Encoder parameters: {encoder_params}")
 
     C = cfg.get("svm_C", 1.0)
     clf = LinearSVC(C=C)
     clf.fit(train_codes, train_labels)
     train_acc = clf.score(train_codes, train_labels)
-    val_acc = clf.score(val_codes, val_labels)
+    val_acc = clf.score(val_codes, train_labels)
     test_acc = clf.score(test_codes, test_labels)
 
-    metrics = {
-        "train_acc": float(train_acc),
-        "val_acc": float(val_acc),
-        "test_acc": float(test_acc),
-    }
-    logger.log(f"train_acc={train_acc:.4f} val_acc={val_acc:.4f} test_acc={test_acc:.4f}", data=True)
-    save_artifacts(cfg.get("exp_dir", "."), encoder, clf, metrics)
+    logger.log(f"Train_Acc={train_acc:.4f} Val_Acc={val_acc:.4f} Test_Acc={test_acc:.4f}", data=True)
+    
+    # Update config with results
+    cfg["nb_class"] = nb_class
+    cfg["nb_moments"] = nb_moments
+    cfg["framework"] = framework
+    cfg["backbone"] = backbone
+    cfg["feature_layer"] = feature_layer
+    cfg["train_acc"] = float(train_acc)
+    cfg["val_acc"] = float(val_acc)
+    cfg["test_acc"] = float(test_acc)
+    cfg["feature_extractor_params"] = extractor_params
+    if encoder is not None:
+        cfg["encoder_params"] = encoder_params
+    cfg["svm_C"] = C
+    
+    # Save artifacts
+    svm_path = os.path.join(cfg.get("exp_dir", "."), "svm.joblib")
+    joblib.dump(clf, svm_path)
+    if encoder is not None:
+        encoder_path = os.path.join(cfg.get("exp_dir", "."), "encoder.pt")
+        encoder.save(encoder_path)
+    
+    save_artifacts(cfg.get("exp_dir", "."), cfg)
 
 
 def main() -> None:
