@@ -193,7 +193,6 @@ def get_available_problems(root_dir):
 
 def compute_mean_std(dataset):
     """Compute mean and std for RGB dataset."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     loader = DataLoader(dataset, batch_size=64, shuffle=False)
     mean = torch.tensor([0.0, 0.0, 0.0])
     sq_mean = torch.tensor([0.0, 0.0, 0.0])

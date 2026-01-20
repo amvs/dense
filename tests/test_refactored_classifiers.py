@@ -9,13 +9,8 @@ print("Testing refactored WPH classifiers...")
 # Test 1: Import all classifier types
 print("\n1. Testing imports...")
 from wph.classifiers import LinearClassifier, HyperNetworkClassifier, SVMClassifier, PCAClassifier
-from wph.wph_model import WPHClassifier, WPHSvm, WPHPca
-from wph.classifier_factory import (
-    create_linear_wph_classifier,
-    create_hypernetwork_wph_classifier,
-    create_svm_wph_classifier,
-    create_pca_wph_classifier
-)
+from wph.wph_model import WPHSvm, WPHPca
+
 print("✓ All imports successful")
 
 # Test 2: Create individual classifiers
@@ -23,7 +18,7 @@ print("\n2. Testing individual classifier creation...")
 input_dim = 100
 num_classes = 10
 
-linear_clf = LinearClassifier(input_dim=input_dim, num_classes=num_classes, use_batch_norm=True)
+linear_clf = LinearClassifier(input_dim=input_dim, num_classes=num_classes)
 print(f"✓ LinearClassifier created: {linear_clf}")
 
 hypernet_clf = HyperNetworkClassifier(num_classes=num_classes, metadata_dim=32, hidden_dim=64)
