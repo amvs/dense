@@ -89,7 +89,7 @@ class ReluCenterLayerDownsample(ReluCenterLayer):
             h_j = math.ceil(self.M / (2 ** j))
             w_j = math.ceil(self.N / (2 ** j))
             
-            # differnt mask logic for downsampled feature maps
+            # different mask logic for downsampled feature maps
             # On the full grid, border is 2^j // 2.
             # On the downsampled grid (factor 2^j), this border size becomes:
             # (2^j // 2) / 2^j = 0.5 pixels.

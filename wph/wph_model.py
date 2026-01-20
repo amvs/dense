@@ -3,8 +3,6 @@ from torch import nn
 from typing import Optional, Literal, Union, Tuple
 from torch.fft import fft2, ifft2
 import copy
-import warnings
-import numpy as np
 
 from wph.layers.wave_conv_layer import WaveConvLayer, WaveConvLayerDownsample
 from wph.layers.relu_center_layer import ReluCenterLayer, ReluCenterLayerDownsample, ReluCenterLayerDownsamplePairs

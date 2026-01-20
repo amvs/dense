@@ -406,7 +406,7 @@ class CorrLayerDownsample(BaseCorrLayer):
 
         # 3. Create Correct Per-Scale Masks
         _masks_temp = []
-        _factr_temp = [] # <--- FIX: Need to store these too
+        _factr_temp = []
         
         for j in range(self.J):
             h_j = math.ceil(self.M / (2 ** j))
@@ -431,7 +431,6 @@ class CorrLayerDownsample(BaseCorrLayer):
         union_indices = torch.nonzero(union_mask.flatten(), as_tuple=True)[0]
         
         self.mask_indices_map = {}
-        # ... (Your logic for mapping indices) ...
         grid_to_union_map = torch.full((ref_masks[0].numel(),), -1, dtype=torch.long)
         grid_to_union_map[union_indices] = torch.arange(len(union_indices))
         

@@ -228,7 +228,7 @@ def test_output_shapes(J, N, L, A, share_rotations, share_phases):
     """
     Verifies that the Downsample layer produces the correct list of tensor shapes.
     """
-    B, C= 2, 1, 
+    B, C = 2, 1 
     model = WaveConvLayerDownsample(J=J, L=L, A=A, num_channels=C, T=3, share_rotations=share_rotations, share_phases=share_phases)
     x = torch.randn(B, C, N, N)
     
