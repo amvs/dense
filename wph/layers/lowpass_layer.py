@@ -1,7 +1,7 @@
 import torch
 import torch.fft as fft
 from torch import nn
-from wph.ops.backend import DivInitStd, SubInitSpatialMean, maskns
+from wph.ops.backend import DivSpatialStd, SubSpatialMean, maskns
 from wph.layers.utils import create_masks_shift
 
 
@@ -24,8 +24,8 @@ class LowpassLayer(nn.Module):
         self.mask_angles = mask_angles
         self.mask_union = mask_union
         self.num_channels = num_channels
-        self.divinitstdJ = DivInitStd()
-        self.subinitmeanJ = SubInitSpatialMean()
+        self.divstdJ = DivSpatialStd()
+        self.submeanJ = SubSpatialMean()
 
         # create border masks for aperiodicity (used during forward)
         masks = maskns(self.J, self.M, self.N)
@@ -89,8 +89,8 @@ class LowpassLayer(nn.Module):
         xphi_c = fft.ifft2(hatxphi_c)
         # apply border mask for aperiodicity (matching alpha_torch)
         xphi_c = xphi_c * self.masks[-1, -1, ...].view(1, 1, self.M, self.N)
-        xphi0_c = self.subinitmeanJ(xphi_c)
-        xphi0_c = self.divinitstdJ(xphi0_c)
+        xphi0_c = self.submeanJ(xphi_c)
+        xphi0_c = self.divstdJ(xphi0_c)
 
         xphi0_c = xphi0_c.abs()
 
