@@ -74,10 +74,10 @@ class BaseCorrLayer(nn.Module):
         """Override in child classes to define index computation."""
         raise NotImplementedError("compute_idx must be implemented in child classes")
 
-    def forward(self, xpsi, flatten: bool = True, vmap_chunk_size: Optional[int] = None):
-        return self.compute_correlations(xpsi, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
+    def forward(self, xpsi, flatten: bool = True, vmap_chunk_size: Optional[int] = None, use_checkpoint: bool = False):
+        return self.compute_correlations(xpsi, flatten=flatten, vmap_chunk_size=vmap_chunk_size, use_checkpoint=use_checkpoint)
 
-    def compute_correlations(self, xpsi, flatten: bool = True, vmap_chunk_size: Optional[int] = None):
+    def compute_correlations(self, xpsi, flatten: bool = True, vmap_chunk_size: Optional[int] = None, use_checkpoint: bool = False):
         """Override in child classes to define correlation computation."""
         raise NotImplementedError("compute_correlations must be implemented in child classes")
 
@@ -358,14 +358,14 @@ class CorrLayer(BaseCorrLayer):
             return out  # (nb, n_pairs, M, N)
         
 
-    def forward(self, xpsi: torch.Tensor, flatten:bool = True, vmap_chunk_size: Optional[int] = None):
+    def forward(self, xpsi: torch.Tensor, flatten:bool = True, vmap_chunk_size: Optional[int] = None, use_checkpoint: bool = False):
         if torch.jit.is_scripting():
             return self._compute_correlations_scripting(
                 xpsi, flatten
             )
         else:
             return self.compute_correlations(
-                xpsi, flatten=flatten, vmap_chunk_size=vmap_chunk_size
+                xpsi, flatten=flatten, vmap_chunk_size=vmap_chunk_size, use_checkpoint=use_checkpoint
             )
 
     def flat_metadata(self):
