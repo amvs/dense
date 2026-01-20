@@ -92,6 +92,23 @@ def main():
             drop_last=True
         )
         # Note: KTH loader already handles train/val/test split, so no need for split_train_val
+    elif dataset == "outex":
+        # Outex returns train_loader, val_loader, test_loader already
+        resize = config["resize"]
+        outex_root_dir = config["outex_root_dir"]
+        problem_id = config.get("problem_id", "000")  # Default problem ID
+        train_val_ratio = config.get("train_val_ratio", 4)  # Default train:val ratio
+        train_loader, val_loader, test_loader, nb_class, image_shape = get_loaders(
+            dataset=dataset,
+            root_dir=outex_root_dir,
+            resize=resize,
+            batch_size=batch_size,
+            problem_id=problem_id,
+            train_ratio=train_ratio,  # Outex loader handles train_ratio internally
+            train_val_ratio=train_val_ratio,
+            drop_last=True
+        )
+        # Note: Outex loader already handles train/val/test split, so no need for split_train_val
     else:  # Kaggle datasets
         resize = config["resize"]
         deeper_path = config["deeper_path"]
@@ -117,6 +134,7 @@ def main():
     n_copies = config["n_copies"]
     depth = config.get("depth", -1)
     random = config.get("random", False)
+    use_original_filters = config["use_original_filters"]
     
     # Classifier parameters
     classifier_type = config["classifier_type"]
@@ -136,6 +154,7 @@ def main():
         in_size=image_shape[1],
         depth=depth,
         random=random,
+        use_original_filters=use_original_filters,
         classifier_type=classifier_type,
         hypernet_hidden_dim=hypernet_hidden_dim,
         attention_d_model=attention_d_model,

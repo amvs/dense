@@ -6,6 +6,7 @@ share_channels: false
 n_copies: 1
 depth: -1  # -1 means full scatter
 random: false
+use_original_filters: false  # If true, use filters at different scales without downsampling. If false, use first filter and downsample (current mode).
 
 # classifier setting
 classifier_type: hypernetwork
@@ -16,8 +17,8 @@ attention_num_layers: 2
 
 # training setting
 # Note: Update dataset name to the correct DTD Kaggle dataset identifier
-dataset: puneet6060/intel-image-classification  # Update this to the correct DTD Kaggle dataset name
-deeper_path: ""  # Update this to the correct subdirectory path if needed
+dataset: jmexpert/describable-textures-dataset-dtd  # Update this to the correct DTD Kaggle dataset name
+deeper_path: dtd/images  # Update this to the correct subdirectory path if needed
 resize: 200
 classifier_epochs: 1
 conv_epochs: 1

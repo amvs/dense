@@ -6,7 +6,7 @@ import torch
 from dense.helpers import LoggerManager
 import kagglehub
 import os
-from training.datasets.base import stratify_split
+from training.datasets.base import stratify_split, CenterCropToSquare
 def get_kaggle_dataset(dataset: str) -> str:
     """
     Download (or reuse cached) Kaggle dataset via kagglehub.
@@ -63,14 +63,16 @@ def get_kaggle_loaders(dataset_name, resize, deeper_path, batch_size=64, train_r
     logger.info(f"Load dataset {dataset_name} from Kaggle...")
     logger.info(f"Dataset path: {path} + {deeper_path}")
     transform = transforms.Compose([
+        CenterCropToSquare(),  # Center crop to square before resize (preserves aspect ratio)
         transforms.ToTensor(),
         transforms.Grayscale(num_output_channels=1),
-        transforms.Resize((resize, resize)),      # resize shorter side
+        transforms.Resize((resize, resize)),
     ])
     #dataset = datasets.ImageFolder(root=path, transform=transform)
     dataset = KaggleDataset(path, deeper_path, transform=transform)
     mean, std = compute_mean_std(dataset)
     dataset.transform = transforms.Compose([
+        CenterCropToSquare(),  # Center crop to square before resize (preserves aspect ratio)
         transforms.ToTensor(),
         transforms.Grayscale(num_output_channels=1),
         transforms.Resize((resize, resize)),

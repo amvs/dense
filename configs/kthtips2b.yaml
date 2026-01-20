@@ -6,6 +6,7 @@ share_channels: false
 n_copies: 1
 depth: -1  # -1 means full scatter
 random: false
+use_original_filters: false  # If true, use filters at different scales without downsampling. If false, use first filter and downsample (current mode).
 
 # classifier setting
 classifier_type: hypernetwork

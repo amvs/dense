@@ -4,6 +4,18 @@ from dense.helpers import LoggerManager
 import torch
 import random
 from collections import defaultdict
+
+
+class CenterCropToSquare:
+    """Custom transform to center crop rectangular images to square."""
+    def __call__(self, img):
+        w, h = img.size
+        size = min(w, h)
+        left = (w - size) // 2
+        top = (h - size) // 2
+        right = left + size
+        bottom = top + size
+        return img.crop((left, top, right, bottom))
 def stratify_split(dataset, train_size, seed=123):
     """
     Stratified random split.

@@ -23,6 +23,8 @@ class ScatterParams:
     depth: int = -1  # -1 means full scatter
     #
     random: bool = False
+    # Filter mode
+    use_original_filters: bool = False  # If True, use filters at different scales without downsampling. If False, use first filter and downsample (current mode).
     # Classifier type: 'hypernetwork', or 'attention'
     classifier_type: str = 'hypernetwork'
     # Hypernetwork parameters
@@ -160,6 +162,9 @@ class HypernetworkClassifier(nn.Module):
         Returns:
             logits: Tensor of shape [batch, num_classes]
         """
+        # Convert metadata to float (it's created as Long/int, but Linear layers need float)
+        metadata = metadata.float()
+        
         # Generate weights for each feature map using hypernetwork
         # weights: [num_features, feature_dim, num_classes]
         weights = self.hypernet(metadata).view(self.num_features, self.feature_dim, self.num_classes)
@@ -233,6 +238,9 @@ class AttentionClassifier(nn.Module):
         Returns:
             logits: Tensor of shape [batch, num_classes]
         """
+        # Convert metadata to float (it's created as Long/int, but Linear layers need float)
+        metadata = metadata.float()
+        
         batch_size = features.shape[0]
         
         # Global average pooling: [batch, num_features, H, W] -> [batch, num_features]
@@ -276,7 +284,12 @@ class dense(nn.Module):
         
         self.set_filters()
 
+        # Pooling: used for downsampling in current mode, or final low-pass in original filters mode
         self.pooling = nn.AvgPool2d(2, 2)
+        # Final pooling for original filters mode: pool by 2^J for low-pass
+        if self.use_original_filters:
+            pool_size = 2 ** self.n_scale
+            self.final_pooling = nn.AvgPool2d(pool_size, pool_size)
 
         self.in_channels_per_block = []
         in_channels = params.in_channels
@@ -298,10 +311,13 @@ class dense(nn.Module):
                    
         print("in_channels_per_block:", self.in_channels_per_block)
         print("out_channels:", self.out_channels)
+        print("use_original_filters:", self.use_original_filters)
+        
+        # Create blocks: use filters[scale] for each scale if use_original_filters, else use filters[0] for all
         self.blocks = nn.ModuleList(
             [
                 ScatterBlock(
-                    filters=self.filters[0],
+                    filters=self.filters[scale] if self.use_original_filters else self.filters[0],
                     in_channels=self.in_channels_per_block[scale],
                     n_copies=self.n_copies,
                     share_channels=self.share_channels
@@ -320,7 +336,12 @@ class dense(nn.Module):
         num_features = metadata.shape[0]
         
         # Compute feature dimension after pooling (spatial size)
-        final_size = self.in_size // (2 ** self.n_scale)
+        if self.use_original_filters:
+            # Original filters mode: features are same size as input, then pooled by 2^J
+            final_size = self.in_size // (2 ** self.n_scale)
+        else:
+            # Current mode: features are downsampled at each scale
+            final_size = self.in_size // (2 ** self.n_scale)
         feature_dim = final_size * final_size
         
         if self.classifier_type == 'hypernetwork':
@@ -400,16 +421,20 @@ class dense(nn.Module):
 
     def set_filters(self):
         self.filters = filter_bank(self.wavelet, self.n_scale, self.n_orient)
-        # self.filters[0] = torch.ones(2, 7, 7)
-        # self.filters[0][0] = self.filters[0][0]*2
-        # print(self.filters[0].shape)
-        # print(self.filters[0])
         # Convert numpy arrays to torch tensors if needed (e.g., for morlet wavelet)
-        if isinstance(self.filters[0], np.ndarray):
-            self.filters[0] = torch.tensor(self.filters[0], dtype=torch.complex64)
-        self.filters[0] = self.repeat_interleave_with_noise(self.filters[0])
-        # print(self.filters[0].shape)
-        # print(self.filters[0])
+        for i in range(len(self.filters)):
+            if isinstance(self.filters[i], np.ndarray):
+                self.filters[i] = torch.tensor(self.filters[i], dtype=torch.complex64)
+        
+        # Process filters based on mode
+        if self.use_original_filters:
+            # For original filters mode: process all filters
+            for i in range(len(self.filters)):
+                self.filters[i] = self.repeat_interleave_with_noise(self.filters[i])
+        else:
+            # For current mode: only process first filter (used for all scales)
+            self.filters[0] = self.repeat_interleave_with_noise(self.filters[0])
+        
         if self.random:
             random_filters = []
             seeds = [42, 123, 999, 2025, 7]
@@ -422,10 +447,13 @@ class dense(nn.Module):
 
             torch.cuda.manual_seed_all(seed)
 
-            # for filt in self.filters:
-            #     temp = torch.randn_like(filt.real) + 1j * torch.randn_like(filt.real)
-            #     random_filters.append(temp.to(dtype=filt.dtype))
-            self.filters[0] = torch.randn_like(self.filters[0])
+            if self.use_original_filters:
+                # Randomize all filters
+                for i in range(len(self.filters)):
+                    self.filters[i] = torch.randn_like(self.filters[i])
+            else:
+                # Randomize only first filter
+                self.filters[0] = torch.randn_like(self.filters[0])
         
 
     def repeat_interleave_with_noise(self, x):
@@ -444,29 +472,57 @@ class dense(nn.Module):
 
 
     def forward(self, img):
-        inputs = [img]
-        outputs = [img]
-        for ind, block in enumerate(self.blocks):
-            #out = checkpoint(block, *inputs) if ind != 0 else block(*inputs)
-            out = block(*inputs)
-            outputs.append(out) # save results from all blocks outputs[-1]
-            # 若depth无限制，则全部输出传递到下一层
-            if self.depth == -1:
-                outputs = [self.pooling(i) for i in outputs]
-                inputs = outputs
-                continue
-            # 若depth有限制
-            ## 当前尺度的输出不在最后一层，也把全部输出传递到下一层
-            if ind + 1 < self.depth:
-                next_in = outputs[-1]
-            else: ## 否则只传递部分输出到下一层
-                idx = getattr(self, f"keep_idx_{ind+1}")
-                next_in = outputs[-1][:, idx, :, :]
-            inputs.append(next_in)
-            # 池化输出，低通和保持shape一样
-            outputs = [self.pooling(i) for i in outputs]    
-            inputs = [self.pooling(i) for i in inputs]
-        features = torch.cat(outputs, dim=1)
+        if self.use_original_filters:
+            # Original filters mode: no downsampling during forward pass
+            inputs = [img]
+            outputs = [img]
+            for ind, block in enumerate(self.blocks):
+                #out = checkpoint(block, *inputs) if ind != 0 else block(*inputs)
+                out = block(*inputs)
+                outputs.append(out)  # save results from all blocks
+                
+                # 若depth无限制，则全部输出传递到下一层
+                if self.depth == -1:
+                    inputs = outputs
+                    continue
+                # 若depth有限制
+                ## 当前尺度的输出不在最后一层，也把全部输出传递到下一层
+                if ind + 1 < self.depth:
+                    next_in = outputs[-1]
+                else:  # 否则只传递部分输出到下一层
+                    idx = getattr(self, f"keep_idx_{ind+1}")
+                    next_in = outputs[-1][:, idx, :, :]
+                inputs.append(next_in)
+                # No pooling during forward pass - keep same size
+            
+            features = torch.cat(outputs, dim=1)
+            # Apply final pooling 2^J for low-pass
+            features = self.final_pooling(features)
+        else:
+            # Current mode: use first filter and downsample at each scale
+            inputs = [img]
+            outputs = [img]
+            for ind, block in enumerate(self.blocks):
+                #out = checkpoint(block, *inputs) if ind != 0 else block(*inputs)
+                out = block(*inputs)
+                outputs.append(out) # save results from all blocks outputs[-1]
+                # 若depth无限制，则全部输出传递到下一层
+                if self.depth == -1:
+                    outputs = [self.pooling(i) for i in outputs]
+                    inputs = outputs
+                    continue
+                # 若depth有限制
+                ## 当前尺度的输出不在最后一层，也把全部输出传递到下一层
+                if ind + 1 < self.depth:
+                    next_in = outputs[-1]
+                else: ## 否则只传递部分输出到下一层
+                    idx = getattr(self, f"keep_idx_{ind+1}")
+                    next_in = outputs[-1][:, idx, :, :]
+                inputs.append(next_in)
+                # 池化输出，低通和保持shape一样
+                outputs = [self.pooling(i) for i in outputs]    
+                inputs = [self.pooling(i) for i in inputs]
+            features = torch.cat(outputs, dim=1)
         
         # Apply classifier
         if self.classifier_type == 'hypernetwork':

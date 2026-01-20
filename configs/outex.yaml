@@ -16,8 +16,9 @@ attention_num_heads: 4
 attention_num_layers: 2
 
 # training setting
-dataset: smohsensadeghi/curet-dataset
-deeper_path: CUReT/curetgrey/
+dataset: outex
+outex_root_dir: data/datasets/Outex-TC-00012-bmp  # Path to Outex dataset root directory
+problem_id: "000"  # Problem configuration ID (e.g., "000", "001", "002")
 resize: 200
 classifier_epochs: 1
 conv_epochs: 1
@@ -27,9 +28,7 @@ linear_lr: 0.01
 weight_decays: 1e-4
 lambda_reg: 1.0e-4
 fine_tune_mode: extractor_only  # Options: 'extractor_only' (freeze classifier, fine-tune extractor) or 'both' (fine-tune both together)
-test_ratio: 0.15    # used to split train_set and test_set from full dataset
-train_ratio: 0.85   # used to further split train and val set from train_set
-train_val_ratio: 4  # train:val = 4:1, keep a fixed ratio between train and val set
+train_ratio: 0.85  # Fraction of training data to use (for low-data regime experiments)
+test_ratio: 0.15  # Not used for Outex (test set is determined by problem configuration)
+train_val_ratio: 4  # Ratio of test:val split (default 4, meaning test:val = 4:1)
 seed: 123
-
-

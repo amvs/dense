@@ -145,7 +145,8 @@ class dense(nn.Module):
         inputs = [img]
         for index, module in enumerate(self.module_list):
             # the first operation must not be checkpointed, to avoid no gradients in all cases
-            result = checkpoint(module, *inputs) if self.efficient and index != 0 else module(*inputs)
+            #result = checkpoint(module, *inputs) if self.efficient and index != 0 else module(*inputs)
+            result = module(*inputs)
             inputs.append(result)
             inputs = [self.pooling(inp) for inp in inputs]
         features = torch.cat(inputs, dim=1)

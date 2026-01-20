@@ -156,7 +156,7 @@ def meyer(max_scale, nb_orients, N=64, T=3.5/8, S=7):
     for j in range(max_scale):
         bank = filter_bank(N, T, S, K=nb_orients, j=j)
         banks.append(bank)
-        S = 2 * S + 1
+        S = 2 * S - 1
     return banks
 
 

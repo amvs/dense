@@ -27,12 +27,16 @@ def parse_args():
                         help='Type of model to train (default: scat (dense))')
     parser.add_argument('--name', type=str, default='',
                         help='Optional short name for the sweep folder')
-    parser.add_argument('--metric', type=str, default='last_val_acc',
-                        help='Metric to evaluate top models (default: last_val_acc)')
+    parser.add_argument('--metric', type=str, default='best_val_acc',
+                        help='Metric to evaluate top models (default: best_val_acc)')
     parser.add_argument('--gpus', type=str, default=None,
                         help='Comma-separated list of GPU IDs to use (e.g., "0,1,2,3"). If not specified, uses all available GPUs.')
     parser.add_argument('--max_parallel', type=int, default=None,
                         help='Maximum number of parallel jobs. Defaults to number of GPUs if not specified.')
+    parser.add_argument('--test', action='store_true',
+                        help='Test mode: run only the first configuration to verify setup')
+    parser.add_argument('--test_runs', type=int, default=1,
+                        help='Number of runs to execute in test mode (default: 1)')
     return parser.parse_args()
 
 # Parse arguments
@@ -148,8 +152,11 @@ def run_training_job(job_info):
             return (run_idx, True, None)
         else:
             error_msg = f"Return code {result.returncode}"
+            if result.stdout:
+                # Include last 1000 chars of stdout (often contains error info)
+                error_msg += f"\nStdout (last 1000 chars):\n{result.stdout[-1000:]}"
             if result.stderr:
-                error_msg += f"\nStderr: {result.stderr[:500]}"  # Limit error message length
+                error_msg += f"\nStderr:\n{result.stderr[-1000:]}"  # Last 1000 chars
             return (run_idx, False, error_msg)
     
     except Exception as e:
@@ -185,6 +192,13 @@ for run_idx, values in enumerate(all_combinations, 1):
     gpu_str = f"GPU {gpu_id}" if gpu_id is not None else "CPU"
     logger.info(f"Queued Run {run_idx}/{total_runs} on {gpu_str} — overrides: {overrides}")
 
+# Test mode: only run first N jobs
+if args.test:
+    test_count = min(args.test_runs, len(job_queue))
+    logger.info(f"🧪 TEST MODE: Running only first {test_count} configuration(s)")
+    job_queue = job_queue[:test_count]
+    total_runs = test_count
+
 # ===== EXECUTE JOBS IN PARALLEL =====
 logger.info(f"Starting {total_runs} runs across {max_parallel} parallel workers...")
 start_time = time.time()
@@ -198,9 +212,10 @@ if max_parallel == 1:
         run_idx, success, error_msg = run_training_job(job_info)
         completed_runs += 1
         if success:
-            logger.info(f"[{completed_runs}/{total_runs}] Finished run {run_idx}.")
+            logger.info(f"[{completed_runs}/{total_runs}] ✅ Finished run {run_idx}.")
         else:
-            logger.error(f"[{completed_runs}/{total_runs}] Run {run_idx} failed: {error_msg}")
+            logger.error(f"[{completed_runs}/{total_runs}] ❌ Run {run_idx} failed:")
+            logger.error(f"Error details:\n{error_msg}")
             failed_runs.append((run_idx, error_msg))
 else:
     # Parallel execution using ThreadPoolExecutor
@@ -221,9 +236,10 @@ else:
             gpu_str = f"GPU {gpu_id}" if gpu_id is not None else "CPU"
             
             if success:
-                logger.info(f"[{completed_runs}/{total_runs}] Finished run {run_idx} on {gpu_str}.")
+                logger.info(f"[{completed_runs}/{total_runs}] ✅ Finished run {run_idx} on {gpu_str}.")
             else:
-                logger.error(f"[{completed_runs}/{total_runs}] Run {run_idx} on {gpu_str} failed: {error_msg}")
+                logger.error(f"[{completed_runs}/{total_runs}] ❌ Run {run_idx} on {gpu_str} failed:")
+                logger.error(f"Error details:\n{error_msg}")
                 failed_runs.append((run_idx, error_msg))
 
 elapsed_time = time.time() - start_time
@@ -628,12 +644,12 @@ if available_hyperparams and "fine_tuned_test_acc" in df.columns:
 
 # Step 1: Plot validation accuracy per run per train_ratio, sorted decreasingly
 for train_ratio, group in df.groupby("train_ratio"):
-    # Sort runs by last_val_acc descending
-    group_sorted = group.sort_values("last_val_acc", ascending=False)
+    # Sort runs by best_val_acc descending
+    group_sorted = group.sort_values("best_val_acc", ascending=False)
     
     plt.figure(figsize=(8, 5))
     plt.title(f"Validation Error per Run (train_ratio={train_ratio})")
-    plt.bar(group_sorted["run"], 1.0 - group_sorted["last_val_acc"], color="skyblue")
+    plt.bar(group_sorted["run"], 1.0 - group_sorted["best_val_acc"], color="skyblue")
     plt.xticks(rotation=90)
     plt.ylabel("Validation Error(1-val_acc)")
     plt.tight_layout()
@@ -644,27 +660,47 @@ for train_ratio, group in df.groupby("train_ratio"):
 logger.info(f"Saved results summary plot to {results_path}")
 
 topN = 3
-# Step 2: take top-N runs per val_ratio by validation accuracy
-# Sort by val_ratio and the specified metric
+# Step 2: take top-N runs per train_ratio by validation accuracy
+# Sort by train_ratio and the specified metric
 metric = args.metric
-df = df.sort_values(["val_ratio", metric], ascending=[True, False])
+df = df.sort_values(["train_ratio", metric], ascending=[True, False])
 
-# Group by val_ratio and keep top N runs
-top_runs = df.groupby("val_ratio").head(topN)
+# Group by train_ratio and keep top N runs
+top_runs = df.groupby("train_ratio").head(topN)
 
-topN_csv_path = os.path.join(results_path, f"top{topN}_runs_per_val_ratio.csv")
+topN_csv_path = os.path.join(results_path, f"top{topN}_runs_per_train_ratio.csv")
 top_runs.to_csv(topN_csv_path, index=False)
-logger.info(f"Saved top-{topN} runs per val_ratio to {topN_csv_path}")
+logger.info(f"Saved top-{topN} runs per train_ratio to {topN_csv_path}")
 
-# Create a label for x-axis: "val_ratio-rank" only
+# Create a label for x-axis: "train_ratio-rank" only
 labels = []
 heights = []
-for val_ratio, group in top_runs.groupby("val_ratio"):
-    # sort by val_acc descending within this val_ratio
-    group_sorted = group.sort_values("last_val_acc", ascending=False).reset_index()
+for tr, group in top_runs.groupby("train_ratio"):
+    # sort by best_val_acc descending within this train_ratio
+    group_sorted = group.sort_values("best_val_acc", ascending=False).reset_index()
     for rank, row in enumerate(group_sorted.itertuples(), 1):
-        labels.append(f"{train_ratio:.2f}--{rank}")
-        heights.append(1.0 - row.test_acc)  # or row.test_acc if that's the column name
+        labels.append(f"{tr:.2f}--{rank}")
+        # Use test_acc if available, otherwise use fine_tuned_test_acc
+        if "test_acc" in group_sorted.columns:
+            heights.append(1.0 - getattr(row, "test_acc"))
+        elif "fine_tuned_test_acc" in group_sorted.columns:
+            heights.append(1.0 - getattr(row, "fine_tuned_test_acc"))
+        else:
+            heights.append(1.0 - getattr(row, "best_val_acc"))
+
+# Plot
+plt.figure(figsize=(max(10, len(labels)*0.6), 6))
+plt.bar(range(len(heights)), heights, color="skyblue")
+plt.xticks(range(len(labels)), labels, rotation=90)
+plt.xlabel("train_ratio | rank")
+plt.ylabel("Test Error(1 - test_acc)")
+plt.title(f"Test Error of Top {topN} Runs per train_ratio")
+plt.tight_layout()
+plot_path = os.path.join(results_path, f"top{topN}_test_err_all_train_ratios.png")
+plt.savefig(plot_path)
+plt.close()
+logger.send_file("topN_test_err_plot", plot_path, "image")
+logger.info(f"Saved top-{topN} test accuracy plot across all train_ratios to {results_path}")
 
 # Plot
 plt.figure(figsize=(max(10, len(labels)*0.6), 6))

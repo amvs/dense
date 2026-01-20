@@ -8,6 +8,7 @@ matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 import numpy as np
 from collections import defaultdict
+from types import MethodType
 
 class LoggerManager:
     """
@@ -105,7 +106,7 @@ class LoggerManager:
                     return
                 wandb.log(json_data)
         
-        def log_metrics(self, metrics: dict, step: int = None, prefix: str = ""):
+        def log_metrics(metrics: dict, step: int = None, prefix: str = ""):
             '''
             Log structured metrics to wandb with optional prefix for grouping.
             
@@ -124,7 +125,7 @@ class LoggerManager:
                     prefixed_metrics["epoch"] = step
                 wandb.log(prefixed_metrics)
         
-        def log_comparison(self, metrics: dict, title: str = "Comparison"):
+        def log_comparison(metrics: dict, title: str = "Comparison"):
             '''
             Log comparison metrics (e.g., before/after fine-tuning).
             Creates a wandb summary entry for easy comparison.
@@ -314,10 +315,24 @@ class LoggerManager:
         logger.log = log
         logger.send_file = send_file
         logger.finish = finish
-        logger.log_metrics = log_metrics
-        logger.log_comparison = log_comparison
-        logger.track_metric = track_metric
-        logger.create_experiment_plots = create_experiment_plots
+        # Create wrapper functions that accept 'self' as first argument (for method binding)
+        def log_metrics_wrapper(self, metrics, step=None, prefix=""):
+            return log_metrics(metrics, step, prefix)
+        
+        def log_comparison_wrapper(self, metrics, title="Comparison"):
+            return log_comparison(metrics, title)
+        
+        def track_metric_wrapper(self, prefix, metric_name, value, epoch):
+            return track_metric(prefix, metric_name, value, epoch)
+        
+        def create_experiment_plots_wrapper(self, exp_dir):
+            return create_experiment_plots(exp_dir)
+        
+        # Bind wrappers as methods
+        logger.log_metrics = MethodType(log_metrics_wrapper, logger)
+        logger.log_comparison = MethodType(log_comparison_wrapper, logger)
+        logger.track_metric = MethodType(track_metric_wrapper, logger)
+        logger.create_experiment_plots = MethodType(create_experiment_plots_wrapper, logger)
         logger._metrics_history = _metrics_history
         LoggerManager._logger = logger
         logger.info("===== Start log =====")
