@@ -2,7 +2,6 @@
 Shared utilities for data loading and preprocessing.
 Used by train_wph.py and train_wph_svm.py.
 """
-from functools import partial
 from training.datasets import get_loaders, split_train_val
 from training.datasets.outex import get_available_problems
 
