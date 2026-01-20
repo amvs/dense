@@ -15,9 +15,10 @@ attention_num_heads: 4
 attention_num_layers: 2
 
 # training setting
-dataset: smohsensadeghi/curet-dataset
-deeper_path: CUReT/curetgrey/
+dataset: kthtips2b
+kth_root_dir: data/datasets/KTH-TIPS2-b  # Path to KTH-TIPS2-b dataset root directory
 resize: 200
+fold: null  # Optional: 0-3 for leave-one-sample-out cross-validation, null for standard split
 classifier_epochs: 1
 conv_epochs: 1
 batch_size: 32
@@ -26,9 +27,7 @@ linear_lr: 0.01
 weight_decays: 1e-4
 lambda_reg: 1.0e-4
 fine_tune_mode: extractor_only  # Options: 'extractor_only' (freeze classifier, fine-tune extractor) or 'both' (fine-tune both together)
-test_ratio: 0.15    # used to split train_set and test_set from full dataset
-train_ratio: 0.85   # used to further split train and val set from train_set
-train_val_ratio: 4  # train:val = 4:1, keep a fixed ratio between train and val set
+train_ratio: 0.85  # Fraction of training data to use (for low-data regime experiments)
+test_ratio: 0.15  # Not used for KTH (test set is determined by fold or standard split)
+train_val_ratio: 4  # Not used for KTH (val set is determined by fold or standard split)
 seed: 123
-
-

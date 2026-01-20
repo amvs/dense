@@ -7,6 +7,7 @@ import torch.nn.functional as F
 import random
 from collections import defaultdict
 import math
+import numpy as np
 from .helpers import checkpoint
 @dataclass
 class ScatterParams:
@@ -18,13 +19,18 @@ class ScatterParams:
     n_class: int
     share_channels: bool
     in_size: int
-    #out_size: int # -1 means no global pooling on scatter features
-    pooling_option: str
-    rank_factor: float
     # depth
     depth: int = -1  # -1 means full scatter
     #
     random: bool = False
+    # Classifier type: 'hypernetwork', or 'attention'
+    classifier_type: str = 'hypernetwork'
+    # Hypernetwork parameters
+    hypernet_hidden_dim: int = 64
+    # Attention parameters
+    attention_d_model: int = 128
+    attention_num_heads: int = 4
+    attention_num_layers: int = 2
 
 class MyConv2d(nn.Module):
     '''
@@ -106,36 +112,160 @@ class ScatterBlock(nn.Module):
         return result.reshape(imgs.shape[0], self.conv.out_channel//self.n_copies, 
                              self.n_copies, imgs.shape[-1], imgs.shape[-1]).mean(dim=2)
 
-class LowRankClassifier(nn.Module):
-    def __init__(self, 
-            C, 
-            num_classes,
-            feature_kernel_size: int = 7,
-            pooling: str = "avg",
-            rank_factor: float = 1.0):
+
+class HypernetworkClassifier(nn.Module):
+    """
+    Method 1: Hypernetwork Classifier
+    Maps metadata to classifier weights, then uses those weights for classification.
+    This reduces the number of parameters compared to a full linear classifier.
+    """
+    def __init__(self, num_features: int, num_classes: int, 
+                feature_dim: int,
+                metadata_dim: int = 5, 
+                hidden_dim: int = 64):
+        """
+        Args:
+            num_features: Number of feature maps (channels)
+            num_classes: Number of classification classes
+            feature_dim: Spatial dimension of each feature map (N*N)
+            metadata_dim: Dimension of metadata vector (default 5: [depth, scale_1, angle_1, scale_2, angle_2])
+            hidden_dim: Hidden dimension for the hypernetwork.
+            
+        """
         super().__init__()
+        self.num_features = num_features
+        self.num_classes = num_classes
+        self.metadata_dim = metadata_dim
+        self.hidden_dim = hidden_dim
+        self.feature_dim = feature_dim
+        
+        # Hypernetwork: maps metadata to weight vectors
+        # Output: weight matrix of shape [num_features, num_classes]
+        self.hypernet = nn.Sequential(
+            nn.Linear(metadata_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, feature_dim * num_classes)
+        )
+        
+        # Optional bias
+        self.bias = nn.Parameter(torch.zeros(num_classes))
+        
+    def forward(self, features, metadata):
+        """
+        Args:
+            features: Tensor of shape [batch, num_features, feature_dim] - feature maps
+            metadata: Tensor of shape [num_features, metadata_dim] - metadata for each feature map
+        Returns:
+            logits: Tensor of shape [batch, num_classes]
+        """
+        # Generate weights for each feature map using hypernetwork
+        # weights: [num_features, feature_dim, num_classes]
+        weights = self.hypernet(metadata).view(self.num_features, self.feature_dim, self.num_classes)
+        
+        # Apply generated weights: [batch, num_features, num_classes]
+        per_node_logits = torch.einsum('bnd,ndc->bnc', features, weights)
 
-        param_budget = (feature_kernel_size ** 2) * C
+        logits = per_node_logits.sum(dim=1) + self.bias
+        
+        return logits
 
-        # 自动计算 rank
-        self.rank = math.floor(param_budget / ((C + num_classes) * rank_factor)) 
-        print(f"LowRankClassifier: param_budget={param_budget}, factor={rank_factor}, rank={self.rank}")
-        if self.rank < 1:
-            raise ValueError(f"Parameter budget too small to support a classifier.")
-        if pooling == "avg":
-            self.pool = nn.AdaptiveAvgPool2d(1)
-        elif pooling == "max":
-            self.pool = nn.AdaptiveMaxPool2d(1)
-        else:
-            raise ValueError("Unsupported pooling")
-        self.proj = nn.Linear(C, self.rank, bias=False)
-        self.cls  = nn.Linear(self.rank, num_classes, bias=False)
 
-    def forward(self, x):
-        x = self.pool(x).flatten(1)
-        x = self.proj(x)             # B × r
-        x = self.cls(x)              # B × 61
-        return x
+class AttentionClassifier(nn.Module):
+    """
+    Method 2: Attention-based Classifier
+    Treats feature maps as an unordered set, using metadata-aware attention mechanism.
+    """
+    def __init__(self, num_features: int, num_classes: int, metadata_dim: int = 5,
+                 d_model: int = 128, num_heads: int = 4, num_layers: int = 2):
+        """
+        Args:
+            num_features: Number of feature maps (channels)
+            num_classes: Number of classification classes
+            metadata_dim: Dimension of metadata vector (default 5)
+            d_model: Model dimension for attention
+            num_heads: Number of attention heads
+            num_layers: Number of transformer layers
+        """
+        super().__init__()
+        self.num_features = num_features
+        self.num_classes = num_classes
+        self.metadata_dim = metadata_dim
+        self.d_model = d_model
+        
+        # Metadata encoding: maps metadata to d_model-dimensional embeddings
+        self.metadata_encoder = nn.Sequential(
+            nn.Linear(metadata_dim, d_model),
+            nn.LayerNorm(d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, d_model)
+        )
+        
+        # Feature projection: maps feature maps to d_model
+        self.feature_proj = nn.Linear(1, d_model)  # Each feature map is a single value after pooling
+        
+        # Transformer encoder layers
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=num_heads,
+            dim_feedforward=d_model * 4,
+            dropout=0.1,
+            batch_first=True
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        # Classification head
+        self.classifier = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, num_classes)
+        )
+        
+        # Learnable query for aggregation
+        self.query = nn.Parameter(torch.randn(1, 1, d_model))
+        
+    def forward(self, features, metadata):
+        """
+        Args:
+            features: Tensor of shape [batch, num_features, H, W] - feature maps
+            metadata: Tensor of shape [num_features, metadata_dim] - metadata for each feature map
+        Returns:
+            logits: Tensor of shape [batch, num_classes]
+        """
+        batch_size = features.shape[0]
+        
+        # Global average pooling: [batch, num_features, H, W] -> [batch, num_features]
+        features_pooled = features.mean(dim=[2, 3])  # [batch, num_features]
+        
+        # Encode metadata: [num_features, metadata_dim] -> [num_features, d_model]
+        metadata_emb = self.metadata_encoder(metadata)  # [num_features, d_model]
+        
+        # Project features: [batch, num_features] -> [batch, num_features, d_model]
+        features_emb = self.feature_proj(features_pooled.unsqueeze(-1))  # [batch, num_features, d_model]
+        
+        # Combine feature and metadata embeddings
+        # Option 1: Add them
+        combined = features_emb + metadata_emb.unsqueeze(0)  # [batch, num_features, d_model]
+        
+        # Apply transformer: [batch, num_features, d_model] -> [batch, num_features, d_model]
+        encoded = self.transformer(combined)
+        
+        # Aggregate using learned query (attention pooling)
+        query = self.query.expand(batch_size, -1, -1)  # [batch, 1, d_model]
+        # Compute attention scores
+        attn_scores = torch.bmm(query, encoded.transpose(1, 2))  # [batch, 1, num_features]
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        # Weighted sum
+        aggregated = torch.bmm(attn_weights, encoded)  # [batch, 1, d_model]
+        aggregated = aggregated.squeeze(1)  # [batch, d_model]
+        
+        # Classify
+        logits = self.classifier(aggregated)  # [batch, num_classes]
+        
+        return logits
+
+
 
 class dense(nn.Module):
 
@@ -180,95 +310,47 @@ class dense(nn.Module):
             ]
         )
         
-        # self.out_dim = self.out_channels * out_size**2 #* (self.in_size // 2**self.n_scale)**2 
-            # self.global_pool = nn.AdaptiveAvgPool2d((out_size,out_size))
+        # Initialize classifier based on type
+        self._init_classifier()
+
+    def _init_classifier(self):
+        """Initialize the classifier based on classifier_type."""
+        # Compute metadata for all feature maps
+        metadata = self.get_feature_metadata()
+        num_features = metadata.shape[0]
         
-        #self.linear = nn.Linear(self.out_dim, self.n_class)
-        self.linear = LowRankClassifier(
-            C=self.out_channels, 
-            num_classes=self.n_class,
-            rank_factor=self.rank_factor,
-            pooling=self.pooling_option)
-        # self.register_buffer("class_means", None)   # [C, D]
-        # self.register_buffer("pca_bases", None)     # [C, D, k]
-
+        # Compute feature dimension after pooling (spatial size)
+        final_size = self.in_size // (2 ** self.n_scale)
+        feature_dim = final_size * final_size
+        
+        if self.classifier_type == 'hypernetwork':
+            hypernet_hidden_dim = self.hypernet_hidden_dim
+            self.classifier = HypernetworkClassifier(
+                num_features=num_features,
+                num_classes=self.n_class,
+                feature_dim=feature_dim,
+                metadata_dim=5,
+                hidden_dim=hypernet_hidden_dim
+            )
+            # Register metadata as buffer so it's moved to device with model
+            self.register_buffer('feature_metadata', metadata)
+        elif self.classifier_type == 'attention':
+            attention_d_model = self.attention_d_model
+            attention_num_heads = self.attention_num_heads
+            attention_num_layers = self.attention_num_layers
+            self.classifier = AttentionClassifier(
+                num_features=num_features,
+                num_classes=self.n_class,
+                metadata_dim=5,
+                d_model=attention_d_model,
+                num_heads=attention_num_heads,
+                num_layers=attention_num_layers
+            )
+            # Register metadata as buffer
+            self.register_buffer('feature_metadata', metadata)
+        else:
+            raise ValueError(f"Unknown classifier_type: {self.classifier_type}")
     
-    @torch.no_grad()
-    def fit(self, dataloader, device):
-        self.eval()
-
-        # running statistics
-        count = torch.zeros(self.n_class, device=device)
-        sum_feat = None
-
-        # ---------- pass 1: class means ----------
-        for imgs, labels in dataloader:
-            imgs = imgs.to(device)
-            labels = labels.to(device)
-
-            feats = self.scatter_forward(imgs)  # [B, D]
-
-            if sum_feat is None:
-                D = feats.shape[1]
-                sum_feat = torch.zeros(self.n_class, D, device=device)
-
-            for c in range(self.n_class):
-                mask = labels == c
-                if mask.any():
-                    sum_feat[c] += feats[mask].sum(dim=0)
-                    count[c] += mask.sum()
-
-        class_means = sum_feat / count.unsqueeze(1)
-
-        # ---------- pass 2: covariance ----------
-        self.pca_bases = self._compute_pca_bases_randomized(
-            dataloader, class_means, device
-        )
-        self.class_means = class_means
-
-    @torch.no_grad()
-    def _compute_pca_bases_randomized(
-        self, dataloader, class_means, device
-    ):
-        C = self.n_class
-        k = self.pca_dim
-        oversample = 5  # 常用设置
-
-        # 每个类别一个 list
-        feats_by_class = defaultdict(list)
-
-        for imgs, labels in dataloader:
-            imgs = imgs.to(device)
-            labels = labels.to(device)
-
-            feats = self.scatter_forward(imgs)
-
-            for c in range(C):
-                mask = labels == c
-                if mask.any():
-                    x = feats[mask] - class_means[c]
-                    feats_by_class[c].append(x)
-
-        pca_bases = []
-
-        for c in range(C):
-            X = torch.cat(feats_by_class[c], dim=0)  # [Nc, D]
-
-            # ---------- randomized SVD ----------
-            q = k + oversample
-            R = torch.randn(X.shape[1], q, device=device)
-
-            Y = X @ R                  # [Nc, q]
-            Q, _ = torch.linalg.qr(Y)  # [Nc, q]
-
-            B = Q.T @ X                # [q, D]
-            _, _, Vh = torch.linalg.svd(B, full_matrices=False)
-
-            V = Vh[:k].T               # [D, k]
-            pca_bases.append(V)
-
-        return torch.stack(pca_bases)  # [C, D, k]
-
     def build_keep_idx(self):
         d = self.depth
         all_out_groups, input_lens = self.compute_out_groups()
@@ -285,7 +367,7 @@ class dense(nn.Module):
 
     def compute_out_groups(self):
         J = self.n_scale
-        dmax = self.depth
+        dmax = self.depth if self.depth != -1 else J
         K = self.n_orient
         # inputs: list of (depth, channels)
         inputs_groups = [(0, 1)]  # img first, channel is gray
@@ -322,6 +404,9 @@ class dense(nn.Module):
         # self.filters[0][0] = self.filters[0][0]*2
         # print(self.filters[0].shape)
         # print(self.filters[0])
+        # Convert numpy arrays to torch tensors if needed (e.g., for morlet wavelet)
+        if isinstance(self.filters[0], np.ndarray):
+            self.filters[0] = torch.tensor(self.filters[0], dtype=torch.complex64)
         self.filters[0] = self.repeat_interleave_with_noise(self.filters[0])
         # print(self.filters[0].shape)
         # print(self.filters[0])
@@ -382,60 +467,36 @@ class dense(nn.Module):
             outputs = [self.pooling(i) for i in outputs]    
             inputs = [self.pooling(i) for i in inputs]
         features = torch.cat(outputs, dim=1)
-        # if self.out_size != -1:
-        #     features = self.global_pool(torch.cat(outputs, dim=1))
-        # else:
-        #     features = torch.cat(outputs, dim=1)
-        return self.linear(features) #self.linear(F.normalize(features, p=2, dim=1))
+        
+        # Apply classifier
+        if self.classifier_type == 'hypernetwork':
+            # Reshape features: [batch, num_features, H, W] -> [batch, num_features, H*W]
+            batch_size = features.shape[0]
+            num_features = features.shape[1]
+            H, W = features.shape[2], features.shape[3]
+            features_reshaped = features.view(batch_size, num_features, H * W)
+            # Use metadata-aware classifier
+            metadata = self.feature_metadata
+            return self.classifier(features_reshaped, metadata)
+        elif self.classifier_type == 'attention':
+            # Attention classifier expects [batch, num_features, H, W] and does pooling internally
+            metadata = self.feature_metadata
+            return self.classifier(features, metadata)
+        else:
+            raise ValueError(f"Unknown classifier_type: {self.classifier_type}")
 
-    # def forward(self, imgs):
-    #     """
-    #     imgs: [B, ...]
-    #     return: logits [B, C] (负重构误差)
-    #     """
-    #     feats = self.scatter_forward(imgs)  # [B, D]
-
-    #     B, D = feats.shape
-
-    #     C = self.n_class
-
-    #     scores = feats.new_empty(B, C)
-
-    #     for c in range(C):
-    #         mean = self.class_means[c]     # [D]
-    #         V = self.pca_bases[c]          # [D, k]
-
-    #         x = feats - mean               # [B, D]
-
-    #         # low-dim coordinates: [B, k]
-    #         alpha = x @ V                  # O(B D k)
-
-    #         # reconstruction: [B, D]
-    #         recon = alpha @ V.T
-
-    #         residual = x - recon
-    #         scores[:, c] = -residual.norm(dim=1)
-
-    #     # for c in range(C):
-    #     #     x = feats - self.class_means[c]    # [B, D]
-    #     #     alpha = x @ self.pca_bases[c]      # [B, k]
-
-    #     #     dist2 = (x ** 2).sum(dim=1) - (alpha ** 2).sum(dim=1)
-    #     #     scores[:, c] = -torch.sqrt(dist2 + 1e-8)
-
-    #     return scores
 
 
     def train_classifier(self):
         for param in self.blocks.parameters():
             param.requires_grad = False
-        for param in self.linear.parameters():
+        for param in self.classifier.parameters():
             param.requires_grad = True
 
     def train_conv(self):
         for param in self.blocks.parameters():
             param.requires_grad = True
-        for param in self.linear.parameters():
+        for param in self.classifier.parameters():
             param.requires_grad = False
 
     def full_train(self):
@@ -456,6 +517,80 @@ class dense(nn.Module):
 
     def n_classifier_params(self):
         total_params = 0
-        for param in self.linear.parameters():
-            total_params += param.numel()
+        for param in self.classifier.parameters():
+                total_params += param.numel()
         return total_params
+    
+
+    def get_feature_metadata(self):
+        """
+        Compute metadata for each feature map channel.
+        Returns a tensor of shape [num_features, 5] where each row is:
+        [depth, scale_1, angle_1, scale_2, angle_2]
+        
+        Features are organized as concatenated outputs from all blocks:
+        - outputs[0]: depth=0 (input image, 1 channel)
+        - outputs[1]: from block 0 (scale 0)
+        - outputs[2]: from block 1 (scale 1)
+        - etc.
+        
+        Uses compute_out_groups to track the exact organization.
+        """
+        J = self.n_scale
+        K = self.n_orient
+        dmax = self.depth if self.depth != -1 else J
+        
+        # Build metadata by tracking paths through the scattering tree
+        # Track: (depth, scales_path, angles_path) for each input group
+        input_paths = [(0, [], [])]  # Start with depth=0 input image
+        
+        all_metadata = []
+        
+        # Depth 0: input image
+        all_metadata.append((0, [], []))
+        
+        for scale in range(J):
+            output_paths = []
+            
+            # Process each input path
+            for dep, scales_path, angles_path in input_paths:
+                if dep >= dmax:
+                    continue
+                
+                # Each input path produces K output paths (one per orientation)
+                for angle in range(K):
+                    new_depth = dep + 1
+                    new_scales = scales_path + [scale]
+                    new_angles = angles_path + [angle]
+                    output_paths.append((new_depth, new_scales, new_angles))
+                    all_metadata.append((new_depth, new_scales, new_angles))
+            
+            # Update input paths for next scale
+            if scale < J - 1:
+                # Keep all previous paths (they continue as low-pass)
+                input_paths = [
+                    (dep, scales, angles) 
+                    for dep, scales, angles in input_paths 
+                    if dep < dmax
+                ]
+                # Add new output paths
+                input_paths.extend(output_paths)
+        
+        # Convert to tensor format [depth, scale_1, angle_1, scale_2, angle_2]
+        metadata_tensor = torch.zeros(len(all_metadata), 5, dtype=torch.long)
+        for idx, (depth, scales, angles) in enumerate(all_metadata):
+            metadata_tensor[idx, 0] = depth
+            if len(scales) >= 1:
+                metadata_tensor[idx, 1] = scales[0]
+                metadata_tensor[idx, 2] = angles[0]
+            else:
+                metadata_tensor[idx, 1] = -1
+                metadata_tensor[idx, 2] = -1
+            if len(scales) >= 2:
+                metadata_tensor[idx, 3] = scales[1]
+                metadata_tensor[idx, 4] = angles[1]
+            else:
+                metadata_tensor[idx, 3] = -1
+                metadata_tensor[idx, 4] = -1
+        
+        return metadata_tensor

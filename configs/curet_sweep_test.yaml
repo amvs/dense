@@ -22,9 +22,12 @@ sweep:
   weight_decays: [1e-4]
   #radius: [0.05, 0.1, 1.0]
   seed: [123] #, 456, 789]
-  share_channels: false
-  pooling_option: ["avg", "max"]
   lambda_reg: [1e-2, 1e-4]
-  rank_factor: [1.0, 2.0, 4.0]
   wavelet: ["morlet"]
+  classifier_type: [hypernetwork]
+  hypernet_hidden_dim: [64]
+  attention_d_model: [128]
+  attention_num_heads: [4]
+  attention_num_layers: [2]
+  fine_tune_mode: [extractor_only, both]
 

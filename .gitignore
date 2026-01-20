@@ -14,3 +14,7 @@ notes.txt
 profile*
 **/wandb
 .env
+
+# Exclude all markdown files except README.md
+*.md
+!README.md

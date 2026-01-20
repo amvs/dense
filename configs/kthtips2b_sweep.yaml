@@ -1,5 +1,5 @@
 
-base_config: configs/curet.yaml
+base_config: configs/kthtips2b.yaml
 sweep:
   classifier_epochs: [15]
   conv_epochs: [20]
@@ -10,7 +10,6 @@ sweep:
   lr: [0.05, 0.01, 0.001]
   weight_decays: [1e-3, 1e-4, 1e-5]
   nb_orients: [4, 6, 8]
-  # radius: [0.1, 1.0, 5.0]  # Unused parameter
   seed: [123, 456, 789, 101112, 131415]
   classifier_type: [hypernetwork]
   hypernet_hidden_dim: [64]
@@ -19,4 +18,3 @@ sweep:
   attention_num_layers: [2]
   fine_tune_mode: [extractor_only, both]
   
-

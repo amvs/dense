@@ -15,8 +15,9 @@ attention_num_heads: 4
 attention_num_layers: 2
 
 # training setting
-dataset: smohsensadeghi/curet-dataset
-deeper_path: CUReT/curetgrey/
+# Note: Update dataset name to the correct DTD Kaggle dataset identifier
+dataset: puneet6060/intel-image-classification  # Update this to the correct DTD Kaggle dataset name
+deeper_path: ""  # Update this to the correct subdirectory path if needed
 resize: 200
 classifier_epochs: 1
 conv_epochs: 1
@@ -30,5 +31,3 @@ test_ratio: 0.15    # used to split train_set and test_set from full dataset
 train_ratio: 0.85   # used to further split train and val set from train_set
 train_val_ratio: 4  # train:val = 4:1, keep a fixed ratio between train and val set
 seed: 123
-
-
