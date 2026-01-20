@@ -194,6 +194,7 @@ def create_wph_feature_extractor(config, image_shape, device):
             mask_angles=config["mask_angles"],
             mask_union_highpass=config["mask_union_highpass"],
             spatial_attn=config.get("spatial_attn", False),
+            grad_checkpoint=config.get("grad_checkpoint", False),
         ).to(device)
     else:
         if config.get("wavelet", "morlet") != "morlet":
@@ -219,6 +220,8 @@ def create_wph_feature_extractor(config, image_shape, device):
             mask_union=config["mask_union"],
             mask_angles=config["mask_angles"],
             mask_union_highpass=config["mask_union_highpass"],
+            grad_checkpoint=config.get('grad_checkpoint', False),
+            spatial_attn=config.get("spatial_attn", False),
         ).to(device)
     
     return feature_extractor, filters

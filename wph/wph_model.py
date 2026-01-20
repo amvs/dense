@@ -34,6 +34,7 @@ class WPHFeatureBase(nn.Module):
                 mask_angles: int = 4,
                 mask_union_highpass: bool = True,
                 spatial_attn: bool = False,
+                grad_checkpoint:  bool = False,
         ):
         super().__init__()
         self.J = J
@@ -57,6 +58,7 @@ class WPHFeatureBase(nn.Module):
         self.mask_union_highpass = mask_union_highpass
         self.normalize_relu = normalize_relu
         self.spatial_attn = spatial_attn
+        self.grad_checkpoint = grad_checkpoint
 
     def forward(self, x: torch.Tensor):
         raise NotImplementedError("Subclasses should implement this!")
@@ -212,7 +214,7 @@ class WPHModel(WPHFeatureBase):
         if self.spatial_attn:
             xpsi = self.attent(xpsi)
         xrelu = self.relu_center(xpsi)
-        xcorr = self.corr(xrelu.view(nb, self.num_channels * self.J * self.L * self.A, self.M, self.N), flatten=flatten, vmap_chunk_size=vmap_chunk_size)
+        xcorr = self.corr(xrelu.view(nb, self.num_channels * self.J * self.L * self.A, self.M, self.N), flatten=flatten, vmap_chunk_size=vmap_chunk_size, use_checkpoint=self.grad_checkpoint)
         hatx_c = fft2(x)
         xlow = self.lowpass(hatx_c)
         xhigh = self.highpass(hatx_c)
@@ -387,7 +389,7 @@ class WPHModelDownsample(WPHFeatureBase):
             if self.spatial_attn:
                 xpsi = [self.attent(x) for x in xpsi]
             xrelu = self.relu_center(xpsi)
-            xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
+            xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size, use_checkpoint=self.grad_checkpoint)
         else:
             # compute only required pairs
             # warm up indices by accessing property (built in __init__)
@@ -396,7 +398,7 @@ class WPHModelDownsample(WPHFeatureBase):
             if self.spatial_attn:
                 xpsi_nested = [self.attent(x) for x in xpsi_nested]
             xrelu = self.relu_center(xpsi_nested)
-            xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
+            xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size, use_checkpoint=self.grad_checkpoint)
         hatx_c = fft2(x)
         xlow = self.lowpass(hatx_c)
         xhigh = self.highpass(hatx_c)
