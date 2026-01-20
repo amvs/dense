@@ -52,7 +52,15 @@ class BaseCorrLayer(nn.Module):
         self.register_buffer("masks_shift", masks_shift)
         self.factr_shift = factr_shift
 
-        # precompute index mapping for filter pairs
+        # Index mapping will be computed by child classes via _initialize_indices()
+        # Child classes should call this method at the end of their __init__
+        self.idx_wph = None
+    
+    def _initialize_indices(self):
+        """
+        Initialize index mapping. Should be called by child classes at the end of __init__.
+        This ensures all child-specific attributes are set before computing indices.
+        """
         self.idx_wph = self.compute_idx()
 
     def uses_mask_union(self):
@@ -136,6 +144,9 @@ class CorrLayer(BaseCorrLayer):
                 ]
             )
             self.mask_to_union[shift_idx] = mask_in_union
+        
+        # Initialize indices now that child-specific attributes are set
+        self._initialize_indices()
         
     def uses_mask_union(self):
         return self.mask_union
@@ -443,9 +454,8 @@ class CorrLayerDownsample(BaseCorrLayer):
         for k, idxs in self.mask_indices_map.items():
             self.register_buffer(f'mask_idx_map_{k}', idxs)
 
-        # 5. CRITICAL STEP: Re-run compute_idx
-        # The first run (in super) used bad/fallback values. 
-        self.idx_wph = self.compute_idx()
+        # Initialize indices now that child-specific attributes are set
+        self._initialize_indices()
 
     def _decode_cla(self, idx: int):
         c = idx // (self.A * self.L)
@@ -733,8 +743,8 @@ class CorrLayerDownsamplePairs(BaseCorrLayer):
         for k, idxs in self.mask_indices_map.items():
             self.register_buffer(f'mask_idx_map_{k}', idxs)
 
-        # Recompute indices with correct downsampled masks
-        self.idx_wph = self.compute_idx()
+        # Initialize indices now that child-specific attributes are set
+        self._initialize_indices()
 
     def _decode_cla(self, idx: int):
         c = idx // (self.A * self.L)

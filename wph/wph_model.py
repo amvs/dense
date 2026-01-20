@@ -408,17 +408,52 @@ class WPHModelDownsample(WPHFeatureBase):
         
 
 class WPHClassifier(nn.Module):
-    def __init__(self, feature_extractor: WPHFeatureBase, classifier: nn.Module, use_batch_norm: bool = False, copies: int = 1, noise_std: float = 0.01):
+    def __init__(self, feature_extractor: WPHFeatureBase, classifier: nn.Module = None, use_batch_norm: bool = False, copies: int = 1, noise_std: float = 0.01, num_classes: int = None):
         """
         Lightweight wrapper for classification using WPHModel as a feature extractor.
 
         Args:
             feature_extractor (nn.Module): The feature extractor model (e.g., WPHModel or WPHModelDownsample).
             classifier (nn.Module): The classifier module (e.g., LinearClassifier, HyperNetworkClassifier, etc.).
+                                   If None and num_classes is provided, a LinearClassifier will be created automatically.
             use_batch_norm (bool): Whether to use batch normalization. Default is False.
+            copies (int): Number of feature extractor copies to use (for ensemble). Default is 1.
             noise_std (float): Standard deviation of noise added to filters for each copy. Default is 0.01.
+            num_classes (int): [DEPRECATED] Number of classes. If provided, a LinearClassifier will be created.
+                              This parameter is deprecated and will be removed in a future version.
+                              Please pass a classifier module directly instead.
+        
+        Breaking Change (v1.0):
+            The signature of WPHClassifier.__init__ has changed. The `num_classes` parameter is deprecated.
+            Old usage: WPHClassifier(feature_extractor, num_classes=10)
+            New usage: WPHClassifier(feature_extractor, LinearClassifier(input_dim=..., num_classes=10))
+            
+            For backwards compatibility, you can still pass `num_classes`, but this will issue a warning
+            and automatically create a LinearClassifier. This backwards compatibility will be removed in v2.0.
         """
         super().__init__()
+        
+        # Handle backwards compatibility for num_classes parameter
+        if num_classes is not None and classifier is None:
+            import warnings
+            warnings.warn(
+                "Passing 'num_classes' to WPHClassifier is deprecated and will be removed in v2.0. "
+                "Please create a classifier module (e.g., LinearClassifier) and pass it directly. "
+                f"Creating LinearClassifier(input_dim={int(feature_extractor.nb_moments)}, num_classes={num_classes}) automatically.",
+                DeprecationWarning,
+                stacklevel=2
+            )
+            from wph.classifiers import LinearClassifier
+            classifier = LinearClassifier(
+                input_dim=int(feature_extractor.nb_moments),
+                num_classes=num_classes
+            )
+        elif classifier is None:
+            raise ValueError(
+                "Either 'classifier' or 'num_classes' must be provided. "
+                "Note: 'num_classes' is deprecated; please pass a classifier module directly."
+            )
+        
         self.copies = copies
         self.noise_std = noise_std
         self.classifier = classifier
