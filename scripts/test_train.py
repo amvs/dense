@@ -6,7 +6,6 @@ import argparse
 import os
 import sys
 from configs import load_config
-from scripts.train import main as train_main
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Test training script with minimal configuration")

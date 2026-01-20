@@ -169,7 +169,7 @@ def main():
     linear_lr = float(config["linear_lr"])
     weight_decays = float(config["weight_decays"]) / linear_lr # cancel lr effect in weight decay
     # radius = float(config["radius"])
-    lambda_reg = float(config["lambda_reg"]) / lr # cancel lr effect in regularization
+    lambda_reg = float(config["lambda_reg"])
     
     classifier_epochs = config["classifier_epochs"]
     conv_epochs = config["conv_epochs"]
@@ -193,6 +193,9 @@ def main():
     logger.log(f"Fine-tuning mode: {fine_tune_mode}")
     
     # Stage 1: Freeze extractor and train classifier (same for both modes)
+    # Note: No regularization needed here because:
+    # - Extractor is frozen (parameters don't change)
+    # - Classifier is trained from scratch (no original parameters to regularize against)
     logger.log("Training classifier (extractor frozen)...") 
     model.train_classifier()
     
@@ -238,8 +241,8 @@ def main():
         logger.track_metric("classifier", "train_loss", train_metrics['total_loss'], epoch+1)
         logger.track_metric("classifier", "val_loss", val_loss, epoch+1)
 
-        # ---- Early stopping on validation accuracy
-        if val_acc > best_val_acc:
+        # ---- Early stopping on validation loss
+        if val_loss < best_val_loss:
             best_val_acc = val_acc
             best_val_loss = val_loss
             best_train_acc = train_metrics['accuracy']
@@ -293,6 +296,8 @@ def main():
     
     if fine_tune_mode == "extractor_only":
         # Option 1: Freeze classifier and fine-tune extractor
+        # Regularization is applied to prevent extractor parameters from drifting too far
+        # from their original values, which could hurt the pre-trained classifier
         logger.log("Fine tuning extractor (classifier frozen)...")
         model.train_conv()
         # Use a lower learning rate for fine-tuning to avoid instability
@@ -304,8 +309,13 @@ def main():
             model.fine_tuned_params(),
             lr=ft_lr,
         )
+        # Scale lambda_reg by learning rate to make regularization strength independent of LR
+        # This ensures consistent regularization effect regardless of learning rate magnitude
+        lambda_reg = lambda_reg / ft_lr # cancel lr effect in regularization
     elif fine_tune_mode == "both":
         # Option 2: Fine-tune both classifier and extractor together
+        # Regularization is applied only to extractor parameters (not classifier)
+        # because classifier was just trained and has no "original" parameters to regularize against
         logger.log("Fine tuning both classifier and extractor together...")
         model.full_train()
         # Use lower learning rates for fine-tuning
@@ -318,6 +328,9 @@ def main():
             {'params': model.classifier.parameters(), 'lr': ft_lr_classifier},
             {'params': model.fine_tuned_params(), 'lr': ft_lr_extractor}
         ])
+        # Scale lambda_reg by extractor learning rate (regularization only applies to extractor)
+        # This ensures consistent regularization effect regardless of learning rate magnitude
+        lambda_reg = lambda_reg / ft_lr_extractor # cancel lr effect in regularization
     else:
         raise ValueError(f"Unknown fine_tune_mode: {fine_tune_mode}. Must be 'extractor_only' or 'both'")
     
@@ -393,8 +406,8 @@ def main():
         logger.track_metric("fine_tune", "parameter_distance", epoch_dist.item(), classifier_epochs+epoch+1)
 
         
-        # ---- Early stopping on validation accuracy
-        if val_acc > best_val_acc:
+        # ---- Early stopping on validation loss
+        if val_loss < best_val_loss:
             best_val_acc = val_acc
             best_val_loss = val_loss
             best_train_loss = train_metrics['base_loss']
