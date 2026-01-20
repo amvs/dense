@@ -1,13 +1,10 @@
 import argparse
 import os
-from datetime import datetime
 import torch
 import torch.nn as nn
-import sys
 import random
 import numpy as np
 import time
-import platform
 from functools import partial
 from dotenv import load_dotenv
 load_dotenv()
@@ -24,7 +21,6 @@ from training.data_utils import load_and_split_data
 from wph.wph_model import WPHClassifier
 from wph.classifiers import LinearClassifier, HyperNetworkClassifier
 from wph.model_factory import create_wph_feature_extractor
-from dense.helpers import LoggerManager
 
 
 
@@ -495,12 +491,12 @@ def main():
     try:
         logger.log("Plotting kernels before and after training...")
         base_filter_names = ['feature_extractors.0.wave_conv.base_real', 'feature_extractors.0.wave_conv.base_imag'] if config['downsample'] else ['feature_extractors.0.wave_conv.base_filters']
-        # img_file_names = plot_kernels_wph_base_filters(exp_dir, trained_filename='best_feature_extractor_model_state.pt', base_filters_key=base_filter_names)
-        # # Log kernel image if available
-        # for f in img_file_names:
-        #     kernel_img_path = os.path.join(exp_dir, f)
-        #     if os.path.exists(kernel_img_path):
-        #         logger.send_file("kernels_before_after", kernel_img_path, "image")
+        img_file_names = plot_kernels_wph_base_filters(exp_dir, trained_filename='best_feature_extractor_model_state.pt', base_filters_key=base_filter_names)
+        # Log kernel image if available
+        for f in img_file_names:
+            kernel_img_path = os.path.join(exp_dir, f)
+            if os.path.exists(kernel_img_path):
+                logger.send_file("kernels_before_after", kernel_img_path, "image")
         logger.log("Visualizing filters and activations...")
         visualize_main(exp_dir, tuned_filename='best_feature_extractor_model_state.pt', model_type='wph', filters=filters)
         # Log activation image if available

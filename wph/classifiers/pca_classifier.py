@@ -1,7 +1,7 @@
 """PCA/affine subspace classifier using sklearn for fitting with PyTorch parameter storage."""
 import torch
 from torch import nn
-from typing import Optional, Dict
+from typing import Optional
 import numpy as np
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler

@@ -1,10 +1,7 @@
 import argparse
 import os
-from datetime import datetime
 import torch
-import sys
 import numpy as np
-import platform
 import time
 from dotenv import load_dotenv
 from sklearn.svm import LinearSVC, SVC
@@ -234,7 +231,6 @@ def finetune_feature_extractor(model, svm_pipeline, train_loader, val_loader, de
     best_val_acc = 0.0
     normalize_reg = config.get('normalize_reg', True)
     vmap_chunk_size = config.get('vmap_chunk_size', None)
-    l2_norm = 0.0  # Initialize L2 norm
     
     for epoch in range(epochs):
         # Optionally refit SVM each epoch using current features
@@ -321,7 +317,7 @@ def finetune_feature_extractor(model, svm_pipeline, train_loader, val_loader, de
                 val_correct += (predicted == labels).sum().item()
         
         val_acc = val_correct / val_total
-        avg_val_loss = val_loss / len(val_loader)
+        # avg_val_loss = val_loss / len(val_loader)
         
         # Step scheduler
         scheduler.step(val_acc)

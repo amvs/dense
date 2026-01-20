@@ -97,6 +97,7 @@ def test_param_grid_downsample(delta_j, share_phases, share_rotations):
     x = torch.randn(B, C, M, N)
 
     # Build filters respecting sharing flags for shared mode
+    # Note: share_scales is always False in this test
     share_scales = False
     J_param_shared = 1 if share_scales else J
     L_param = 1 if share_rotations else L
@@ -106,16 +107,12 @@ def test_param_grid_downsample(delta_j, share_phases, share_rotations):
     
     # For pair mode, replicate filters to all JxJ pairs so outputs match
     # Wave layer uses indexing: pair_index = j2 * J + j1
-    if share_scales:
-        # When share_scales=True, pair mode also uses shared (effective J_param=1)
-        psi_pairs = psi_shared
-    else:
-        # Replicate the base filter to all pairs with correct indexing
-        psi_pairs = torch.zeros(J*J, L_param, A_param, T, T, dtype=torch.complex64)
-        for j1 in range(J):
-            for j2 in range(J):
-                pair_index = j2 * J + j1
-                psi_pairs[pair_index] = psi_shared[j1]
+    # Replicate the base filter to all pairs with correct indexing
+    psi_pairs = torch.zeros(J*J, L_param, A_param, T, T, dtype=torch.complex64)
+    for j1 in range(J):
+        for j2 in range(J):
+            pair_index = j2 * J + j1
+            psi_pairs[pair_index] = psi_shared[j1]
     
     hatphi = torch.randn(M, N, dtype=torch.complex64).real
     filters_shared = {"psi": psi_shared, "hatphi": hatphi}

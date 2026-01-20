@@ -14,8 +14,8 @@ import sys
 from typing import Optional, Literal
 
 from wph.ops.backend import (
-    SubInitSpatialMean,
-    DivInitStd,
+    SubSpatialMean,
+    DivSpatialStd,
     padc,
     masks_subsample_shift,
     maskns,
@@ -100,28 +100,28 @@ class ALPHATorch(torch.nn.Module):
         self.register_buffer("this_wph_shifted", this_wph["shifted"].clone().detach())
         
 
-        # define variables to store mean and std of observation
-        self.subinitmean1 = SubInitSpatialMean()
-        self.subinitmean2 = SubInitSpatialMean()
-        self.divinitstd1 = DivInitStd()
-        self.divinitstd2 = DivInitStd()
+        # Normalization layers: compute mean and std per-sample on every forward pass
+        self.submean1 = SubSpatialMean()
+        self.submean2 = SubSpatialMean()
+        self.divstd1 = DivSpatialStd()
+        self.divstd2 = DivSpatialStd()
 
-        self.divinitstdJ = DivInitStd()
-        self.subinitmeanJ = SubInitSpatialMean()
+        self.divstdJ = DivSpatialStd()
+        self.submeanJ = SubSpatialMean()
 
         if self.num_channels == 1:
             if self.wavelets == "morlet":
-                self.divinitstdH = [None, None, None]
+                self.divstdH = [None, None, None]
                 for hid in range(3):
-                    self.divinitstdH[hid] = DivInitStd()
+                    self.divstdH[hid] = DivSpatialStd()
             if self.wavelets == "steer":
-                self.subinitmean0 = SubInitSpatialMean()
-                self.divinitstd0 = DivInitStd()
+                self.submean0 = SubSpatialMean()
+                self.divstd0 = DivSpatialStd()
         else:
             if self.wavelets == "morlet":
-                self.divinitstdH = [None] * 3 * self.num_channels
+                self.divstdH = [None] * 3 * self.num_channels
                 for hid in range(3 * self.num_channels):
-                    self.divinitstdH[hid] = DivInitStd()
+                    self.divstdH[hid] = DivSpatialStd()
 
     def filters_tensor(self, filters):
         J = self.J
@@ -390,8 +390,8 @@ class ALPHATorch(torch.nn.Module):
             self.masks.expand(nb, self.num_channels, -1, -1, -1, -1, -1)
         )  # (nb, J,L,A,M,N)
         # renorm by observation stats
-        xpsi_bc = self.subinitmean1(xpsi_bc)
-        xpsi_bc = self.divinitstd1(xpsi_bc)
+        xpsi_bc = self.submean1(xpsi_bc)
+        xpsi_bc = self.divstd1(xpsi_bc)
         return xpsi_bc
 
     def compute_correlations(self, xpsi_bc, this_wph: Optional[dict]):
@@ -441,8 +441,8 @@ class ALPHATorch(torch.nn.Module):
         hatxphi_c = hatx_c * self.hatphi.expand(nb, nc, -1, -1)  # (nb,nc,M,N)
         xphi_c = fft.ifft2(hatxphi_c)
         xphi_c.mul_(self.masks[-1, -1, ...].view(1, 1, self.M, self.N))
-        xphi0_c = self.subinitmeanJ(xphi_c)
-        xphi0_c = self.divinitstdJ(xphi0_c)
+        xphi0_c = self.submeanJ(xphi_c)
+        xphi0_c = self.divstdJ(xphi0_c)
         # xphi0_c = xphi0_c.real
 
         xphi0_c = (
@@ -463,8 +463,8 @@ class ALPHATorch(torch.nn.Module):
         nc = hatx_c.shape[1]
         hatxphi_c = hatx_c * self.hatphi.expand(nb, nc, -1, -1)  # (nb,nc,M,N)
         xphi_c = fft.ifft2(hatxphi_c)
-        xphi0_c = self.subinitmeanJ(xphi_c)
-        xphi0_c = self.divinitstdJ(xphi0_c)
+        xphi0_c = self.submeanJ(xphi_c)
+        xphi0_c = self.divstdJ(xphi0_c)
         xphi0_c.mul_(self.masks[-1, -1, ...].view(1, 1, self.M, self.N))
 
         # xphi0_c = xphi0_c.real
@@ -493,7 +493,7 @@ class ALPHATorch(torch.nn.Module):
                     nb, 1, 1, 1
                 )  # (nb,nc,M,N)
                 xpsih = fft.ifft2(hatxpsih_c)
-                xpsih = self.divinitstdH[hid](xpsih)
+                xpsih = self.divstdH[hid](xpsih)
                 xpsih = torch.abs(xpsih)
                 xpsih = xpsih * self.masks[0, ...].view(1, 1, self.M, self.N)
                 # shifted correlations in Fourier domain
@@ -522,8 +522,8 @@ class ALPHATorch(torch.nn.Module):
         if self.wavelets == "steer":
             hatxpsih = hatx_c * self.hatpsi0.repeat(nb, 1, 1, 1)  # (nb,1,M,N)
             xpsih = fft.ifft2(hatxpsih)
-            xpsih = self.subinitmean0(xpsih)
-            xpsih = self.divinitstd0(xpsih)
+            xpsih = self.submean0(xpsih)
+            xpsih = self.divstd0(xpsih)
             xpsih = xpsih * self.masks[0, ...].repeat(nb, 1, 1, 1)
             xpsih = torch.view_as_complex(padc(xpsih.abs()))
             xpsih = fft.fft2(xpsih)
@@ -550,7 +550,7 @@ class ALPHATorch(torch.nn.Module):
                     nb, -1, -1
                 )  # (nb, M,N)
                 xpsih_c = fft.ifft2(hatpsih_c)
-                xpsih_c = self.divinitstdH[3 * hid1 + hid2](xpsih_c)
+                xpsih_c = self.divstdH[3 * hid1 + hid2](xpsih_c)
                 xpsih_c = xpsih_c * self.masks[0, 0, ...].squeeze().expand(nb, -1, -1)
                 xpsih_c = torch.complex(xpsih_c.abs(), torch.zeros_like(xpsih_c.real))
                 xpsih_c = fft.fft2(xpsih_c)

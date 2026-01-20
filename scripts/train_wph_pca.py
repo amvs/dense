@@ -13,7 +13,6 @@ from training.data_utils import load_and_split_data
 from wph.wph_model import WPHClassifier
 from wph.classifiers import PCAClassifier
 from wph.model_factory import create_wph_feature_extractor
-from dense.helpers import LoggerManager
 from train_wph import set_seed, worker_init_fn
 
 load_dotenv()

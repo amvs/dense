@@ -130,7 +130,6 @@ def get_kaggle_loaders(dataset_name, resize, deeper_path, batch_size=64, train_r
 
 def compute_mean_std(dataset):
     """Compute mean and std for a grayscale dataset."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     loader = DataLoader(dataset, batch_size=64, shuffle=False)
     mean = 0.0
     sq_mean = 0.0

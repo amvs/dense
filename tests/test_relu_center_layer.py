@@ -1,6 +1,4 @@
-import pytest
 import torch
-import torch.nn as nn
 from wph.layers.relu_center_layer import ReluCenterLayer, ReluCenterLayerDownsample
 
 

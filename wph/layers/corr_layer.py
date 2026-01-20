@@ -5,8 +5,7 @@ from torch.utils.checkpoint import checkpoint
 import warnings
 from typing import Optional, Literal
 from .utils import create_masks_shift
-import matplotlib.pyplot as plt
-from scripts.visualize import colorize
+from dense.helpers.logger import LoggerManager
 import math
 
 
@@ -53,7 +52,15 @@ class BaseCorrLayer(nn.Module):
         self.register_buffer("masks_shift", masks_shift)
         self.factr_shift = factr_shift
 
-        # precompute index mapping for filter pairs
+        # Index mapping will be computed by child classes via _initialize_indices()
+        # Child classes should call this method at the end of their __init__
+        self.idx_wph = None
+    
+    def _initialize_indices(self):
+        """
+        Initialize index mapping. Should be called by child classes at the end of __init__.
+        This ensures all child-specific attributes are set before computing indices.
+        """
         self.idx_wph = self.compute_idx()
 
     def uses_mask_union(self):
@@ -137,6 +144,9 @@ class CorrLayer(BaseCorrLayer):
                 ]
             )
             self.mask_to_union[shift_idx] = mask_in_union
+        
+        # Initialize indices now that child-specific attributes are set
+        self._initialize_indices()
         
     def uses_mask_union(self):
         return self.mask_union
@@ -407,7 +417,7 @@ class CorrLayerDownsample(BaseCorrLayer):
 
         # 3. Create Correct Per-Scale Masks
         _masks_temp = []
-        _factr_temp = [] # <--- FIX: Need to store these too
+        _factr_temp = []
         
         for j in range(self.J):
             h_j = math.ceil(self.M / (2 ** j))
@@ -432,7 +442,6 @@ class CorrLayerDownsample(BaseCorrLayer):
         union_indices = torch.nonzero(union_mask.flatten(), as_tuple=True)[0]
         
         self.mask_indices_map = {}
-        # ... (Your logic for mapping indices) ...
         grid_to_union_map = torch.full((ref_masks[0].numel(),), -1, dtype=torch.long)
         grid_to_union_map[union_indices] = torch.arange(len(union_indices))
         
@@ -445,9 +454,8 @@ class CorrLayerDownsample(BaseCorrLayer):
         for k, idxs in self.mask_indices_map.items():
             self.register_buffer(f'mask_idx_map_{k}', idxs)
 
-        # 5. CRITICAL STEP: Re-run compute_idx
-        # The first run (in super) used bad/fallback values. 
-        self.idx_wph = self.compute_idx()
+        # Initialize indices now that child-specific attributes are set
+        self._initialize_indices()
 
     def _decode_cla(self, idx: int):
         c = idx // (self.A * self.L)
@@ -528,7 +536,8 @@ class CorrLayerDownsample(BaseCorrLayer):
                                             {"j": j2, "l": l2, "a": a2, "c": c2}
                                         )
                                         pair_metadata.append((j1,j2))
-        print("number of moments (without low-pass and harr): ", nb_moments)
+        logger = LoggerManager.get_logger()
+        logger.info(f"Number of moments (without low-pass and harr): {nb_moments}")
 
         idx_wph = dict()
         idx_wph["la1"] = torch.tensor(idx_la1).long()
@@ -557,7 +566,6 @@ class CorrLayerDownsample(BaseCorrLayer):
             vmap_chunk_size: Chunk size for vmap (smaller = less memory, slower)
             use_checkpoint: Use gradient checkpointing to save memory during training
         """
-        nb = xpsi[0].shape[0]
         device = xpsi[0].device
         
         # 1. Pre-compute FFTs to save time
@@ -735,8 +743,8 @@ class CorrLayerDownsamplePairs(BaseCorrLayer):
         for k, idxs in self.mask_indices_map.items():
             self.register_buffer(f'mask_idx_map_{k}', idxs)
 
-        # Recompute indices with correct downsampled masks
-        self.idx_wph = self.compute_idx()
+        # Initialize indices now that child-specific attributes are set
+        self._initialize_indices()
 
     def _decode_cla(self, idx: int):
         c = idx // (self.A * self.L)
