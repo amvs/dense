@@ -9,13 +9,13 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from wph.ops.backend import SubInitSpatialMean, DivInitStd
+from wph.ops.backend import SubSpatialMean, DivSpatialStd
 
 
-def test_subinit_spatial_mean_per_sample():
-    """Test that SubInitSpatialMean computes mean per sample, not batch-averaged."""
+def test_subspatial_mean_per_sample():
+    """Test that SubSpatialMean computes mean per sample, not batch-averaged."""
     # Create module
-    mean_layer = SubInitSpatialMean()
+    mean_layer = SubSpatialMean()
     
     # Create input with different means for each sample in batch
     batch_size = 4
@@ -41,19 +41,13 @@ def test_subinit_spatial_mean_per_sample():
         assert torch.allclose(spatial_mean, torch.zeros_like(spatial_mean), atol=1e-5), \
             f"Sample {i} spatial mean is not close to 0: {spatial_mean.mean().item()}"
     
-    # Verify that minput has per-sample spatial means (not batch-averaged)
-    # minput should have shape [batch_size, channels, 1, 1]
-    expected_shape = (batch_size, channels, 1, 1)
-    assert mean_layer.minput.shape == expected_shape, \
-        f"Expected minput shape {expected_shape}, got {mean_layer.minput.shape}"
-    
-    print("✓ SubInitSpatialMean per-sample test passed")
+    print("✓ SubSpatialMean per-sample test passed")
 
 
-def test_divinit_std_per_sample():
-    """Test that DivInitStd computes std per sample, not batch-averaged."""
+def test_divspatial_std_per_sample():
+    """Test that DivSpatialStd computes std per sample, not batch-averaged."""
     # Create module
-    std_layer = DivInitStd()
+    std_layer = DivSpatialStd()
     
     # Create input with different variances for each sample in batch
     batch_size = 4
@@ -84,20 +78,14 @@ def test_divinit_std_per_sample():
         assert torch.allclose(spatial_std, torch.ones_like(spatial_std), atol=0.1), \
             f"Sample {i} spatial std is not close to 1: {spatial_std.mean().item()}"
     
-    # Verify that stdinput has per-sample spatial stds (not batch-averaged)
-    # stdinput should have shape [batch_size, channels, 1, 1]
-    expected_shape = (batch_size, channels, 1, 1)
-    assert std_layer.stdinput.shape == expected_shape, \
-        f"Expected stdinput shape {expected_shape}, got {std_layer.stdinput.shape}"
-    
-    print("✓ DivInitStd per-sample test passed")
+    print("✓ DivSpatialStd per-sample test passed")
 
 
 def test_batch_independence():
     """Test that normalization is independent of batch composition."""
     # Create modules
-    mean_layer1 = SubInitSpatialMean()
-    mean_layer2 = SubInitSpatialMean()
+    mean_layer1 = SubSpatialMean()
+    mean_layer2 = SubSpatialMean()
     
     # Create two samples
     sample1 = torch.randn(1, 2, 8, 8) + 5.0
@@ -110,7 +98,7 @@ def test_batch_independence():
     # Process samples separately
     output1 = mean_layer2(sample1)
     # Need to reinitialize for sample2 since it will overwrite
-    mean_layer3 = SubInitSpatialMean()
+    mean_layer3 = SubSpatialMean()
     output2 = mean_layer3(sample2)
     
     # The outputs for each sample should be the same whether processed
@@ -124,7 +112,7 @@ def test_batch_independence():
 
 
 if __name__ == "__main__":
-    test_subinit_spatial_mean_per_sample()
-    test_divinit_std_per_sample()
+    test_subspatial_mean_per_sample()
+    test_divspatial_std_per_sample()
     test_batch_independence()
     print("\n✅ All normalization layer tests passed!")

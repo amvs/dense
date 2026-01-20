@@ -2,7 +2,7 @@ import torch
 import torch.fft as fft
 from torch import nn
 from wph.layers.utils import create_masks_shift
-from wph.ops.backend import DivInitStd, maskns
+from wph.ops.backend import DivSpatialStd, maskns
 
 class HighpassBase(nn.Module):
     def __init__(self,
@@ -44,7 +44,7 @@ class HighpassBase(nn.Module):
         psi[2, 2, 1] = 1 / 4
         hathaar2d[2, :, :] = fft.fft2(torch.view_as_complex(psi))
 
-        self.divinitstdH = nn.ModuleList([DivInitStd() for _ in range(3 * self.num_channels)])
+        self.divstdH = nn.ModuleList([DivSpatialStd() for _ in range(3 * self.num_channels)])
         
         return(hathaar2d)
     
@@ -77,7 +77,7 @@ class HighpassBase(nn.Module):
         }
         
         # Iterate in same order as forward pass: for each input channel, apply all 3 Haar filters
-        for idx in range(len(self.divinitstdH)):
+        for idx in range(len(self.divstdH)):
             input_channel = idx // 3  # which input channel to filter
             haar_filter_idx = idx % 3  # which of 3 Haar filters
             for pos_idx in range(n_shifts):
@@ -128,13 +128,13 @@ class HighpassLayer(HighpassBase):
         nb, nc = hatx_c.shape[:2]
         assert nc == self.num_channels
         out = []
-        # TorchScript-compatible: enumerate self.divinitstdH and calculate hid1, hid2
-        for idx, divinitstd in enumerate(self.divinitstdH):
+        # TorchScript-compatible: enumerate self.divstdH and calculate hid1, hid2
+        for idx, divstd in enumerate(self.divstdH):
             hid1 = idx // 3
             hid2 = idx % 3
             hatpsih_c = hatx_c[:, hid1, ...] * self.hathaar2d[hid2, ...].expand(nb, -1, -1)
             xpsih_c = fft.ifft2(hatpsih_c)
-            xpsih_c = divinitstd(xpsih_c)
+            xpsih_c = divstd(xpsih_c)
             xpsih_c = xpsih_c * self.masks[0, 0, ...].squeeze().expand(nb, -1, -1)
             xpsih_c = torch.complex(xpsih_c.abs(), torch.zeros_like(xpsih_c.real))
             xpsih_c = fft.fft2(xpsih_c)

@@ -37,7 +37,8 @@ def masks_subsample_shift(J,M,N, alpha=4, mask_union=True):
 
 from torch import nn
 
-class SubInitSpatialMean(nn.Module):
+class SubSpatialMean(nn.Module):
+    """Subtract spatial mean computed per-sample on every forward pass."""
     def __init__(self):
         super().__init__()
 
@@ -49,7 +50,8 @@ class SubInitSpatialMean(nn.Module):
 
 
 
-class DivInitStd(nn.Module):
+class DivSpatialStd(nn.Module):
+    """Divide by spatial std computed per-sample on every forward pass."""
     def __init__(self, stdcut=1e-9):
         super().__init__()
         self.eps = stdcut
@@ -64,6 +66,11 @@ class DivInitStd(nn.Module):
         stdinput = stdinput + self.eps
         output = input / stdinput
         return output
+
+
+# Backward compatibility aliases
+SubInitSpatialMean = SubSpatialMean
+DivInitStd = DivSpatialStd
 
 
 def padc(x):
