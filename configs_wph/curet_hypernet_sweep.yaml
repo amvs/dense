@@ -1,0 +1,19 @@
+# This is a sweep config file for hyperparameter tuning on MNIST dataset
+# It uses the base configuration from mnist.yaml and overrides specific parameters for the sweep
+base_config: configs_wph/curet.yaml
+sweep:
+  model_type: ["wph_hypernetwork"]
+  lr: [1.0e-3]
+  classifier_epochs: [30]
+  conv_epochs: [30]
+  seed: [0]
+  share_scale_pairs: [false]
+  delta_j: [null, 1]
+  copies: [1,10]
+  train_ratio: [0.05, 0.1, 0.5, 0.85]
+  lambda_reg: [0, 1.0e+5, 1.0e+6, 1.0e+7] # determined scale of lambda reg was 1e6
+  downsample: [true]
+  freeze_classifier: [false]
+  random_filters: [false]
+  hidden_dim: [256]
+

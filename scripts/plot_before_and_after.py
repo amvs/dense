@@ -27,25 +27,29 @@ def extract_kernels_dense(orig):
 
 def extract_kernels_wph(orig):
     def conv_index(k: str):
-        # expects "feature_extractor.base_filters.{j}.weight"
-        m = re.search(r"feature_extractor\.base_filters", k)
+        # expects "feature_extractors.0.base_filters.{j}.weight"
+        m = re.search(r"feature_extractors\.0\.base_filters", k)
         return int(m.group(1)) if m else 10**9
     
     conv_keys = sorted(
-        [k for k in orig.keys() if 'base_filters' in k],
+        [k for k in orig.keys() if 'feature_extractors.0' in k and 'base_filters' in k],
         key=conv_index
     )
     return conv_keys, conv_index
 
-def plot_kernels_wph_base_filters(exp_dir, trained_filename='trained.pt', origin_filename='origin.pt', base_filters_key='feature_extractor.wave_conv.base_filters'):
+def plot_kernels_wph_base_filters(exp_dir, trained_filename='trained.pt', origin_filename='origin.pt', base_filters_key:list[str]=['feature_extractors.0.wave_conv.base_filters']):
     origin_path = os.path.join(exp_dir, origin_filename)
     trained_path = os.path.join(exp_dir, trained_filename)
     orig = torch.load(origin_path, map_location="cpu", weights_only=True)
     tune = torch.load(trained_path, map_location="cpu", weights_only=True)
 
     # Get base_filters from state dict
-    W_o = orig[base_filters_key].detach().cpu().numpy()
-    W_t = tune[base_filters_key].detach().cpu().numpy()
+    if len(base_filters_key) != 1:
+        W_o = torch.complex(orig[base_filters_key[0]], orig[base_filters_key[1]]).detach().cpu().numpy()
+        W_t = torch.complex(tune[base_filters_key[0]], tune[base_filters_key[1]]).detach().cpu().numpy()
+    else:
+        W_o = orig[base_filters_key[0]].detach().cpu().numpy()
+        W_t = tune[base_filters_key[0]].detach().cpu().numpy()
 
     # Determine dimensions
     shape = W_o.shape
@@ -58,37 +62,89 @@ def plot_kernels_wph_base_filters(exp_dir, trained_filename='trained.pt', origin
     os.makedirs(out_root, exist_ok=True)
     filenames = []
 
-    # Iterate over all combinations of indices except M,N
+
+
+    # Precompute global vmin/vmax for before/after plots (real and imag separately)
+    all_real = []
+    all_imag = []
     for idx in np.ndindex(*loop_dims):
-        o = W_o[idx]  # shape (M, N)
+        o = W_o[idx]
         t = W_t[idx]
-        d = t - o
+        all_real.extend([o.real.flatten(), t.real.flatten()])
+        all_imag.extend([o.imag.flatten(), t.imag.flatten()])
+    all_real = np.concatenate(all_real)
+    all_imag = np.concatenate(all_imag)
+    vmax_r = float(np.max(np.abs(all_real)))
+    vmax_i = float(np.max(np.abs(all_imag)))
 
-        # L1 norm of difference
-        l1 = float(np.sum(np.abs(d)))
+    # Group plots by the first index (scale). For each scale create one file
+    # where each item for that scale is a 2×3 panel stacked vertically.
+    # remaining_dims are everything except the scale dimension
+    remaining_dims = loop_dims[1:]
+    if len(remaining_dims) == 0:
+        # nothing to group: fall back to single-scale behavior
+        remaining_iters = [()]
+    else:
+        remaining_iters = list(np.ndindex(*remaining_dims))
 
-        # Plot real/imag before/after/delta
-        o_r, t_r, d_r = o.real, t.real, d.real
-        o_i, t_i, d_i = o.imag, t.imag, d.imag
-        vmax_r = float(np.max(np.abs([o_r, t_r, d_r])))
-        vmax_i = float(np.max(np.abs([o_i, t_i, d_i])))
+    for s in range(loop_dims[0]):
+        n_panels = len(remaining_iters)
+        # grid with n_panels blocks, each block is 2 rows × 3 cols
+        rows = n_panels * 2
+        cols = 3
+        figsize = (cols * 4, max(3, n_panels * 6))
+        fig, axes = plt.subplots(rows, cols, figsize=figsize)
+        # normalize axes shape for single-panel case
+        if n_panels == 1:
+            axes = axes.reshape(2, 3)
 
-        fig, axes = plt.subplots(2, 3, figsize=(9, 6))
-        im00 = axes[0,0].imshow(o_r, vmin=-vmax_r, vmax=+vmax_r, interpolation="nearest"); axes[0,0].set_title("Real — Before"); axes[0,0].axis("off")
-        im01 = axes[0,1].imshow(t_r, vmin=-vmax_r, vmax=+vmax_r, interpolation="nearest"); axes[0,1].set_title("Real — After");  axes[0,1].axis("off")
-        im02 = axes[0,2].imshow(d_r, vmin=-vmax_r, vmax=+vmax_r, interpolation="nearest"); axes[0,2].set_title("Real Δ");        axes[0,2].axis("off")
+        for i, rem in enumerate(remaining_iters):
+            idx = (s,) + rem if len(rem) > 0 else (s,)
+            o = W_o[idx]
+            t = W_t[idx]
+            d = t - o
 
-        im10 = axes[1,0].imshow(o_i, vmin=-vmax_i, vmax=+vmax_i, interpolation="nearest"); axes[1,0].set_title("Imag — Before"); axes[1,0].axis("off")
-        im11 = axes[1,1].imshow(t_i, vmin=-vmax_i, vmax=+vmax_i, interpolation="nearest"); axes[1,1].set_title("Imag — After");  axes[1,1].axis("off")
-        im12 = axes[1,2].imshow(d_i, vmin=-vmax_i, vmax=+vmax_i, interpolation="nearest"); axes[1,2].set_title("Imag Δ");        axes[1,2].axis("off")
+            l1 = float(np.sum(np.abs(d)))
 
-        for ax, im in zip(axes.flatten(), [im00, im01, im02, im10, im11, im12]):
-            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            o_r, t_r, d_r = o.real, t.real, d.real
+            o_i, t_i, d_i = o.imag, t.imag, d.imag
 
-        idx_str = "_".join([f"{i}" for i in idx])
-        fig.suptitle(f"base_filters idx={idx_str} | L1(Δ)={l1:.3e}")
+            vmax_dr = float(np.max(np.abs(d_r)))
+            vmax_di = float(np.max(np.abs(d_i)))
+
+            row_base = i * 2
+            # pick axes for this block
+            if n_panels == 1:
+                block_axes = axes
+            else:
+                block_axes = axes[row_base:row_base + 2, :]
+
+            im00 = block_axes[0, 0].imshow(o_r, vmin=-vmax_r, vmax=+vmax_r, interpolation="nearest"); block_axes[0, 0].set_title(f"Real — Before {rem}"); block_axes[0, 0].axis("off")
+            im01 = block_axes[0, 1].imshow(t_r, vmin=-vmax_r, vmax=+vmax_r, interpolation="nearest"); block_axes[0, 1].set_title("Real — After");  block_axes[0, 1].axis("off")
+            im02 = block_axes[0, 2].imshow(d_r, vmin=-vmax_dr, vmax=+vmax_dr, interpolation="nearest"); block_axes[0, 2].set_title("Real Δ");        block_axes[0, 2].axis("off")
+
+            im10 = block_axes[1, 0].imshow(o_i, vmin=-vmax_i, vmax=+vmax_i, interpolation="nearest"); block_axes[1, 0].set_title("Imag — Before"); block_axes[1, 0].axis("off")
+            im11 = block_axes[1, 1].imshow(t_i, vmin=-vmax_i, vmax=+vmax_i, interpolation="nearest"); block_axes[1, 1].set_title("Imag — After");  block_axes[1, 1].axis("off")
+            im12 = block_axes[1, 2].imshow(d_i, vmin=-vmax_di, vmax=+vmax_di, interpolation="nearest"); block_axes[1, 2].set_title("Imag Δ");        block_axes[1, 2].axis("off")
+
+            # Add small colorbars for each mini-subplot
+            for ax, im, label in zip(
+                block_axes.flatten(),
+                [im00, im01, im02, im10, im11, im12],
+                ["Real — Before", "Real — After", "Real Δ", "Imag — Before", "Imag — After", "Imag Δ"]
+            ):
+                cbar = plt.colorbar(im, ax=ax, fraction=0.05, pad=0.02)
+                cbar.ax.set_ylabel(label, rotation=270, labelpad=10)
+
+            # annotate block with its index and L1
+            rem_str = "_".join([f"{r}" for r in rem]) if len(rem) > 0 else ""
+            block_label = f"scale={s} idx={rem_str} | L1(Δ)={l1:.3e}"
+            # set a small text label spanning the block (put on the first axis)
+            block_axes[0, 0].text(0.01, -0.08, block_label, transform=block_axes[0, 0].transAxes, fontsize=8, va='top')
+
+        fig.suptitle(f"base_filters scale={s}")
         fig.tight_layout()
-        fname = f"base_filters_{idx_str}.png"
+        fname = f"base_filters_scale_{s}.png"
         plot_path = os.path.join(out_root, fname)
         fig.savefig(plot_path, dpi=150)
         plt.close(fig)
