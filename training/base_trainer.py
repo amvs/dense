@@ -18,12 +18,16 @@ def regularization_loss(current_params, original_params, lambda_reg=1e-3):
 
     return reg_loss
 
-def train_one_epoch(model, loader, optimizer, base_loss, device, original_params=None, lambda_reg=None, vmap_chunk_size=None, r=None):
+def train_one_epoch(model, loader, optimizer, base_loss, device, original_params=None, lambda_reg=None, vmap_chunk_size=None, r=None, max_grad_norm=1.0):
     model.train()
     total_loss = 0
     total_base_loss = 0
     total_reg_loss = 0
     correct = 0
+    logger = LoggerManager.get_logger()
+    
+    # Pre-compute trainable parameters for efficient NaN/Inf checking
+    trainable_params = [p for p in model.parameters() if p.requires_grad] if max_grad_norm > 0 else None
 
     for inputs, targets in loader:
         inputs, targets = inputs.to(device), targets.to(device)
@@ -33,9 +37,11 @@ def train_one_epoch(model, loader, optimizer, base_loss, device, original_params
             outputs = model(inputs)
         else:
             outputs = model.forward(inputs, vmap_chunk_size=vmap_chunk_size)
-        base_loss_value = base_loss(outputs, targets) # Average loss in a batch
+        
+        base_loss_value = base_loss(outputs, targets)
         loss = base_loss_value
-        reg_loss_value = torch.tensor(0.0)
+        
+        # Add regularization if needed
         if original_params is not None:
             if not hasattr(model, "fine_tuned_params") or not callable(getattr(model, "fine_tuned_params")):
                 raise NotImplementedError(
@@ -43,13 +49,55 @@ def train_one_epoch(model, loader, optimizer, base_loss, device, original_params
                 )
             reg_loss_value = regularization_loss(model.fine_tuned_params(), original_params, lambda_reg)
             loss += reg_loss_value
+        else:
+            reg_loss_value = torch.tensor(0.0, device=inputs.device)
+        
+        # Combined NaN/Inf check for loss (catches both base and reg loss issues)
+        if not torch.isfinite(loss):
+            logger.warning("NaN/Inf detected in loss! Skipping batch.")
+            continue
+        
         loss.backward()
+        
+        # Gradient clipping and validation
+        if max_grad_norm > 0:
+            # clip_grad_norm_ clips gradients in-place and returns the original (unclipped) norm
+            # After clipping, gradients have norm <= max_grad_norm, so we can safely proceed
+            grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_grad_norm)
+            
+            # Only skip if gradient norm is NaN/Inf or EXTREMELY large (indicates numerical issues)
+            # Use a very high threshold (10000) since clipping already handles large gradients
+            # This threshold is for catching true numerical instability, not just large gradients
+            if not torch.isfinite(grad_norm):
+                logger.warning(f"NaN/Inf gradient norm detected. Skipping optimizer step.")
+                optimizer.zero_grad()
+                continue
+            elif grad_norm > 10000:
+                # Extremely large gradients even after clipping attempt - likely numerical instability
+                logger.warning(f"Extremely large gradient norm after clipping attempt: {grad_norm:.2f}. "
+                             f"This may indicate numerical instability. Skipping optimizer step.")
+                optimizer.zero_grad()
+                continue
+            # Otherwise, proceed with optimizer step (gradients are already clipped)
+        
         optimizer.step()
-
-        total_base_loss += base_loss_value.item() * inputs.size(0)
-        total_reg_loss += reg_loss_value.item() * inputs.size(0)
-        total_loss += loss.item() * inputs.size(0)
-        correct += (outputs.argmax(dim=1) == targets).sum().item()
+        
+        # Quick parameter check: only if regularization is used (more likely to have issues)
+        skip_batch = False
+        if original_params is not None:
+            # Check only fine-tuned parameters (smaller subset than all parameters)
+            for p in model.fine_tuned_params():
+                if not torch.isfinite(p).all():
+                    logger.warning("NaN/Inf detected in parameters after optimizer step! Skipping batch metrics.")
+                    skip_batch = True
+                    break
+        
+        if not skip_batch:
+            batch_size = inputs.size(0)
+            total_base_loss += base_loss_value.item() * batch_size
+            total_reg_loss += reg_loss_value.item() * batch_size
+            total_loss += loss.item() * batch_size
+            correct += (outputs.argmax(dim=1) == targets).sum().item()
 
     avg_base_loss = total_base_loss / len(loader.dataset)
     avg_reg_loss = total_reg_loss / len(loader.dataset)

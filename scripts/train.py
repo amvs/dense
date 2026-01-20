@@ -89,7 +89,7 @@ def main():
             batch_size=batch_size,
             fold=fold,
             train_ratio=train_ratio,  # KTH loader handles train_ratio internally
-            drop_last=True
+            drop_last=False
         )
         # Note: KTH loader already handles train/val/test split, so no need for split_train_val
     elif dataset == "outex":
@@ -106,7 +106,7 @@ def main():
             problem_id=problem_id,
             train_ratio=train_ratio,  # Outex loader handles train_ratio internally
             train_val_ratio=train_val_ratio,
-            drop_last=True
+            drop_last=False
         )
         # Note: Outex loader already handles train/val/test split, so no need for split_train_val
     else:  # Kaggle datasets
@@ -178,6 +178,10 @@ def main():
     ##
     classifier_patience = config.get("classifier_patience", 8)
     conv_patience = config.get("conv_patience", 8)
+    # Fine-tuning learning rate multiplier (default: 0.1, meaning use 10% of original LR)
+    ft_lr_multiplier = config.get("ft_lr_multiplier", 0.1)
+    # Gradient clipping max norm (default: 1.0, set to 0 to disable)
+    max_grad_norm = config.get("max_grad_norm", 1.0)
     ##
 
     base_loss = nn.CrossEntropyLoss()
@@ -274,30 +278,53 @@ def main():
     torch.save(model.state_dict(), save_original)
     logger.log(f"Save model to {save_original}")
 
+    # Evaluate validation set right before fine-tuning to establish baseline
+    model.eval()
+    val_loss_before_ft, val_acc_before_ft = evaluate(model, val_loader, base_loss, device)
+    logger.log(f"Validation before fine-tuning: Acc={val_acc_before_ft:.4f}, Loss={val_loss_before_ft:.4f}", data=True)
+    logger.log_metrics({
+        "val_accuracy": val_acc_before_ft,
+        "val_loss": val_loss_before_ft,
+    }, prefix="fine_tune/baseline/")
+
     # Stage 2: Fine-tuning based on mode
+    # Ensure model is in train mode before fine-tuning
+    model.train()
+    
     if fine_tune_mode == "extractor_only":
         # Option 1: Freeze classifier and fine-tune extractor
         logger.log("Fine tuning extractor (classifier frozen)...")
         model.train_conv()
+        # Use a lower learning rate for fine-tuning to avoid instability
+        # Fine-tuning typically needs smaller LR than initial training to prevent
+        # large parameter changes that can hurt the pre-trained classifier
+        ft_lr = lr * ft_lr_multiplier
+        logger.log(f"Using fine-tuning learning rate: {ft_lr} (original lr: {lr}, multiplier: {ft_lr_multiplier})")
         optimizer_ft = torch.optim.Adam(
             model.fine_tuned_params(),
-            lr=lr,
+            lr=ft_lr,
         )
     elif fine_tune_mode == "both":
         # Option 2: Fine-tune both classifier and extractor together
         logger.log("Fine tuning both classifier and extractor together...")
         model.full_train()
+        # Use lower learning rates for fine-tuning
+        # Extractor gets reduced LR, classifier gets moderate reduction
+        ft_lr_extractor = lr * ft_lr_multiplier
+        ft_lr_classifier = linear_lr * max(ft_lr_multiplier * 2, 0.5)  # At least 50% of original, or 2x extractor multiplier
+        logger.log(f"Using fine-tuning learning rates: extractor={ft_lr_extractor}, classifier={ft_lr_classifier}")
         # Use parameter groups with different learning rates
         optimizer_ft = torch.optim.Adam([
-            {'params': model.classifier.parameters(), 'lr': linear_lr},
-            {'params': model.fine_tuned_params(), 'lr': lr}
+            {'params': model.classifier.parameters(), 'lr': ft_lr_classifier},
+            {'params': model.fine_tuned_params(), 'lr': ft_lr_extractor}
         ])
     else:
         raise ValueError(f"Unknown fine_tune_mode: {fine_tune_mode}. Must be 'extractor_only' or 'both'")
     
-    best_val_loss = float("inf")
+    # Initialize best metrics with baseline values
+    best_val_loss = val_loss_before_ft
+    best_val_acc = val_acc_before_ft
     best_train_loss = float("inf")
-    best_val_acc = 0.0
     best_train_acc = 0.0
     best_state = None
     patience_counter = 0
@@ -312,6 +339,7 @@ def main():
             original_params = original_params,
             #r=radius,
             lambda_reg=lambda_reg,
+            max_grad_norm=max_grad_norm,
         )
 
         val_loss, val_acc = evaluate(
@@ -331,11 +359,19 @@ def main():
         )
         # Calculate parameter distance for this epoch
         epoch_dist_sq = 0.0
+        max_param_diff = 0.0
         for p, p0 in zip(model.fine_tuned_params(), original_params):
             if p.requires_grad:
                 diff = p - p0
                 epoch_dist_sq += torch.sum(torch.abs(diff) ** 2)
+                max_param_diff = max(max_param_diff, torch.abs(diff).max().item())
         epoch_dist = torch.sqrt(epoch_dist_sq) if epoch_dist_sq > 0 else torch.tensor(0.0)
+        
+        # Warn if parameter distance is growing too large
+        if epoch_dist.item() > 100.0:
+            logger.log(f"WARNING: Large parameter distance detected: {epoch_dist.item():.2f}. Consider reducing learning rate or increasing regularization.")
+        if max_param_diff > 10.0:
+            logger.log(f"WARNING: Large individual parameter change detected: {max_param_diff:.2f}. Consider reducing learning rate.")
         
         # Enhanced wandb logging with structured metrics
         logger.log_metrics({
@@ -356,6 +392,7 @@ def main():
         logger.track_metric("fine_tune", "train_reg_loss", train_metrics['reg_loss'], classifier_epochs+epoch+1)
         logger.track_metric("fine_tune", "parameter_distance", epoch_dist.item(), classifier_epochs+epoch+1)
 
+        
         # ---- Early stopping on validation accuracy
         if val_acc > best_val_acc:
             best_val_acc = val_acc

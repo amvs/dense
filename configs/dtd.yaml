@@ -19,7 +19,7 @@ attention_num_layers: 2
 # Note: Update dataset name to the correct DTD Kaggle dataset identifier
 dataset: jmexpert/describable-textures-dataset-dtd  # Update this to the correct DTD Kaggle dataset name
 deeper_path: dtd/images  # Update this to the correct subdirectory path if needed
-resize: 200
+resize: 256
 classifier_epochs: 1
 conv_epochs: 1
 batch_size: 32

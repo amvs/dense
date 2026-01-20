@@ -35,9 +35,9 @@ def main():
     config = apply_overrides(config, args.override)
     
     # Set minimal epochs for testing if not overridden
-    if "classifier_epochs=1" not in " ".join(args.override):
+    if "classifier_epochs=" not in " ".join(args.override):
         config["classifier_epochs"] = 1
-    if "conv_epochs=1" not in " ".join(args.override):
+    if "conv_epochs=" not in " ".join(args.override):
         config["conv_epochs"] = 1
     
     # Create a temporary config file

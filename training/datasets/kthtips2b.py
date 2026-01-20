@@ -68,7 +68,7 @@ class KHTTips2bDataset(Dataset):
         return image, label
 
 
-def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, fold=None, train_ratio=1.0, drop_last=True):
+def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, fold=None, train_ratio=1.0, drop_last=False):
     """
     Load KTH-TIPS2-b dataset with leave-one-sample-out cross-validation.
     
@@ -169,9 +169,9 @@ def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, 
     test_dataset.transform = normalized_transform
     logger.info(f"Updated dataset transforms with normalization")
     
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn, drop_last=drop_last, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=False, num_workers=4)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=False, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn, drop_last=False)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=False)
     
     nb_class = len(full_dataset.classes)
     sample_img, _ = train_dataset[0]

@@ -82,7 +82,7 @@ class OutexDataset(Dataset):
         return image, label
 
 
-def get_outex_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, problem_id='000', train_ratio=1.0, train_val_ratio=4, drop_last=True):
+def get_outex_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, problem_id='000', train_ratio=1.0, train_val_ratio=4, drop_last=False):
     """
     Load Outex dataset with train/val/test splits.
     
@@ -97,8 +97,8 @@ def get_outex_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, prob
         problem_id: Problem configuration ID (e.g., '000', '001', '002'). 
                    If None, lists available problems.
         train_ratio: Fraction of training data to use (default 1.0). Set to < 1.0 to reduce training set.
-        train_val_ratio: Ratio of training to validation data (default 4, meaning train:val = 4:1).
-        drop_last: Whether to drop the last incomplete batch in training loader (default True).
+        train_val_ratio: Ratio of test to validation data (default 4, meaning test:val = 4:1).
+        drop_last: Whether to drop the last incomplete batch in training loader (default False).
         
     Returns:
         train_loader, val_loader, test_loader, nb_class, sample_img.shape
@@ -160,7 +160,7 @@ def get_outex_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, prob
     test_dataset.transform = normalized_transform
     logger.info(f"Updated dataset transforms with normalization")
     
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn, drop_last=drop_last)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn, drop_last=False)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=False)
     

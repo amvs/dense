@@ -309,9 +309,9 @@ class dense(nn.Module):
                 self.register_buffer(f"keep_idx_{i}", idx)
             self.in_channels_per_block = keep_len[:-1]  # 最后一层不需要
                    
-        print("in_channels_per_block:", self.in_channels_per_block)
-        print("out_channels:", self.out_channels)
-        print("use_original_filters:", self.use_original_filters)
+        # print("in_channels_per_block:", self.in_channels_per_block)
+        # print("out_channels:", self.out_channels)
+        # print("use_original_filters:", self.use_original_filters)
         
         # Create blocks: use filters[scale] for each scale if use_original_filters, else use filters[0] for all
         self.blocks = nn.ModuleList(
