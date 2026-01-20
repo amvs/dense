@@ -20,8 +20,44 @@ def stratify_split(dataset, train_size, seed=123):
         subset1, subset2 = stratify_split(dataset, train_size, seed=42)
     """
     total_len = len(dataset)
-    # extract targets, assuming dataset[i] (__getitem__(i)) returns (x, y)
-    targets = [dataset[i][1] for i in range(total_len)]
+
+    # Fast-path: try to obtain labels without calling dataset[i] (which may open files).
+    # Handle nested Subset-like wrappers (up to 5 levels) by unwrapping and composing indices.
+    base_ds = dataset
+    indices = getattr(dataset, 'indices', None)
+    for _ in range(5):
+        parent = getattr(base_ds, 'dataset', None)
+        if parent is None:
+            break
+        parent_indices = getattr(parent, 'indices', None)
+        # Compose indices if both current and parent indices exist
+        if indices is not None and parent_indices is not None:
+            indices = [parent_indices[i] for i in indices]
+        elif indices is None and parent_indices is not None:
+            indices = parent_indices
+        base_ds = parent
+
+    def _labels_from_base(base, idxs):
+        # base may expose targets, labels, y, or samples
+        if hasattr(base, 'targets'):
+            lab = base.targets
+        elif hasattr(base, 'labels'):
+            lab = base.labels
+        elif hasattr(base, 'y'):
+            lab = base.y
+        elif hasattr(base, 'samples'):
+            # samples is often list of (path, class)
+            lab = [s[1] for s in base.samples]
+        else:
+            return None
+        if idxs is not None:
+            return [lab[i] for i in idxs]
+        return list(lab)
+
+    targets = _labels_from_base(base_ds, indices)
+    if targets is None:
+        # Fallback: iterate and call __getitem__ (expensive)
+        targets = [dataset[i][1] for i in range(total_len)]
 
     # Single stratified split
     sss = StratifiedShuffleSplit(
@@ -53,6 +89,8 @@ def split_train_val(train_dataset, train_ratio=0.1, batch_size=64, seed=123, tra
     """
     total_len = len(train_dataset)
     train_len = int(total_len * train_ratio)
+    # Clamp train_len to ensure StratifiedShuffleSplit has room for validation
+    train_len = min(train_len, max(1, total_len - 1))
     val_len = train_len // train_val_ratio
     used_len = train_len + val_len
     if used_len > total_len:
@@ -64,21 +102,27 @@ def split_train_val(train_dataset, train_ratio=0.1, batch_size=64, seed=123, tra
         )
     else: # we discard some data to maintain the train:val ratio
           # this mimics the situation when dataset is small in practice
+        # Use derived seeds to avoid reusing the same seed in nested splits
         used_dataset, _ = stratify_split(
             train_dataset, train_size=used_len,
             seed=seed
         )
         train_subset, val_subset = stratify_split(
             used_dataset, train_size=train_len,
-            seed=seed
+            seed=seed + 1000  # offset to ensure independence while maintaining reproducibility
         )
     discard_len = total_len - len(train_subset) - len(val_subset)
     train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True, drop_last=drop_last)
-    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, drop_last=drop_last)
+    # Validation should NOT drop last batch to ensure all samples are evaluated
+    val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False, drop_last=False)
     logger = LoggerManager.get_logger()
     logger.info(f"Split train dataset into train and val subsets...")
     logger.info(f"[Train Ratio: {train_ratio}] Train size: {train_len}, "
                  f"Val size: {val_len}, Used Size: {used_len}, Discard Size: {discard_len}, "
                  f"Train:Val={train_val_ratio}:1")
+    if drop_last:
+        train_batches_dropped = train_len % batch_size
+        logger.info(f"Train batches: {train_len // batch_size}, dropping {train_batches_dropped} samples")
+    logger.info(f"Val batches: {(val_len + batch_size - 1) // batch_size} (no samples dropped)")
 
     return train_loader, val_loader

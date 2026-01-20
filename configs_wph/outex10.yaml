@@ -1,0 +1,56 @@
+# model setting
+wavelet: morlet
+max_scale: 4
+nb_orients: 4
+num_phases: 2
+num_phases_prime: 1
+random_filters: false
+share_rotations: false
+share_channels: true
+share_phases: false
+normalize_relu: true
+delta_j: null
+delta_l: null
+shift_mode: samec
+mask_union: false
+mask_angles: 4
+mask_union_highpass: true
+share_scales: false
+downsample: true
+share_scale_pairs: true
+wavelet_params:
+  S: 15
+  T: 8
+  w0: 2.7646
+spatial_attn: false
+
+# training setting
+dataset: outex10
+root_dir: data/datasets/Outex-TC-00010
+resize: 128
+classifier_epochs: 15
+conv_epochs: 15
+batch_size: 32
+lr: 0.0001
+lr_conv: 1.0e-4
+lambda_reg: 1.0e+5
+train_ratio: 0.5
+test_ratio: 0.15
+train_val_ratio: 2
+drop_last: false
+seed: 42
+vmap_chunk_size: 50
+normalize_reg: false
+ce_smooth: 0.1
+model_type: wph
+# Finetuning behavior
+# If true (default), keep the classifier frozen during the feature-extractor finetuning stage.
+freeze_classifier: true
+fold: 0
+
+# Classifier settings
+num_classes: 24
+use_batch_norm: true
+copies: 1
+noise_std: 0.01
+

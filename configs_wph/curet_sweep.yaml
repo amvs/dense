@@ -2,15 +2,15 @@
 # It uses the base configuration from mnist.yaml and overrides specific parameters for the sweep
 base_config: configs_wph/curet.yaml
 sweep:
-  classifier_epochs: [10]
-  conv_epochs: [10]
-  share_rotations: [false, true]
-  share_phases: [false, true]
-  lambda_reg: [1e-3, 0]
-  nb_orients: [4, 8]
-  num_phases: [2, 4]
-  max_scale: [4, 5, 6]
-  val_ratio: [0.1, 0.5, 0.9, 0.95]
-  use_batch_norm: [true]
-  random_filters: [true, false]
+  classifier_epochs: [15]
+  conv_epochs: [15]
+  seed: [1,2,0]
+  share_scale_pairs: [false]
+  delta_j: [null]
+  copies: [1,10]
+  train_ratio: [0.05, 0.1, 0.5, 0.85]
+  # lambda_reg: [0, 5.0e+5, 1.0e+6, 2.0e+6, 1.0e+7] # determined scale of lambda reg was 1e6
+  downsample: [true]
+  freeze_classifier: [false, true]
+  random_filters: [false, true]
 

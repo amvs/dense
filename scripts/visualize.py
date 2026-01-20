@@ -15,7 +15,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
-import torchvision.transforms as T
+from torchvision import transforms
 from training.datasets import get_loaders
 from colorsys import hls_to_rgb
 
@@ -51,22 +51,39 @@ def calc_wph_activations(model, x, flatten=False, vmap_chunk_size=None):
     Collect intermediate activations from WPHClassifier/WPHModel.
     Returns a dict of activations for each submodule.
     """
+    from wph.wph_model import WPHModel, WPHModelDownsample
     acts = {}
-    # If model is WPHClassifier, get feature_extractor
-    if hasattr(model, 'feature_extractor'):
+    # If model is WPHClassifier, use the first feature extractor
+    if hasattr(model, 'feature_extractors'):
+        fe = model.feature_extractors[0]
+    elif hasattr(model, 'feature_extractor'):
         fe = model.feature_extractor
     else:
         fe = model
     # Wavelet convolution
-    xpsi = fe.wave_conv(x)
-    acts['wave_conv'] = xpsi.detach().cpu()
-    # ReluCenter
-    xrelu = fe.relu_center(xpsi)
-    acts['relu_center'] = xrelu.detach().cpu()
-    # CorrLayer
     nb = x.shape[0]
-    xcorr = fe.corr(xrelu.view(nb, fe.num_channels * fe.J * fe.L * fe.A, fe.M, fe.N), flatten=flatten, vmap_chunk_size=vmap_chunk_size)
-    acts['corr'] = xcorr.detach().cpu()
+    xpsi = fe.wave_conv(x)
+    if type(fe) is WPHModel:
+        acts['wave_conv'] = xpsi.detach().cpu()
+        xrelu = fe.relu_center(xpsi)
+        acts['relu_center'] = xrelu.detach().cpu()
+        xcorr = fe.corr(xrelu.view(nb, fe.num_channels * fe.J * fe.L * fe.A, fe.M, fe.N), flatten=flatten, vmap_chunk_size=vmap_chunk_size)
+        acts['corr'] = xcorr.detach().cpu()
+    elif type(fe) is WPHModelDownsample and fe.share_scale_pairs:
+        # xpsi, xrelu, xcorr are lists of lists of tensors; flatten into a single list
+        acts['wave_conv'] = [t.detach().cpu() for t in xpsi]
+        xrelu = fe.relu_center(xpsi)
+        acts['relu_center'] = [t.detach().cpu() for t in xrelu]
+        xcorr = fe.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
+        acts['corr'] = [t.detach().cpu() for t in xcorr]
+    elif type(fe) is WPHModelDownsample and not fe.share_scale_pairs:
+        # xpsi, xrelu, xcorr are lists of lists of tensors; flatten into a single list
+        acts['wave_conv'] = [t.detach().cpu() for inner in xpsi for t in inner]
+        xrelu = fe.relu_center(xpsi)
+        acts['relu_center'] = [t.detach().cpu() for inner in xrelu for t in inner]
+        xcorr = fe.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
+        acts['corr'] = [t.detach().cpu() for t in xcorr]
+    
     # FFT
     hatx_c = torch.fft.fft2(x)
     # Lowpass
@@ -76,6 +93,7 @@ def calc_wph_activations(model, x, flatten=False, vmap_chunk_size=None):
     xhigh = fe.highpass(hatx_c)
     acts['highpass'] = xhigh.detach().cpu()
     return acts
+
 
 def compare_filters(origin_model, tuned_model, analyze_dir, max_nb_filters=2):
     logger = LoggerManager.get_logger()
@@ -259,17 +277,33 @@ def visualize_wph_activations(acts_origin, acts_tuned, analyze_dir, max_maps=3):
         a_o = acts_origin[key]
         a_t = acts_tuned[key]
         if key == 'corr':
-            plot_corr_activations(a_o, a_t, key, save_dir, max_maps*4)
+            if type(a_o) is list:
+                for j in range(len(a_o)):
+                    plot_corr_activations(a_o[j], a_t[j], f"{key}_level{j}", save_dir, max_maps*4)
+            else:
+                plot_corr_activations(a_o, a_t, key, save_dir, max_maps*4)
             continue
-        if a_o.ndim < 5:
-            continue
+        if type(a_o) is list:
+            if a_o[0].ndim < 5:
+                continue
+        else:
+            if a_o.ndim < 5:
+                continue
         a_o = a_o[0]
         a_t = a_t[0]
         nc = a_o.shape[0]
         if nc == 3:
-            plot_wave_conv_color(a_o, a_t, key, save_dir, max_maps)
+            if type(a_o) is list:
+                for j in range(len(a_o)):
+                    plot_wave_conv_color(a_o[j], a_t[j], f"{key}_level{j}", save_dir, max_maps)
+            else:
+                plot_wave_conv_color(a_o, a_t, key, save_dir, max_maps)
         else:
-            plot_wave_conv_grayscale(a_o, a_t, key, save_dir, max_maps)
+            if type(a_o) is list:
+                for j in range(len(a_o)):
+                    plot_wave_conv_grayscale(a_o[j], a_t[j], f"{key}_level{j}", save_dir, max_maps)
+            else:
+                plot_wave_conv_grayscale(a_o, a_t, key, save_dir, max_maps)
 
 
 def visualize_main(exp_dir, model_type="dense", origin_filename="origin.pt", tuned_filename="trained.pt", filters=None):
@@ -318,12 +352,77 @@ def visualize_main(exp_dir, model_type="dense", origin_filename="origin.pt", tun
         origin_model.load_state_dict(origin_state)
         tuned_model.load_state_dict(tuned_state)
     elif model_type == "wph":
-        from wph.wph_model import WPHModel, WPHClassifier
         max_scale = config["max_scale"]
         nb_orients = config["nb_orients"]
         num_phases = config["num_phases"]
         image_shape = config["image_shape"]
-        origin_fe = WPHModel(
+        if config['downsample']:
+            from wph.wph_model import WPHModel, WPHClassifier, WPHModelDownsample
+            T = filters['psi'].shape[-1]
+            origin_fe = WPHModelDownsample(J=max_scale,
+                L=nb_orients,
+                A=num_phases,
+                A_prime=config.get("num_phases_prime", 1),
+                M=image_shape[1],
+                N=image_shape[2],
+                T=T,
+                filters=filters,
+                num_channels=image_shape[0],
+                share_rotations=config["share_rotations"],
+                share_phases=config["share_phases"],
+                share_channels=config["share_channels"],
+                share_scales=config['share_scales'],
+                share_scale_pairs=config.get('share_scale_pairs', True),
+                normalize_relu=config["normalize_relu"],
+                delta_j=config.get("delta_j"),
+                delta_l=config.get("delta_l"),
+                shift_mode=config["shift_mode"],
+                mask_angles=config["mask_angles"],
+                mask_union_highpass=config["mask_union_highpass"],
+            )
+            tuned_fe = WPHModelDownsample(J=max_scale,
+                L=nb_orients,
+                A=num_phases,
+                A_prime=config.get("num_phases_prime", 1),
+                M=image_shape[1],
+                N=image_shape[2],
+                T=T,
+                filters=filters,
+                num_channels=image_shape[0],
+                share_rotations=config["share_rotations"],
+                share_phases=config["share_phases"],
+                share_channels=config["share_channels"],
+                share_scales=config['share_scales'],
+                share_scale_pairs=config.get('share_scale_pairs', True),
+                normalize_relu=config["normalize_relu"],
+                delta_j=config.get("delta_j"),
+                delta_l=config.get("delta_l"),
+                shift_mode=config["shift_mode"],
+                mask_angles=config["mask_angles"],
+                mask_union_highpass=config["mask_union_highpass"],
+            )
+        else:
+            origin_fe = WPHModel(
+                J=max_scale,
+                L=nb_orients,
+                A=num_phases,
+                A_prime=config.get("num_phases_prime", 1),
+                M=image_shape[1],
+                N=image_shape[2],
+                filters=filters,
+                num_channels=image_shape[0],
+                share_rotations=config["share_rotations"],
+                share_phases=config["share_phases"],
+                share_channels=config["share_channels"],
+                normalize_relu=config["normalize_relu"],
+                delta_j=config.get("delta_j"),
+                delta_l=config.get("delta_l"),
+                shift_mode=config["shift_mode"],
+                mask_union=config["mask_union"],
+                mask_angles=config["mask_angles"],
+                mask_union_highpass=config["mask_union_highpass"],
+            )
+            tuned_fe = WPHModel(
             J=max_scale,
             L=nb_orients,
             A=num_phases,
@@ -342,40 +441,22 @@ def visualize_main(exp_dir, model_type="dense", origin_filename="origin.pt", tun
             mask_union=config["mask_union"],
             mask_angles=config["mask_angles"],
             mask_union_highpass=config["mask_union_highpass"],
-            wavelets=config["wavelet"],
         )
+        copies = int(config.get("copies", 1))
         origin_model = WPHClassifier(feature_extractor=origin_fe,
-                                     num_classes=config["num_classes"],
-                                     use_batch_norm=config["use_batch_norm"]).to(device)
-        origin_model.feature_extractor.wave_conv.get_full_filters()
-        tuned_fe = WPHModel(
-            J=max_scale,
-            L=nb_orients,
-            A=num_phases,
-            A_prime=config.get("num_phases_prime", 1),
-            M=image_shape[1],
-            N=image_shape[2],
-            filters=filters,
-            num_channels=image_shape[0],
-            share_rotations=config["share_rotations"],
-            share_phases=config["share_phases"],
-            share_channels=config["share_channels"],
-            normalize_relu=config["normalize_relu"],
-            delta_j=config.get("delta_j"),
-            delta_l=config.get("delta_l"),
-            shift_mode=config["shift_mode"],
-            mask_union=config["mask_union"],
-            mask_angles=config["mask_angles"],
-            mask_union_highpass=config["mask_union_highpass"],
-            wavelets=config["wavelet"]
-        )
+                 num_classes=config["num_classes"],
+                 use_batch_norm=config["use_batch_norm"],
+                 copies=copies).to(device)
+        origin_model.feature_extractors[0].wave_conv.get_full_filters()
+        
         tuned_model = WPHClassifier(feature_extractor=tuned_fe,
-                                    num_classes=config["num_classes"],
-                                    use_batch_norm=config["use_batch_norm"]).to(device)
-        tuned_model.feature_extractor.wave_conv.get_full_filters()
+                num_classes=config["num_classes"],
+                use_batch_norm=config["use_batch_norm"],
+                copies=copies).to(device)
+        tuned_model.feature_extractors[0].wave_conv.get_full_filters()
         logger.log("Loading model weights...")
-        origin_state = torch.load(origin_path, map_location=device)
-        tuned_state = torch.load(tuned_path, map_location=device)
+        origin_state = torch.load(origin_path, map_location=device, weights_only=True)
+        tuned_state = torch.load(tuned_path, map_location=device, weights_only=True)
         origin_model.load_state_dict(origin_state)
         tuned_model.load_state_dict(tuned_state)
     else:
@@ -400,7 +481,7 @@ def visualize_main(exp_dir, model_type="dense", origin_filename="origin.pt", tun
     images, labels = next(iter(train_loader))
     # pick first image
     img_tensor = images[0:1].to(device)   # keep batch dimension [1,C,H,W]
-    to_pil = T.ToPILImage()
+    to_pil = transforms.ToPILImage()
     img_pil = to_pil(img_tensor.squeeze(0).cpu())
     png_path = os.path.join(analyze_dir, "test_img.png")
     img_pil.save(png_path)

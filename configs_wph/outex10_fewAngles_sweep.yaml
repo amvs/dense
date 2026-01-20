@@ -1,0 +1,18 @@
+# This is a sweep config file for hyperparameter tuning on MNIST dataset
+# It uses the base configuration from mnist.yaml and overrides specific parameters for the sweep
+base_config: configs_wph/outex10.yaml
+sweep:
+  grad_checkpoint: [true]
+  downsample: [true]
+  wavelet_params:
+    - {S: 9, w0: 2.7646}  # 0.88 * pi
+    - {S: 15, w0: 2.7646}  # 0.88 * pi
+  train_ratio: [0.8]
+  share_scale_pairs: [true]
+  num_phases: [1, 2, 4]
+  nb_orients: [2,4]
+  mask_angles: [2,4]
+  copies: [1]
+  freeze_classifier: [false]
+
+

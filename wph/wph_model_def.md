@@ -59,6 +59,11 @@ The WPH model is implemented as a three-layer neural network architecture.
 
 A convolutional layer with $|\Gamma|$ filters, where $\Gamma = \{ 0, 1, \ldots, J-1 \} \times \frac{\pi}{L} \{ 0, \ldots, L-1 \} \times \{ \alpha_1, \ldots, \alpha_K \}$. Each filter corresponds to a phase-shifted wavelet $e^{i\alpha}\psi_{j,\theta}$. The real part is taken as input to the next layer.
 
+Optional pair-specific filter sharing (downsampled model):
+- Flag `share_scale_pairs` controls whether a single wavelet bank is reused across all scale pairs (`True`, default) or a distinct bank is learned per ordered pair `(j_1, j_2)` (`False`).
+- When `share_scale_pairs=False`, the convolution layer stores a separate parameter tensor for each pair `(j_1, j_2)` and only computes the pairs required by the correlation layer. This increases parameter count but does not change the dimensionality of the correlation outputs.
+- If `share_scales=True`, it overrides and implies `share_scale_pairs=True`.
+
 **Layer 2: ReLU Activation and Mean Centering**
 
 Apply ReLU activation followed by subtraction of the spatial mean $\mu_\gamma$ for each channel $\gamma$, producing $R^{Alpha} x (\gamma, u)$.
@@ -73,6 +78,10 @@ Only compute correlations for $(\gamma, \gamma') \in \mathcal{P}$, where $\mathc
 - Selected cross-correlations: $(\gamma, \gamma')$ with $|j - j'| \leq \Delta_j$ for some maximum scale difference
 
 The output is $\Phi^{WPH}(x) = \{ C^{WPH} x (\gamma, \gamma', \tau) : (\gamma, \gamma') \in \mathcal{P}, \tau \in \mathcal{T} \}$.
+
+Downsampled pair-mode variant:
+- `CorrLayerDownsamplePairs` consumes nested per-pair feature maps indexed by `(j_1, j_2)` and correlates channels extracted from the same pair-specific bank, ensuring no mixing across different pairs.
+- This preserves the number of output correlations while allowing per-pair learnable filters in the convolutional layer.
 
 ### Implementation Notes:
 - The convolutional filters can be initialized with wavelet functions $e^{i\alpha}\psi_{j,\theta}$ (for WPH model) or randomly initialized (for trainable networks)

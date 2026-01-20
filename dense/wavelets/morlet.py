@@ -31,7 +31,7 @@ def cont_morlet(grid, domain, sigma=0.8, w0=0.75*np.pi, theta=0):
         return np.fft.ifftshift(result)  # Shift back to original frequency domain
 
 
-def filter_bank(T, S, L):
+def filter_bank(T, S, L, **kwargs):
     '''
     Create a filter bank of complex Morlet wavelets.
     T must be even, S must be odd.
@@ -46,16 +46,16 @@ def filter_bank(T, S, L):
         x = np.linspace(-T//2, T//2, S) # [0, T/(S-1), 2*T/(S-1), ..., T] - T//2
         y = np.linspace(-T//2, T//2, S)
         grid = np.meshgrid(x, y)
-        filter = cont_morlet(grid, domain='spatial', theta=theta)
+        filter = cont_morlet(grid, domain='spatial', theta=theta, **kwargs)
         filter = torch.tensor(filter, dtype=torch.complex64).unsqueeze(0)  # Convert to complex tensor
         filters.append(filter)
     filters = torch.cat(filters, dim=0)  # Shape: (L, S, S)
     return filters
 
-def morlet(max_scale, nb_orients, T=8, S=3):
+def morlet(max_scale, nb_orients, T=8, S=3, **kwargs):
     filters = []
     for j in range(max_scale):
-        filter = filter_bank(T, S, nb_orients)
+        filter = filter_bank(T, S, nb_orients, **kwargs)
         filters.append(filter)
         S = 2*S+1
     return filters
