@@ -109,7 +109,7 @@ def recompute_bn_running_stats(model, loader, device, max_batches=100, logger=No
                 try:
                     m.momentum = momentum
                 except Exception:
-                    pass
+                    raise RuntimeError("Failed to set momentum on BatchNorm module during BN warmup.")
 
     model.train()
     batches = 0
@@ -126,10 +126,7 @@ def recompute_bn_running_stats(model, loader, device, max_batches=100, logger=No
                     inputs = batch
                 if isinstance(inputs, (list, tuple)):
                     inputs = inputs[0]
-                try:
-                    inputs = inputs.to(device)
-                except Exception:
-                    pass
+                inputs = inputs.to(device)
                 try:
                     _ = model(inputs)
                 except Exception:

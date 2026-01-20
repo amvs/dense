@@ -1,24 +1,23 @@
-import yaml, itertools, subprocess
-from dense.helpers import LoggerManager
-from datetime import datetime
 import os
 import argparse
-from configs import load_config, expand_param
+from configs import load_config
+from dense.helpers.logger import LoggerManager
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
-from ast import literal_eval
 
 def df_from_logs(args):
     sweep_dir = args.sweep_dir
     rows = []
+    logger = LoggerManager.get_logger()
     for ratio_folder in os.listdir(sweep_dir):
         ratio_path = os.path.join(sweep_dir, ratio_folder)
         if not os.path.isdir(ratio_path) or not ratio_folder.startswith("train_ratio="):
             continue
 
         train_ratio = float(ratio_folder.split("=")[1])  # extract the number
+        logger.info(f"Processing train_ratio={train_ratio}...")
         for run_folder in os.listdir(ratio_path):
             run_path = os.path.join(ratio_path, run_folder)
             config_path = os.path.join(run_path, "config.yaml")
@@ -193,7 +192,7 @@ def side_by_side_boxplots(
 
 def slope_plot(df, group_cols, metric, sweep_dir, fname_suffix=""):
     calc_slope = lambda df: np.polyfit(df["train_ratio"], df[metric], 1)[0]
-    calc_intercept = lambda df: np.polyfit(df["train_ratio"], df[metric], 1)[1]
+    # calc_intercept = lambda df: np.polyfit(df["train_ratio"], df[metric], 1)[1]
     df_grouped = (
         df.groupby(group_cols, as_index=True)
         .apply(calc_slope)

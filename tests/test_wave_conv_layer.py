@@ -273,6 +273,7 @@ def test_multiscale_alignment():
     # Just ensure we aren't getting NaNs or Infs
     assert not torch.isnan(out_spatial[1]).any()
     assert energy_j1 > 0
+    assert energy_j1 < energy_j0
 
 
 def test_scale_zero_equivalence():
@@ -463,7 +464,7 @@ def test_circular_boundary_conditions():
 
     # Forward
     out = model(x)[0] # (B, C, L, A, H, W)
-    res = out[0, 0, 0, 0] # (H, W) real part mostly
+    # res = out[0, 0, 0, 0] # (H, W) real part mostly
     
     # Because of circular padding, the filter looking at the "right neighbor" 
     # of the pixel at x=N-1 should see the pixel at x=0.

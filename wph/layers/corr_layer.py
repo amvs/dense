@@ -5,8 +5,7 @@ from torch.utils.checkpoint import checkpoint
 import warnings
 from typing import Optional, Literal
 from .utils import create_masks_shift
-import matplotlib.pyplot as plt
-from scripts.visualize import colorize
+from dense.helpers.logger import LoggerManager
 import math
 
 
@@ -528,7 +527,8 @@ class CorrLayerDownsample(BaseCorrLayer):
                                             {"j": j2, "l": l2, "a": a2, "c": c2}
                                         )
                                         pair_metadata.append((j1,j2))
-        print("number of moments (without low-pass and harr): ", nb_moments)
+        logger = LoggerManager.get_logger()
+        logger.info(f"Number of moments (without low-pass and harr): {nb_moments}")
 
         idx_wph = dict()
         idx_wph["la1"] = torch.tensor(idx_la1).long()
@@ -557,7 +557,6 @@ class CorrLayerDownsample(BaseCorrLayer):
             vmap_chunk_size: Chunk size for vmap (smaller = less memory, slower)
             use_checkpoint: Use gradient checkpointing to save memory during training
         """
-        nb = xpsi[0].shape[0]
         device = xpsi[0].device
         
         # 1. Pre-compute FFTs to save time
