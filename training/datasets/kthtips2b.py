@@ -272,22 +272,18 @@ def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, 
     
     # Apply normalization using train statistics to all splits
     # For grayscale: mean and std are tuples of single values
-    normalized_transform = transforms.Compose([
-        transforms.ToTensor(),  # Convert PIL to tensor (scale augmentation returns PIL)
-        transforms.Normalize(mean, std)  # mean/std are tuples: (mean,) and (std,)
-    ])
     
-    # Update datasets' transforms
-    # For scale-augmented dataset, we need to wrap the transform to handle scale augmentation
+    # For scale-augmented dataset: ScaleAugmentedDataset returns PIL images,
+    # so we need to apply transform that converts PIL to tensor and normalizes
     if use_scale_augmentation:
-        # ScaleAugmentedDataset already applies scaling, so we just need normalization
-        # But ScaleAugmentedDataset returns PIL images, so we need to convert to tensor first
+        # Scale augmentation already applied scale factors and resized to target_size
+        # So we just need: PIL -> Tensor -> Normalize
+        normalized_transform = transforms.Compose([
+            transforms.ToTensor(),  # Convert PIL to tensor
+            transforms.Normalize(mean, std)  # mean/std are tuples: (mean,) and (std,)
+        ])
+        # Apply transform to base dataset (ScaleAugmentedDataset will use it)
         train_dataset.base_dataset.transform = normalized_transform
-        # Create a wrapper transform for the augmented dataset
-        def augmented_transform(img):
-            # img is already scaled PIL image from ScaleAugmentedDataset
-            return normalized_transform(img)
-        # We'll handle this in ScaleAugmentedDataset.__getitem__
     else:
         # Normal transform: includes center crop, resize, and normalization
         normalized_transform_full = transforms.Compose([

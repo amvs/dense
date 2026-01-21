@@ -111,21 +111,40 @@ class ScaleAugmentedDataset(Dataset):
             idx: Index in augmented dataset
             
         Returns:
-            (image, label): Augmented image and label
+            (image, label): Augmented image (PIL Image) and label
         """
         # Map augmented index to base dataset index and scale factor
         base_idx = idx // self.num_scales
         scale_idx = idx % self.num_scales
         
-        # Get original sample (already normalized tensor)
-        img, label = self.base_dataset[base_idx]
+        # Get original sample from base dataset
+        # Temporarily disable transform to get raw PIL image for scale augmentation
+        # Scale augmentation must happen BEFORE normalization
+        original_transform = getattr(self.base_dataset, 'transform', None)
+        self.base_dataset.transform = None
         
-        # Apply scale augmentation
-        # Note: img is already a normalized tensor [C, H, W] at this point
-        augmented_images = self.scale_aug(img, self.target_size)
+        # Get original sample as PIL Image (before any transforms)
+        img_pil, label = self.base_dataset[base_idx]
         
-        # Return the specific scale version
-        return augmented_images[scale_idx], label
+        # Restore transform (will be applied after scale augmentation)
+        self.base_dataset.transform = original_transform
+        
+        # Apply scale augmentation to PIL image
+        # This creates 4 versions with different scales (all PIL Images)
+        augmented_images = self.scale_aug(img_pil, self.target_size)
+        
+        # Get the specific scale version (PIL Image)
+        scaled_img_pil = augmented_images[scale_idx]
+        
+        # Apply normalization transform if base dataset has one
+        # This converts PIL -> Tensor -> Normalize
+        if original_transform is not None:
+            scaled_img = original_transform(scaled_img_pil)
+        else:
+            # No transform, return PIL image
+            scaled_img = scaled_img_pil
+        
+        return scaled_img, label
     
     @property
     def classes(self):
