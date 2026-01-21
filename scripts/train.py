@@ -94,6 +94,7 @@ def main():
         fold = config.get("fold", None)  # Optional fold parameter for cross-validation
         example_per_class = config.get("example_per_class", None)  # New: examples per class
         use_balanced_batches = config.get("use_balanced_batches", True)  # Use balanced batches
+        use_scale_augmentation = config.get("use_scale_augmentation", False)  # Scale augmentation for training
         
         # If example_per_class is not set, try to use train_ratio (backward compatibility)
         if example_per_class is None and train_ratio is not None and train_ratio < 1.0:
@@ -111,7 +112,8 @@ def main():
             example_per_class=example_per_class,
             drop_last=False,
             seed=seed,
-            use_balanced_batches=use_balanced_batches
+            use_balanced_batches=use_balanced_batches,
+            use_scale_augmentation=use_scale_augmentation
         )
         
         # Handle return value: new version returns stats as 6th element
@@ -179,6 +181,7 @@ def main():
     depth = config.get("depth", -1)
     random = config.get("random", False)
     use_original_filters = config["use_original_filters"]
+    use_log_transform = config.get("use_log_transform", False)
     
     # Classifier parameters
     classifier_type = config["classifier_type"]
@@ -201,6 +204,7 @@ def main():
         depth=depth,
         random=random,
         use_original_filters=use_original_filters,
+        use_log_transform=use_log_transform,
         classifier_type=classifier_type,
         hypernet_hidden_dim=hypernet_hidden_dim,
         attention_d_model=attention_d_model,
@@ -629,10 +633,21 @@ def main():
         logger.log("Fine tuning both classifier and extractor together...")
         model.full_train()
         # Use lower learning rates for fine-tuning
-        # Extractor gets reduced LR, classifier gets moderate reduction
+        # Extractor gets reduced LR
         ft_lr_extractor = lr * ft_lr_multiplier
-        ft_lr_classifier = linear_lr * max(ft_lr_multiplier * 2, 0.5)  # At least 50% of original, or 2x extractor multiplier
-        logger.log(f"Using fine-tuning learning rates: extractor={ft_lr_extractor}, classifier={ft_lr_classifier}")
+        
+        # Classifier LR: Use much smaller LR for PCA-based classifiers to prevent destroying PCA initialization
+        # For lowrank_pca/trainable_pca, the classifier is initialized from optimal PCA solution,
+        # so it needs a VERY small LR to avoid catastrophic forgetting
+        if classifier_type in ['lowrank_pca', 'trainable_pca']:
+            # Use same multiplier as extractor (very small) to preserve PCA initialization
+            ft_lr_classifier = linear_lr * ft_lr_multiplier
+            logger.log(f"Using PCA-preserving classifier LR (same as extractor multiplier) for {classifier_type}")
+        else:
+            # For other classifiers, use moderate reduction
+            ft_lr_classifier = linear_lr * max(ft_lr_multiplier * 2, 0.5)  # At least 50% of original, or 2x extractor multiplier
+        
+        logger.log(f"Using fine-tuning learning rates: extractor={ft_lr_extractor:.10f}, classifier={ft_lr_classifier:.10f}")
         # Use parameter groups with different learning rates
         optimizer_ft = torch.optim.Adam([
             {'params': model.classifier.parameters(), 'lr': ft_lr_classifier},

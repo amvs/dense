@@ -6,10 +6,11 @@ import torch
 from dense.helpers import LoggerManager
 from training.datasets.base import stratify_split, CenterCropToSquare, equally_split
 from training.datasets.balanced_sampler import BalancedBatchSampler, BalancedSubsetSampler
+from training.datasets.scale_augmentation import ScaleAugmentedDataset
 import hashlib
 import numpy as np
 from collections import defaultdict
-
+import random
 
 class KHTTips2bDataset(Dataset):
     """
@@ -147,7 +148,7 @@ def create_balanced_train_subset(dataset, example_per_class, seed=42):
 
 def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, fold=None, 
                           train_ratio=None, example_per_class=None, drop_last=False, seed=42, 
-                          use_balanced_batches=True):
+                          use_balanced_batches=True, use_scale_augmentation=False):
     """
     Load KTH-TIPS2-b dataset with leave-one-sample-out cross-validation.
     
@@ -250,7 +251,21 @@ def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, 
         stats["train_total_examples"] = len(train_dataset)
         logger.info(f"Using all training data: {len(train_dataset)} examples")
     
+    # Apply scale augmentation to training dataset BEFORE normalization if requested
+    # This ensures normalization is computed on augmented data and applied correctly
+    if use_scale_augmentation:
+        logger.info("Applying scale augmentation to training dataset (before normalization)...")
+        original_train_size = len(train_dataset)
+        # Create a transform that includes scale augmentation
+        # Scale augmentation will be applied per-sample in ScaleAugmentedDataset
+        train_dataset = ScaleAugmentedDataset(train_dataset, target_size=resize)
+        logger.info(f"Scale augmentation: {original_train_size} -> {len(train_dataset)} samples (4x increase)")
+        # Update stats to reflect augmented dataset
+        stats["train_total_examples"] = len(train_dataset)
+        stats["train_examples_per_class"] = stats["train_examples_per_class"] * 4  # 4 scales per example
+    
     # Compute (or load cached) mean and std from TRAIN set only (no data leakage)
+    # If scale augmentation is enabled, this includes augmented samples
     logger.info(f"Computing/loading normalization statistics from {len(train_dataset)} training samples...")
     mean, std = load_or_compute_mean_std(train_dataset, resize=resize, root_dir=root_dir, fold=fold)
     logger.info(f"Normalization stats - mean: {mean}, std: {std}")
@@ -258,16 +273,43 @@ def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, 
     # Apply normalization using train statistics to all splits
     # For grayscale: mean and std are tuples of single values
     normalized_transform = transforms.Compose([
-        CenterCropToSquare(),
-        transforms.ToTensor(),
-        transforms.Resize((resize, resize)),
+        transforms.ToTensor(),  # Convert PIL to tensor (scale augmentation returns PIL)
         transforms.Normalize(mean, std)  # mean/std are tuples: (mean,) and (std,)
     ])
     
     # Update datasets' transforms
-    train_dataset.transform = normalized_transform
-    val_dataset.transform = normalized_transform
-    test_dataset.transform = normalized_transform
+    # For scale-augmented dataset, we need to wrap the transform to handle scale augmentation
+    if use_scale_augmentation:
+        # ScaleAugmentedDataset already applies scaling, so we just need normalization
+        # But ScaleAugmentedDataset returns PIL images, so we need to convert to tensor first
+        train_dataset.base_dataset.transform = normalized_transform
+        # Create a wrapper transform for the augmented dataset
+        def augmented_transform(img):
+            # img is already scaled PIL image from ScaleAugmentedDataset
+            return normalized_transform(img)
+        # We'll handle this in ScaleAugmentedDataset.__getitem__
+    else:
+        # Normal transform: includes center crop, resize, and normalization
+        normalized_transform_full = transforms.Compose([
+            CenterCropToSquare(),
+            transforms.ToTensor(),
+            transforms.Resize((resize, resize)),
+            transforms.Normalize(mean, std)
+        ])
+        train_dataset.transform = normalized_transform_full
+    
+    val_dataset.transform = transforms.Compose([
+        CenterCropToSquare(),
+        transforms.ToTensor(),
+        transforms.Resize((resize, resize)),
+        transforms.Normalize(mean, std)
+    ])
+    test_dataset.transform = transforms.Compose([
+        CenterCropToSquare(),
+        transforms.ToTensor(),
+        transforms.Resize((resize, resize)),
+        transforms.Normalize(mean, std)
+    ])
     logger.info(f"Updated dataset transforms with normalization")
     
     # Create data loaders with balanced batches if requested

@@ -25,6 +25,8 @@ class ScatterParams:
     random: bool = False
     # Filter mode
     use_original_filters: bool = False  # If True, use filters at different scales without downsampling. If False, use first filter and downsample (current mode).
+    # Feature preprocessing
+    use_log_transform: bool = False  # If True, apply log(1+x) transform to scattering coefficients before classification
     # Classifier type: 'hypernetwork', 'attention', 'pca', 'trainable_pca', or 'lowrank_pca'
     classifier_type: str = 'hypernetwork'
     # Hypernetwork parameters
@@ -940,6 +942,10 @@ class dense(nn.Module):
                 outputs = [self.pooling(i) for i in outputs]    
                 inputs = [self.pooling(i) for i in inputs]
             features = torch.cat(outputs, dim=1)
+        
+        # Apply log transform if requested (log(1+x) to handle zeros safely)
+        if self.use_log_transform:
+            features = torch.log1p(features)  # log(1+x) is safer than log(x) as it handles zeros
         
         return features
 

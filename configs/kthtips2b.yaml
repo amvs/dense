@@ -7,6 +7,7 @@ n_copies: 1
 depth: -1  # -1 means full scatter
 random: false
 use_original_filters: false  # If true, use filters at different scales without downsampling. If false, use first filter and downsample (current mode).
+use_log_transform: false  # If true, apply log(1+x) transform to scattering coefficients before classification
 
 # classifier setting
 classifier_type: hypernetwork
@@ -36,6 +37,7 @@ example_per_class: null  # Number of examples per class for training (null = use
 test_ratio: 0.15  # Not used for KTH (test set is determined by fold or standard split)
 train_val_ratio: 4  # Not used for KTH (val set is determined by fold or standard split)
 use_balanced_batches: true  # Ensure each batch has equal examples per class
+use_scale_augmentation: false  # If true, augment training images with scale factors [1, sqrt(2), 2, 2*sqrt(2)]
 seed: 123
 
 # dataset note
