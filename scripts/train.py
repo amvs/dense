@@ -138,6 +138,48 @@ def main():
             logger.log(f"Dataset statistics: {config['dataset_stats']}")
         
         # Note: KTH loader already handles train/val/test split, so no need for split_train_val
+    elif dataset == "kthtips":
+        # KTH-TIPS (original) returns train_loader, val_loader, test_loader already
+        resize = config["resize"]
+        kth_root_dir = config["kth_root_dir"]
+        example_per_class = config.get("example_per_class", None)  # Examples per class
+        use_balanced_batches = config.get("use_balanced_batches", True)  # Use balanced batches
+        use_scale_augmentation = config.get("use_scale_augmentation", False)  # Scale augmentation for training
+        
+        loaders_result = get_loaders(
+            dataset=dataset,
+            root_dir=kth_root_dir,
+            resize=resize,
+            batch_size=batch_size,
+            example_per_class=example_per_class,
+            drop_last=False,
+            seed=seed,
+            use_balanced_batches=use_balanced_batches,
+            use_scale_augmentation=use_scale_augmentation
+        )
+        
+        # Handle return value: new version returns stats as 6th element
+        if len(loaders_result) == 6:
+            train_loader, val_loader, test_loader, nb_class, image_shape, dataset_stats = loaders_result
+        else:
+            # Backward compatibility: old version doesn't return stats
+            train_loader, val_loader, test_loader, nb_class, image_shape = loaders_result
+            dataset_stats = None
+        
+        # Write dataset statistics to config if available
+        if dataset_stats is not None:
+            config["dataset_stats"] = {
+                "num_classes": dataset_stats["num_classes"],
+                "examples_per_class": dataset_stats["examples_per_class"],
+                "min_examples_per_class": dataset_stats["min_examples_per_class"],
+                "max_examples_per_class": dataset_stats["max_examples_per_class"],
+                "is_balanced": dataset_stats["is_balanced"],
+                "train_examples_per_class": dataset_stats.get("train_examples_per_class", None),
+                "train_total_examples": dataset_stats.get("train_total_examples", None)
+            }
+            logger.log(f"Dataset statistics: {config['dataset_stats']}")
+        
+        # Note: KTH loader already handles train/val/test split, so no need for split_train_val
     elif dataset == "outex":
         # Outex returns train_loader, val_loader, test_loader already
         resize = config["resize"]

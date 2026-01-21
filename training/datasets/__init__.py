@@ -3,7 +3,7 @@ from .kaggle import get_kaggle_loaders
 from .base import split_train_val
 
 Loaders = ["mnist", "smohsensadeghi/curet-dataset", "roustoumabdelmoula/textures-dataset", "saurabhshahane/barkvn50",
-"prasunroy/natural-images", "kthtips2b", "puneet6060/intel-image-classification", "outex", "jmexpert/describable-textures-dataset-dtd"]
+"prasunroy/natural-images", "kthtips2b", "kthtips", "puneet6060/intel-image-classification", "outex", "jmexpert/describable-textures-dataset-dtd"]
 
 def get_loaders(dataset, *args, **kwargs):
     if dataset not in Loaders:
@@ -13,6 +13,9 @@ def get_loaders(dataset, *args, **kwargs):
     elif dataset == "kthtips2b":
         from .kthtips2b import get_kthtips2b_loaders
         loaders = get_kthtips2b_loaders(*args, **kwargs)
+    elif dataset == "kthtips":
+        from .kthtips import get_kthtips_loaders
+        loaders = get_kthtips_loaders(*args, **kwargs)
     elif dataset == "outex":
         from .outex import get_outex_loaders
         loaders = get_outex_loaders(*args, **kwargs)

@@ -1,0 +1,21 @@
+
+base_config: configs/kthtips.yaml
+sweep:
+  classifier_epochs: [15]
+  conv_epochs: [20]
+  example_per_class:
+    start: 5
+    stop: 41
+    step: 5
+  lr: [0.05, 0.01, 0.001]
+  weight_decays: [1e-3, 1e-4, 1e-5]
+  nb_orients: [4, 6, 8]
+  seed: [123, 456, 789, 101112, 131415]
+  classifier_type: [hypernetwork]
+  hypernet_hidden_dim: [64]
+  attention_d_model: [128]
+  attention_num_heads: [4]
+  attention_num_layers: [2]
+  pca_dim: [50]  # Number of PCA components per class (only used when classifier_type='pca')
+  fine_tune_mode: [extractor_only, both]
+  
