@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 import yaml
 from sklearn.svm import LinearSVC
+import gc
 
 from fv_cnn import FisherVectorEncoder, MultiScaleCNNExtractor, FCFeatureExtractor
 from training.datasets.outex import OutexDataset
@@ -173,13 +174,22 @@ def collect_descriptors(train_loader: DataLoader, extractor: MultiScaleCNNExtrac
     collected: List[np.ndarray] = []
     total = 0
     extractor.eval()
+    # Resolve target device from extractor; fallback to CPU
+    if hasattr(extractor, "device"):
+        device = extractor.device
+    else:
+        try:
+            device = next(extractor.parameters()).device
+        except Exception:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     with torch.no_grad():
         for images, _ in train_loader:
+            images = images.to(device)
             for i in range(images.size(0)):
                 img = images[i]
                 feats = extractor.extract(img)
                 for d in feats["descriptors"]:
-                    arr = d.numpy()
+                    arr = d.detach().cpu().numpy()
                     collected.append(arr)
                     total += arr.shape[0]
                     if total >= max_samples:
@@ -193,18 +203,28 @@ def encode_split(loader: DataLoader, extractor, encoder=None) -> Tuple[np.ndarra
     codes: List[np.ndarray] = []
     labels: List[int] = []
     extractor.eval()
+    # Resolve target device from extractor; fallback to CPU
+    if hasattr(extractor, "device"):
+        device = extractor.device
+    else:
+        try:
+            device = next(extractor.parameters()).device
+        except Exception:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     with torch.no_grad():
-        for images, ys in loader:
+        for idx, (images, ys) in enumerate(loader):
+            images = images.to(device)
+            ys = ys.to(device)
             bsz = images.size(0)
             for i in range(bsz):
                 img = images[i]
                 if encoder is None:
                     # FC pathway
-                    feat = extractor.extract(img)["descriptor"].numpy()
+                    feat = extractor.extract(img)["descriptor"].detach().cpu().numpy()
                     codes.append(feat)
                 else:
                     feats = extractor.extract(img)
-                    desc_list = [d.numpy() for d in feats["descriptors"]]
+                    desc_list = [d.detach().cpu().numpy() for d in feats["descriptors"]]
                     desc_concat = np.concatenate(desc_list, axis=0)
                     code = encoder.encode(desc_concat)
                     codes.append(code)
@@ -239,19 +259,38 @@ def apply_overrides(cfg: Dict[str, Any], overrides: List[str]) -> Dict[str, Any]
     return cfg
 
 
-def prepare_experiment(cfg: Dict[str, Any]) -> tuple[str, LoggerManager]:
-    exp_root = cfg.get("exp_root", "experiments_fvcnn")
-    os.makedirs(exp_root, exist_ok=True)
-    exp_name = cfg.get("exp_name")
-    if exp_name is None:
-        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        exp_name = f"{cfg.get('dataset','run')}-{cfg.get('backbone','net')}-{ts}"
-    exp_dir = os.path.join(exp_root, exp_name)
+def prepare_experiment(cfg: Dict[str, Any], sweep_dir: str = None, wandb_project: str = None) -> tuple[str, LoggerManager]:
+    """Prepare experiment directory and logger, compatible with sweep integration."""
+    train_ratio = cfg.get("train_ratio", 1.0)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    
+    # Optional GPU id suffix provided by sweep launcher to avoid log collisions
+    gpu_id_env = os.getenv("SWEEP_GPU_ID")
+    run_suffix = f"-gpu{gpu_id_env}" if gpu_id_env is not None else ""
+    
+    if sweep_dir is not None:
+        # Sweep mode: organize by train_ratio inside sweep_dir
+        if not os.path.exists(sweep_dir):
+            raise ValueError(f"Sweep dir {sweep_dir} does not exist!")
+        exp_dir = os.path.join(sweep_dir, f"train_ratio={train_ratio}", f"run-{timestamp}{run_suffix}")
+    else:
+        # Standalone mode: use exp_root
+        exp_root = cfg.get("exp_root", "experiments_fvcnn")
+        os.makedirs(exp_root, exist_ok=True)
+        exp_name = cfg.get("exp_name")
+        if exp_name is None:
+            exp_name = f"{cfg.get('dataset','run')}-{cfg.get('backbone','net')}-{timestamp}"
+        exp_dir = os.path.join(exp_root, exp_name)
+    
     os.makedirs(exp_dir, exist_ok=True)
     cfg["exp_dir"] = exp_dir
-    logger = LoggerManager.get_logger(log_dir=exp_dir, name="train_fvcnn", config=cfg)
-    with open(os.path.join(exp_dir, "config.yaml"), "w") as f:
-        yaml.safe_dump(cfg, f)
+    
+    logger = LoggerManager.get_logger(
+        log_dir=exp_dir,
+        wandb_project=wandb_project,
+        name=f"train_fvcnn-{timestamp}",
+        config=cfg
+    )
     return exp_dir, logger
 
 
@@ -291,17 +330,12 @@ def train_and_eval(cfg: Dict[str, Any], logger) -> None:
         encoder.fit(desc)
         logger.log("GMM fitted")
         train_codes, train_labels = encode_split(train_loader, extractor, encoder)
-        val_codes, val_labels = encode_split(val_loader, extractor, encoder)
-        test_codes, test_labels = encode_split(test_loader, extractor, encoder)
-        # Calculate feature dimension
+        logger.log(f"Encoded training set: {train_codes.shape}")
         nb_moments = train_codes.shape[1]
     elif framework == "fccnn":
         extractor = FCFeatureExtractor(backbone=backbone, fc_layer=feature_layer)
         encoder = None
         train_codes, train_labels = encode_split(train_loader, extractor, None)
-        val_codes, val_labels = encode_split(val_loader, extractor, None)
-        test_codes, test_labels = encode_split(test_loader, extractor, None)
-        # Calculate feature dimension
         nb_moments = train_codes.shape[1]
     else:
         raise ValueError(f"Unsupported framework {framework}")
@@ -318,16 +352,38 @@ def train_and_eval(cfg: Dict[str, Any], logger) -> None:
     extractor_params = sum(p.numel() for p in extractor.parameters())
     logger.log(f"Feature extractor parameters: {extractor_params}")
     
+    encoder_params = 0
     if encoder is not None:
-        encoder_params = sum(p.numel() if hasattr(p, 'numel') else 0 for p in encoder.parameters() if hasattr(encoder, 'parameters'))
+        # Count trainable parameters (if any)
+        if hasattr(encoder, "parameters"):
+            encoder_params += sum(p.numel() for p in encoder.parameters() if p is not None)
+        # Count stored buffers (e.g., GMM weights/means/covariances, PCA stats)
+        if hasattr(encoder, "buffers"):
+            encoder_params += sum(b.numel() for b in encoder.buffers() if b is not None)
         logger.log(f"Encoder parameters: {encoder_params}")
 
     C = cfg.get("svm_C", 1.0)
     clf = LinearSVC(C=C)
     clf.fit(train_codes, train_labels)
+    logger.log("Done fitting SVM classifier, computing scores")
     train_acc = clf.score(train_codes, train_labels)
-    val_acc = clf.score(val_codes, train_labels)
+    # Free training encodings
+    del train_codes, train_labels
+    gc.collect()
+
+    # Validation encoding and eval
+    val_codes, val_labels = encode_split(val_loader, extractor, encoder if framework == "fvcnn" else None)
+    logger.log(f"Encoded validation set: {val_codes.shape}")
+    val_acc = clf.score(val_codes, val_labels)
+    del val_codes, val_labels
+    gc.collect()
+
+    # Test encoding and eval
+    test_codes, test_labels = encode_split(test_loader, extractor, encoder if framework == "fvcnn" else None)
+    logger.log(f"Encoded test set: {test_codes.shape}")
     test_acc = clf.score(test_codes, test_labels)
+    del test_codes, test_labels
+    gc.collect()
 
     logger.log(f"Train_Acc={train_acc:.4f} Val_Acc={val_acc:.4f} Test_Acc={test_acc:.4f}", data=True)
     
@@ -364,14 +420,23 @@ def main() -> None:
         default=[],
         help="Override config entries with key=value (supports dotted keys)",
     )
+    parser.add_argument(
+        "--sweep_dir", type=str, default=None,
+        help="If this is a sweep job, specify the sweep output dir"
+    )
+    parser.add_argument(
+        "--wandb_project", type=str, default=None,
+        help="Weights and Biases project name for logging"
+    )
     args = parser.parse_args()
 
     with open(args.config, "r") as f:
         cfg = yaml.safe_load(f)
     cfg = apply_overrides(cfg, args.override)
-    exp_dir, logger = prepare_experiment(cfg)
+    exp_dir, logger = prepare_experiment(cfg, sweep_dir=args.sweep_dir, wandb_project=args.wandb_project)
     cfg["exp_dir"] = exp_dir
     train_and_eval(cfg, logger)
+    logger.finish()
 
 
 if __name__ == "__main__":
