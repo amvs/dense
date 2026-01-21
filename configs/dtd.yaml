@@ -14,7 +14,8 @@ hypernet_hidden_dim: 64
 attention_d_model: 128
 attention_num_heads: 4
 attention_num_layers: 2
-pca_dim: 22  # Number of PCA components per class (only used when classifier_type='pca')
+pca_dim: 50  # Number of PCA components per class (used for 'pca', 'trainable_pca', 'lowrank_pca')
+lowrank_pca_rank: 100  # Rank of shared basis for low-rank PCA (should be << feature_dim, typically 50-200)
 
 # training setting
 # Note: Update dataset name to the correct DTD Kaggle dataset identifier

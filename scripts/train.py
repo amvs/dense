@@ -142,7 +142,8 @@ def main():
     attention_d_model = config.get("attention_d_model", 128)
     attention_num_heads = config.get("attention_num_heads", 4)
     attention_num_layers = config.get("attention_num_layers", 2)
-    pca_dim = config.get("pca_dim", 22)
+    pca_dim = config.get("pca_dim", 50)
+    lowrank_pca_rank = config.get("lowrank_pca_rank", 100)
     
     params = ScatterParams(
         n_scale=max_scale,
@@ -162,6 +163,7 @@ def main():
         attention_num_heads=attention_num_heads,
         attention_num_layers=attention_num_layers,
         pca_dim=pca_dim,
+        lowrank_pca_rank=lowrank_pca_rank,
     )
     model = dense(params).to(device)
 
@@ -210,6 +212,55 @@ def main():
         logger.log("Computing class means and PCA bases...")
         model.classifier.fit(model, train_loader, device)
         logger.log("PCA classifier fitted successfully.")
+    elif classifier_type == 'trainable_pca':
+        # Trainable PCA: First fit PCA, then initialize trainable version
+        logger.log("Initializing Trainable PCA classifier from PCA solution...")
+        model.train_classifier()  # Freeze extractor
+        model.eval()  # Set to eval mode for feature extraction
+        
+        # Step 1: Fit a temporary PCA classifier
+        from dense.model import PCAClassifier
+        temp_pca = PCAClassifier(num_classes=nb_class, pca_dim=pca_dim)
+        temp_pca = temp_pca.to(device)
+        logger.log("Fitting PCA to initialize trainable classifier...")
+        temp_pca.fit(model, train_loader, device)
+        
+        # Step 2: Initialize trainable PCA from PCA solution
+        with torch.no_grad():
+            model.classifier.class_means.data = temp_pca.class_means.clone()
+            model.classifier.pca_bases.data = temp_pca.pca_bases.clone()
+        logger.log("Trainable PCA initialized from PCA solution.")
+        
+        # Step 3: Switch to train mode and train the classifier
+        model.train()
+        model.train_classifier()  # Ensure classifier is trainable
+    elif classifier_type == 'lowrank_pca':
+        # Low-rank PCA: First fit PCA, then initialize low-rank version
+        logger.log("Initializing Low-Rank PCA classifier from PCA solution...")
+        model.train_classifier()  # Freeze extractor
+        model.eval()  # Set to eval mode for feature extraction
+        
+        # Step 1: Fit a temporary PCA classifier
+        from dense.model import PCAClassifier
+        temp_pca = PCAClassifier(num_classes=nb_class, pca_dim=pca_dim)
+        temp_pca = temp_pca.to(device)
+        logger.log("Fitting PCA to initialize low-rank classifier...")
+        temp_pca.fit(model, train_loader, device)
+        
+        # Step 2: Initialize low-rank PCA from PCA solution
+        logger.log(f"Initializing low-rank approximation (rank={lowrank_pca_rank})...")
+        model.classifier._init_from_pca(temp_pca)
+        logger.log("Low-rank PCA initialized from PCA solution.")
+        
+        # Log parameter count comparison
+        n_params = model.n_classifier_params()
+        full_pca_params = nb_class * (model.classifier.feature_dim * (1 + pca_dim))
+        logger.log(f"Low-rank PCA parameters: {n_params:,} (vs full PCA: {full_pca_params:,}, "
+                  f"reduction: {100*(1-n_params/full_pca_params):.1f}%)")
+        
+        # Step 3: Switch to train mode and train the classifier
+        model.train()
+        model.train_classifier()  # Ensure classifier is trainable
         
         # Evaluate on train and validation sets
         train_loss, train_acc = evaluate(model, train_loader, base_loss, device)
@@ -234,6 +285,145 @@ def main():
         best_val_loss = val_loss
         best_train_acc = train_acc
         best_train_loss = train_loss
+        
+    elif classifier_type == 'trainable_pca':
+        # Trainable PCA: train the classifier (already initialized from PCA)
+        logger.log("Training trainable PCA classifier (extractor frozen)...")
+        model.train_classifier()
+        
+        optimizer_cls = torch.optim.Adam(
+            model.classifier.parameters(),
+            lr=linear_lr,  # Use same LR as other classifiers
+        )
+        best_val_acc = 0.0
+        best_val_loss = float("inf")
+        best_train_acc = 0.0
+        best_train_loss = float("inf")
+        best_state = None
+        patience_counter = 0
+        
+        for epoch in range(classifier_epochs):
+            train_metrics = train_one_epoch(
+                model, train_loader, optimizer_cls, base_loss, device
+            )
+            val_loss, val_acc = evaluate(
+                model, val_loader, base_loss, device
+            )
+
+            logger.log(
+                f"Epoch={epoch+1}/{classifier_epochs} "
+                f"Train_Acc={train_metrics['accuracy']:.4f} "
+                f"Train_Loss={train_metrics['total_loss']:.4f} "
+                f"Base_Loss={train_metrics['base_loss']:.4f} "
+                f"Val_Acc={val_acc:.4f} "
+                f"Val_Loss={val_loss:.4f}",
+                data=False,
+            )
+            logger.log_metrics({
+                "train_accuracy": train_metrics['accuracy'],
+                "train_loss": train_metrics['total_loss'],
+                "train_base_loss": train_metrics['base_loss'],
+                "val_accuracy": val_acc,
+                "val_loss": val_loss,
+            }, step=epoch+1, prefix="classifier/")
+            logger.track_metric("classifier", "train_accuracy", train_metrics['accuracy'], epoch+1)
+            logger.track_metric("classifier", "val_accuracy", val_acc, epoch+1)
+            logger.track_metric("classifier", "train_loss", train_metrics['total_loss'], epoch+1)
+            logger.track_metric("classifier", "val_loss", val_loss, epoch+1)
+            logger.flush_metrics()
+
+            # Early stopping on validation loss
+            if val_loss < best_val_loss:
+                best_val_acc = val_acc
+                best_val_loss = val_loss
+                best_train_acc = train_metrics['accuracy']
+                best_train_loss = train_metrics['base_loss']
+                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= classifier_patience:
+                    logger.log("Early stopping classifier training.")
+                    break
+        
+        if best_state is None:
+            logger.log("Warning: No improvement during classifier training. Using final model state.")
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+        model.load_state_dict(best_state)
+        logger.log(
+            f"Finish trainable PCA classifier training. "
+            f"Best Val Acc: {best_val_acc:.4f}, Best Val Loss: {best_val_loss:.4f}, "
+            f"Best Train Acc: {best_train_acc:.4f}, Best Train Loss: {best_train_loss:.4f}"
+        )
+    elif classifier_type == 'lowrank_pca':
+        # Low-rank PCA: train the classifier (already initialized from PCA)
+        logger.log("Training low-rank PCA classifier (extractor frozen)...")
+        model.train_classifier()
+        
+        optimizer_cls = torch.optim.Adam(
+            model.classifier.parameters(),
+            lr=linear_lr,  # Use same LR as other classifiers
+        )
+        best_val_acc = 0.0
+        best_val_loss = float("inf")
+        best_train_acc = 0.0
+        best_train_loss = float("inf")
+        best_state = None
+        patience_counter = 0
+        
+        for epoch in range(classifier_epochs):
+            train_metrics = train_one_epoch(
+                model, train_loader, optimizer_cls, base_loss, device
+            )
+            val_loss, val_acc = evaluate(
+                model, val_loader, base_loss, device
+            )
+
+            logger.log(
+                f"Epoch={epoch+1}/{classifier_epochs} "
+                f"Train_Acc={train_metrics['accuracy']:.4f} "
+                f"Train_Loss={train_metrics['total_loss']:.4f} "
+                f"Base_Loss={train_metrics['base_loss']:.4f} "
+                f"Val_Acc={val_acc:.4f} "
+                f"Val_Loss={val_loss:.4f}",
+                data=False,
+            )
+            logger.log_metrics({
+                "train_accuracy": train_metrics['accuracy'],
+                "train_loss": train_metrics['total_loss'],
+                "train_base_loss": train_metrics['base_loss'],
+                "val_accuracy": val_acc,
+                "val_loss": val_loss,
+            }, step=epoch+1, prefix="classifier/")
+            logger.track_metric("classifier", "train_accuracy", train_metrics['accuracy'], epoch+1)
+            logger.track_metric("classifier", "val_accuracy", val_acc, epoch+1)
+            logger.track_metric("classifier", "train_loss", train_metrics['total_loss'], epoch+1)
+            logger.track_metric("classifier", "val_loss", val_loss, epoch+1)
+            logger.flush_metrics()
+
+            # Early stopping on validation loss
+            if val_loss < best_val_loss:
+                best_val_acc = val_acc
+                best_val_loss = val_loss
+                best_train_acc = train_metrics['accuracy']
+                best_train_loss = train_metrics['base_loss']
+                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= classifier_patience:
+                    logger.log("Early stopping classifier training.")
+                    break
+        
+        if best_state is None:
+            logger.log("Warning: No improvement during classifier training. Using final model state.")
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+        model.load_state_dict(best_state)
+        logger.log(
+            f"Finish low-rank PCA classifier training. "
+            f"Best Val Acc: {best_val_acc:.4f}, Best Val Loss: {best_val_loss:.4f}, "
+            f"Best Train Acc: {best_train_acc:.4f}, Best Train Loss: {best_train_loss:.4f}"
+        )
         
     else:
         # Gradient-based classifiers (hypernetwork, attention)
@@ -339,7 +529,7 @@ def main():
 
     # Stage 2: Fine-tuning based on mode
     # Note: PCA classifier doesn't support fine-tuning (it's non-parametric)
-    # For PCA, we skip fine-tuning and only evaluate final performance
+    # Trainable PCA can be fine-tuned like other classifiers
     if classifier_type == 'pca':
         logger.log("PCA classifier is non-parametric. Skipping fine-tuning stage.")
         # Final evaluation

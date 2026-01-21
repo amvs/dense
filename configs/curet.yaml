@@ -9,12 +9,16 @@ random: false
 use_original_filters: false  # If true, use filters at different scales without downsampling. If false, use first filter and downsample (current mode).
 
 # classifier setting
+# Options: 'hypernetwork', 'attention', 'pca', 'trainable_pca', 'lowrank_pca'
+# 'lowrank_pca': Low-rank PCA classifier - PCA-like accuracy with fewer parameters (RECOMMENDED)
+# 'trainable_pca': Full trainable PCA (may have many parameters for large feature dims)
 classifier_type: hypernetwork
 hypernet_hidden_dim: 64
 attention_d_model: 128
 attention_num_heads: 4
 attention_num_layers: 2
-pca_dim: 22  # Number of PCA components per class (only used when classifier_type='pca')
+pca_dim: 50  # Number of PCA components per class (used for 'pca', 'trainable_pca', 'lowrank_pca')
+lowrank_pca_rank: 100  # Rank of shared basis for low-rank PCA (should be << feature_dim, typically 50-200)
 
 # training setting
 dataset: smohsensadeghi/curet-dataset

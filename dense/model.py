@@ -25,7 +25,7 @@ class ScatterParams:
     random: bool = False
     # Filter mode
     use_original_filters: bool = False  # If True, use filters at different scales without downsampling. If False, use first filter and downsample (current mode).
-    # Classifier type: 'hypernetwork', 'attention', or 'pca'
+    # Classifier type: 'hypernetwork', 'attention', 'pca', 'trainable_pca', or 'lowrank_pca'
     classifier_type: str = 'hypernetwork'
     # Hypernetwork parameters
     hypernet_hidden_dim: int = 64
@@ -35,6 +35,8 @@ class ScatterParams:
     attention_num_layers: int = 2
     # PCA parameters
     pca_dim: int = 50  # Number of PCA components per class
+    # Low-rank PCA parameters
+    lowrank_pca_rank: int = 100  # Rank of shared basis for low-rank PCA (should be << feature_dim)
 
 class MyConv2d(nn.Module):
     '''
@@ -177,6 +179,212 @@ class HypernetworkClassifier(nn.Module):
         logits = per_node_logits.sum(dim=1) + self.bias
         
         return logits
+
+
+class LowRankPCAClassifier(nn.Module):
+    """
+    Low-Rank Factorized PCA Classifier
+    Uses PCA-like distance-to-subspace mechanism but with parameter-efficient factorization.
+    
+    Key design:
+    - Shared low-rank basis across all classes (reduces parameters)
+    - Class-specific small coefficients
+    - Can be initialized from PCA solution
+    - Uses flattened features like PCA for full information access
+    
+    Parameter count: O(feature_dim * rank + num_classes * rank * pca_dim)
+    vs Full PCA: O(num_classes * feature_dim * pca_dim)
+    """
+    def __init__(self, feature_dim: int, num_classes: int, pca_dim: int = 50, 
+                 rank: int = 100, init_from_pca: bool = False, pca_classifier=None):
+        """
+        Args:
+            feature_dim: Dimension of flattened features
+            num_classes: Number of classification classes
+            pca_dim: Number of PCA components per class
+            rank: Rank of shared basis (should be << feature_dim)
+            init_from_pca: If True, initialize from provided PCA classifier
+            pca_classifier: PCAClassifier instance to initialize from
+        """
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.num_classes = num_classes
+        self.pca_dim = pca_dim
+        self.rank = rank
+        
+        # Shared low-rank basis: [feature_dim, rank]
+        # This is shared across all classes, reducing parameters significantly
+        self.shared_basis = nn.Parameter(torch.randn(feature_dim, rank) * 0.01)
+        
+        # Class-specific coefficients: [num_classes, rank, pca_dim]
+        # Small matrices that combine shared basis into class-specific subspaces
+        self.class_coeffs = nn.Parameter(torch.randn(num_classes, rank, pca_dim) * 0.01)
+        
+        # Class means: [num_classes, feature_dim]
+        self.class_means = nn.Parameter(torch.zeros(num_classes, feature_dim))
+        
+        # Initialize from PCA if provided
+        if init_from_pca and pca_classifier is not None:
+            if pca_classifier._fitted:
+                self._init_from_pca(pca_classifier)
+            else:
+                raise ValueError("PCA classifier must be fitted before initializing LowRankPCA")
+    
+    def _init_from_pca(self, pca_classifier):
+        """Initialize from PCA solution using low-rank approximation"""
+        with torch.no_grad():
+            # Copy class means
+            self.class_means.data = pca_classifier.class_means.clone()
+            
+            # Strategy: Use PCA of all class bases to find shared basis
+            # Stack all PCA bases: [num_classes * pca_dim, feature_dim]
+            all_bases = pca_classifier.pca_bases.transpose(1, 2)  # [num_classes, pca_dim, feature_dim]
+            all_bases_flat = all_bases.reshape(-1, self.feature_dim)  # [num_classes * pca_dim, feature_dim]
+            
+            # Find shared basis using SVD of all bases
+            U, S, Vh = torch.linalg.svd(all_bases_flat.T, full_matrices=False)  # Vh: [rank, feature_dim]
+            # U: [feature_dim, rank], S: [rank], Vh: [rank, feature_dim]
+            
+            # Use top 'rank' components as shared basis
+            k = min(self.rank, U.shape[1])
+            self.shared_basis.data = U[:, :k].clone()  # [feature_dim, rank]
+            
+            # For each class, find coefficients that best approximate its PCA basis
+            for c in range(self.num_classes):
+                pca_basis = pca_classifier.pca_bases[c]  # [feature_dim, pca_dim]
+                # Find coeffs such that: shared_basis @ coeffs[c] ≈ pca_basis
+                # coeffs[c] = pinv(shared_basis) @ pca_basis
+                # Using least squares: coeffs = (shared_basis^T @ shared_basis)^-1 @ shared_basis^T @ pca_basis
+                # Simplified: coeffs ≈ shared_basis^T @ pca_basis (if shared_basis is orthonormal)
+                coeffs = torch.matmul(self.shared_basis.T, pca_basis)  # [rank, pca_dim]
+                self.class_coeffs.data[c] = coeffs[:self.rank, :self.pca_dim]
+    
+    def forward(self, features):
+        """
+        Classify features by computing distance to each class's low-rank PCA subspace.
+        
+        Args:
+            features: Tensor of shape [batch, feature_dim] - extracted features
+            
+        Returns:
+            logits: Tensor of shape [batch, num_classes] - negative distances (larger = closer)
+        """
+        batch_size = features.shape[0]
+        
+        # Compute distance to each class subspace
+        dists = []
+        for c in range(self.num_classes):
+            # Center features by class mean
+            centered = features - self.class_means[c].unsqueeze(0)  # [batch, feature_dim]
+            
+            # Get class-specific basis: shared_basis @ class_coeffs[c]
+            # shared_basis: [feature_dim, rank]
+            # class_coeffs[c]: [rank, pca_dim]
+            # class_basis: [feature_dim, pca_dim]
+            class_basis = torch.matmul(self.shared_basis, self.class_coeffs[c])  # [feature_dim, pca_dim]
+            
+            # Project onto class basis: [batch, feature_dim] @ [feature_dim, pca_dim] -> [batch, pca_dim]
+            projected = torch.matmul(centered, class_basis)  # [batch, pca_dim]
+            
+            # Reconstruct: [batch, pca_dim] @ [pca_dim, feature_dim] -> [batch, feature_dim]
+            reconstructed = torch.matmul(projected, class_basis.transpose(0, 1))  # [batch, feature_dim]
+            
+            # Compute distance (L2 norm of residual)
+            residual = centered - reconstructed  # [batch, feature_dim]
+            dist = torch.norm(residual, dim=1, p=2)  # [batch]
+            dists.append(dist)
+        
+        dists = torch.stack(dists, dim=1)  # [batch, num_classes]
+        
+        # Return negative distances as logits (larger = closer = higher score)
+        logits = -dists
+        
+        return logits
+    
+    def n_params(self):
+        """Return number of trainable parameters"""
+        return (self.shared_basis.numel() + 
+                self.class_coeffs.numel() + 
+                self.class_means.numel())
+
+
+class TrainablePCAClassifier(nn.Module):
+    """
+    Trainable PCA-like Classifier
+    Uses PCA subspace distance mechanism but with trainable bases.
+    Can be initialized with PCA solution and then fine-tuned.
+    """
+    def __init__(self, feature_dim: int, num_classes: int, pca_dim: int = 50, 
+                 init_from_pca: bool = False, pca_classifier=None):
+        """
+        Args:
+            feature_dim: Dimension of flattened features
+            num_classes: Number of classification classes
+            pca_dim: Number of PCA components per class
+            init_from_pca: If True, initialize from provided PCA classifier
+            pca_classifier: PCAClassifier instance to initialize from
+        """
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.num_classes = num_classes
+        self.pca_dim = pca_dim
+        
+        # Trainable class means: [num_classes, feature_dim]
+        self.class_means = nn.Parameter(torch.zeros(num_classes, feature_dim))
+        
+        # Trainable PCA bases: [num_classes, feature_dim, pca_dim]
+        # Initialize with small random values
+        self.pca_bases = nn.Parameter(torch.randn(num_classes, feature_dim, pca_dim) * 0.01)
+        
+        # Initialize from PCA if provided
+        if init_from_pca and pca_classifier is not None:
+            if pca_classifier._fitted:
+                with torch.no_grad():
+                    self.class_means.data = pca_classifier.class_means.clone()
+                    self.pca_bases.data = pca_classifier.pca_bases.clone()
+            else:
+                raise ValueError("PCA classifier must be fitted before initializing TrainablePCA")
+    
+    def forward(self, features):
+        """
+        Classify features by computing distance to each class's trainable PCA subspace.
+        
+        Args:
+            features: Tensor of shape [batch, feature_dim] - extracted features
+            
+        Returns:
+            logits: Tensor of shape [batch, num_classes] - negative distances (larger = closer)
+        """
+        batch_size = features.shape[0]
+        
+        # Compute distance to each class subspace
+        dists = []
+        for c in range(self.num_classes):
+            # Center features by class mean: [batch, feature_dim] - [feature_dim] -> [batch, feature_dim]
+            centered = features - self.class_means[c].unsqueeze(0)  # [batch, feature_dim]
+            
+            # Project onto PCA basis: [batch, feature_dim] @ [feature_dim, pca_dim] -> [batch, pca_dim]
+            basis = self.pca_bases[c]  # [feature_dim, pca_dim]
+            projected = torch.matmul(centered, basis)  # [batch, pca_dim]
+            
+            # Reconstruct: [batch, pca_dim] @ [pca_dim, feature_dim] -> [batch, feature_dim]
+            reconstructed = torch.matmul(projected, basis.transpose(0, 1))  # [batch, feature_dim]
+            
+            # Compute distance (L2 norm of residual)
+            residual = centered - reconstructed  # [batch, feature_dim]
+            dist = torch.norm(residual, dim=1, p=2)  # [batch]
+            dists.append(dist)
+        
+        dists = torch.stack(dists, dim=1)  # [batch, num_classes]
+        
+        # Return negative distances as logits (larger = closer = higher score)
+        logits = -dists
+        
+        return logits
+    
+    def n_params(self):
+        """Return number of trainable parameters"""
+        return (self.class_means.numel() + self.pca_bases.numel())
 
 
 class PCAClassifier(nn.Module):
@@ -546,8 +754,30 @@ class dense(nn.Module):
                 pca_dim=pca_dim
             )
             # PCA classifier doesn't need metadata
+        elif self.classifier_type == 'trainable_pca':
+            pca_dim = self.pca_dim
+            # Compute full feature dimension (flattened)
+            full_feature_dim = num_features * feature_dim
+            self.classifier = TrainablePCAClassifier(
+                feature_dim=full_feature_dim,
+                num_classes=self.n_class,
+                pca_dim=pca_dim,
+                init_from_pca=False  # Will be initialized from PCA fit later
+            )
+        elif self.classifier_type == 'lowrank_pca':
+            pca_dim = self.pca_dim
+            rank = self.lowrank_pca_rank
+            # Compute full feature dimension (flattened)
+            full_feature_dim = num_features * feature_dim
+            self.classifier = LowRankPCAClassifier(
+                feature_dim=full_feature_dim,
+                num_classes=self.n_class,
+                pca_dim=pca_dim,
+                rank=rank,
+                init_from_pca=False  # Will be initialized from PCA fit later
+            )
         else:
-            raise ValueError(f"Unknown classifier_type: {self.classifier_type}. Must be 'hypernetwork', 'attention', or 'pca'")
+            raise ValueError(f"Unknown classifier_type: {self.classifier_type}. Must be 'hypernetwork', 'attention', 'pca', 'trainable_pca', or 'lowrank_pca'")
     
     def build_keep_idx(self):
         d = self.depth
@@ -745,6 +975,16 @@ class dense(nn.Module):
             batch_size = features.shape[0]
             features_flat = features.view(batch_size, -1)  # [batch, feature_dim]
             return self.classifier(features_flat)
+        elif self.classifier_type == 'trainable_pca':
+            # Trainable PCA classifier: flatten features to [batch, feature_dim]
+            batch_size = features.shape[0]
+            features_flat = features.view(batch_size, -1)  # [batch, feature_dim]
+            return self.classifier(features_flat)
+        elif self.classifier_type == 'lowrank_pca':
+            # Low-rank PCA classifier: flatten features to [batch, feature_dim]
+            batch_size = features.shape[0]
+            features_flat = features.view(batch_size, -1)  # [batch, feature_dim]
+            return self.classifier(features_flat)
         else:
             raise ValueError(f"Unknown classifier_type: {self.classifier_type}")
 
@@ -754,7 +994,7 @@ class dense(nn.Module):
         for param in self.blocks.parameters():
             param.requires_grad = False
         # PCA classifier doesn't have trainable parameters
-        if self.classifier_type != 'pca':
+        if self.classifier_type not in ['pca']:
             for param in self.classifier.parameters():
                 param.requires_grad = True
 
@@ -784,6 +1024,10 @@ class dense(nn.Module):
         # PCA classifier doesn't have trainable parameters (it's non-parametric)
         if self.classifier_type == 'pca':
             return 0
+        elif self.classifier_type == 'trainable_pca':
+            return self.classifier.n_params()
+        elif self.classifier_type == 'lowrank_pca':
+            return self.classifier.n_params()
         total_params = 0
         for param in self.classifier.parameters():
                 total_params += param.numel()
