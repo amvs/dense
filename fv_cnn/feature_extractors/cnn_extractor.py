@@ -12,8 +12,12 @@ def _load_backbone(name: str, pretrained: bool = True) -> nn.Module:
     name = name.lower()
     if name == "alexnet":
         return models.alexnet(weights=models.AlexNet_Weights.IMAGENET1K_V1 if pretrained else None)
+    if name == "vgg11":
+        return models.vgg11(weights=models.VGG11_Weights.IMAGENET1K_V1 if pretrained else None)
     if name == "vgg16":
         return models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1 if pretrained else None)
+    if name == "vgg19":
+        return models.vgg19(weights=models.VGG19_Weights.IMAGENET1K_V1 if pretrained else None)
     if name == "resnet50":
         return models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V2 if pretrained else None)
     raise ValueError(f"Unsupported backbone: {name}")
@@ -30,6 +34,13 @@ def _feature_module(model: nn.Module, backbone: str, layer: str) -> nn.Module:
         if layer == "conv5_3":
             return nn.Sequential(*list(model.features.children())[:30])  # up to conv5_3 relu
         raise ValueError("Unsupported layer for VGG16: {layer}")
+    if b == "vgg11":
+        if layer == "conv5_3":
+            return nn.Sequential(*list(model.features.children())[:20])  # up to conv5_3 relu
+        raise ValueError("Unsupported layer for VGG11: {layer}")
+    if b == "vgg19":
+        if layer == "conv5_3":
+            return nn.Sequential(*list(model.features.children())[:36])  # up to conv5_3 relu
     if b == "resnet50":
         if layer == "layer4":
             # return everything up to layer4
