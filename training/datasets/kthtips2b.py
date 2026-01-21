@@ -1,12 +1,14 @@
 from pathlib import Path
 from PIL import Image
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Subset
 from torchvision import transforms
 import torch
 from dense.helpers import LoggerManager
-from training.datasets.base import stratify_split, CenterCropToSquare
+from training.datasets.base import stratify_split, CenterCropToSquare, equally_split
+from training.datasets.balanced_sampler import BalancedBatchSampler, BalancedSubsetSampler
 import hashlib
 import numpy as np
+from collections import defaultdict
 
 
 class KHTTips2bDataset(Dataset):
@@ -68,7 +70,84 @@ class KHTTips2bDataset(Dataset):
         return image, label
 
 
-def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, fold=None, train_ratio=1.0, drop_last=False):
+def compute_dataset_statistics(dataset):
+    """
+    Compute dataset statistics: number of classes and examples per class.
+    
+    Returns:
+        dict with keys:
+            - num_classes: int
+            - examples_per_class: dict mapping class_idx -> count
+            - min_examples_per_class: int (minimum across all classes)
+            - max_examples_per_class: int (maximum across all classes)
+            - total_examples: int
+            - is_balanced: bool (True if all classes have same count)
+    """
+    class_to_count = defaultdict(int)
+    
+    for idx in range(len(dataset)):
+        _, label = dataset[idx]
+        class_to_count[label] += 1
+    
+    num_classes = len(class_to_count)
+    examples_per_class = dict(class_to_count)
+    counts = list(examples_per_class.values())
+    min_examples = min(counts)
+    max_examples = max(counts)
+    total_examples = sum(counts)
+    is_balanced = min_examples == max_examples
+    
+    return {
+        "num_classes": num_classes,
+        "examples_per_class": examples_per_class,
+        "min_examples_per_class": min_examples,
+        "max_examples_per_class": max_examples,
+        "total_examples": total_examples,
+        "is_balanced": is_balanced
+    }
+
+
+def create_balanced_train_subset(dataset, example_per_class, seed=42):
+    """
+    Create a balanced training subset with exactly example_per_class examples from each class.
+    
+    Args:
+        dataset: Dataset to sample from
+        example_per_class: Number of examples to take from each class
+        seed: Random seed for reproducibility
+    
+    Returns:
+        Subset with balanced examples
+    """
+    rng = random.Random(seed)
+    
+    # Group indices by class
+    class_to_indices = defaultdict(list)
+    for idx in range(len(dataset)):
+        _, label = dataset[idx]
+        class_to_indices[label].append(idx)
+    
+    # Check that we have enough examples per class
+    for cls, indices in class_to_indices.items():
+        if len(indices) < example_per_class:
+            raise ValueError(
+                f"Class {cls} has only {len(indices)} examples, "
+                f"cannot sample {example_per_class} examples per class."
+            )
+    
+    # Sample example_per_class from each class
+    train_indices = []
+    for cls in sorted(class_to_indices.keys()):
+        indices = class_to_indices[cls]
+        rng.shuffle(indices)
+        train_indices.extend(indices[:example_per_class])
+    
+    return Subset(dataset, train_indices)
+
+
+def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, fold=None, 
+                          train_ratio=None, example_per_class=None, drop_last=False, seed=42, 
+                          use_balanced_batches=True):
     """
     Load KTH-TIPS2-b dataset with leave-one-sample-out cross-validation.
     
@@ -95,8 +174,13 @@ def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, 
     """
     logger = LoggerManager.get_logger()
     
-    if not 0.0 < train_ratio <= 1.0:
-        raise ValueError(f"train_ratio must be in (0, 1], got {train_ratio}")
+    # Validate arguments
+    if train_ratio is not None and example_per_class is not None:
+        raise ValueError("Cannot specify both train_ratio and example_per_class. Use example_per_class.")
+    if train_ratio is not None:
+        logger.warning("train_ratio is deprecated. Use example_per_class instead.")
+        if not 0.0 < train_ratio <= 1.0:
+            raise ValueError(f"train_ratio must be in (0, 1], got {train_ratio}")
     
     samples = ['sample_a', 'sample_b', 'sample_c', 'sample_d']
     
@@ -126,12 +210,12 @@ def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, 
     # Create datasets for each split
     if fold is not None:
         # Each dataset uses a separate sample - test and val are held out, not derived from train
-        train_dataset = KHTTips2bDataset(root_dir, transform=transform, sample_filter=train_samples)
+        train_dataset_raw = KHTTips2bDataset(root_dir, transform=transform, sample_filter=train_samples)
         val_dataset = KHTTips2bDataset(root_dir, transform=transform, sample_filter=[val_sample])
         test_dataset = KHTTips2bDataset(root_dir, transform=transform, sample_filter=[test_sample])
         
         # Use the train dataset for computing statistics
-        full_dataset = train_dataset
+        full_dataset = train_dataset_raw
     else:
         # Standard split: use all samples, compute statistics, then split
         full_dataset = KHTTips2bDataset(root_dir, transform=transform)
@@ -139,15 +223,32 @@ def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, 
         train_len = int(total_len * 0.7)
         val_len = int(total_len * 0.15)
         
-        train_dataset, val_test_dataset = stratify_split(full_dataset, train_size=train_len, seed=42)
-        val_dataset, test_dataset = stratify_split(val_test_dataset, train_size=val_len, seed=42)
+        train_dataset_raw, val_test_dataset = stratify_split(full_dataset, train_size=train_len, seed=seed)
+        val_dataset, test_dataset = stratify_split(val_test_dataset, train_size=val_len, seed=seed)
     
-    # Apply train_ratio to reduce training data if needed (test_dataset is held out separately)
-    if train_ratio < 1.0:
-        original_train_len = len(train_dataset)
-        reduced_train_len = int(original_train_len * train_ratio)
-        train_dataset, _ = stratify_split(train_dataset, train_size=reduced_train_len, seed=42)
-        logger.info(f"Reduced training set from {original_train_len} to {len(train_dataset)} samples (train_ratio={train_ratio})")
+    # Compute dataset statistics BEFORE applying example_per_class
+    stats = compute_dataset_statistics(train_dataset_raw)
+    nb_class = stats["num_classes"]
+    logger.info(f"Dataset statistics: {stats}")
+    
+    # Apply example_per_class to create balanced training subset
+    if example_per_class is not None:
+        if example_per_class > stats["min_examples_per_class"]:
+            raise ValueError(
+                f"example_per_class ({example_per_class}) exceeds minimum examples per class "
+                f"({stats['min_examples_per_class']})"
+            )
+        train_dataset = create_balanced_train_subset(train_dataset_raw, example_per_class, seed=seed)
+        logger.info(f"Created balanced training subset: {example_per_class} examples per class = {len(train_dataset)} total")
+        # Update stats to reflect actual training set
+        stats["train_examples_per_class"] = example_per_class
+        stats["train_total_examples"] = len(train_dataset)
+    else:
+        # Use all available training data
+        train_dataset = train_dataset_raw
+        stats["train_examples_per_class"] = stats["min_examples_per_class"]  # Use minimum to ensure balance
+        stats["train_total_examples"] = len(train_dataset)
+        logger.info(f"Using all training data: {len(train_dataset)} examples")
     
     # Compute (or load cached) mean and std from TRAIN set only (no data leakage)
     logger.info(f"Computing/loading normalization statistics from {len(train_dataset)} training samples...")
@@ -169,16 +270,52 @@ def get_kthtips2b_loaders(root_dir, resize, batch_size=64, worker_init_fn=None, 
     test_dataset.transform = normalized_transform
     logger.info(f"Updated dataset transforms with normalization")
     
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, worker_init_fn=worker_init_fn, drop_last=False)
+    # Create data loaders with balanced batches if requested
+    if use_balanced_batches:
+        # Validate batch_size is multiple of num_classes
+        if batch_size % nb_class != 0:
+            # Adjust batch_size to nearest multiple
+            adjusted_batch_size = (batch_size // nb_class) * nb_class
+            if adjusted_batch_size == 0:
+                adjusted_batch_size = nb_class
+            logger.warning(
+                f"batch_size ({batch_size}) is not a multiple of num_classes ({nb_class}). "
+                f"Adjusting to {adjusted_batch_size}."
+            )
+            batch_size = adjusted_batch_size
+        
+        # Use balanced batch sampler for training
+        train_sampler = BalancedBatchSampler(
+            train_dataset, 
+            batch_size=batch_size, 
+            num_classes=nb_class, 
+            shuffle=True, 
+            seed=seed
+        )
+        train_loader = DataLoader(
+            train_dataset, 
+            batch_sampler=train_sampler,
+            worker_init_fn=worker_init_fn,
+            drop_last=False
+        )
+        logger.info(f"Using BalancedBatchSampler: {batch_size // nb_class} examples per class per batch")
+    else:
+        train_loader = DataLoader(
+            train_dataset, 
+            batch_size=batch_size, 
+            shuffle=True, 
+            worker_init_fn=worker_init_fn, 
+            drop_last=False
+        )
+    
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, worker_init_fn=worker_init_fn, drop_last=False)
     
-    nb_class = len(full_dataset.classes)
     sample_img, _ = train_dataset[0]
     logger.info(f"Train size: {len(train_dataset)}, Val size: {len(val_dataset)}, Test size: {len(test_dataset)}")
     logger.info(f"# class: {nb_class}, shape {sample_img.shape}")
     
-    return train_loader, val_loader, test_loader, nb_class, sample_img.shape
+    return train_loader, val_loader, test_loader, nb_class, sample_img.shape, stats
 
 
 def compute_mean_std(dataset):

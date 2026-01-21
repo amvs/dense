@@ -30,7 +30,13 @@ linear_lr: 0.01
 weight_decays: 1e-4
 lambda_reg: 1.0e-4
 fine_tune_mode: extractor_only  # Options: 'extractor_only' (freeze classifier, fine-tune extractor) or 'both' (fine-tune both together)
-train_ratio: 0.85  # Fraction of training data to use (for low-data regime experiments)
+# Data size control (NEW: use example_per_class instead of train_ratio)
+example_per_class: null  # Number of examples per class for training (null = use all available)
+# train_ratio: 0.85  # DEPRECATED: Use example_per_class instead
 test_ratio: 0.15  # Not used for KTH (test set is determined by fold or standard split)
 train_val_ratio: 4  # Not used for KTH (val set is determined by fold or standard split)
+use_balanced_batches: true  # Ensure each batch has equal examples per class
 seed: 123
+
+# dataset note
+# classes=11, low rank pca rank < c*d*p/(d+c*p)

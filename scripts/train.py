@@ -36,21 +36,31 @@ def main():
     args = parse_args()
     config = load_config(args.config)
     config = apply_overrides(config, args.override)
-    # Create output folder, divides by train ratio
-    train_ratio = config["train_ratio"]
+    # Create output folder
+    train_ratio = config.get("train_ratio", None)
+    example_per_class = config.get("example_per_class", None)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    
+    # Use example_per_class for naming if available, otherwise train_ratio
+    if example_per_class is not None:
+        exp_name = f"epc={example_per_class}"
+    elif train_ratio is not None:
+        exp_name = f"{train_ratio=}"
+    else:
+        exp_name = "full_data"
+    
     if args.sweep_dir is not None: # if this is a sweep job, save to the sweep dir
         if not os.path.exists(args.sweep_dir):
             raise ValueError(f"Sweep dir {args.sweep_dir} does not exist!")
-        exp_dir = os.path.join(args.sweep_dir, f"{train_ratio=}", f"run-{timestamp}")
+        exp_dir = os.path.join(args.sweep_dir, exp_name, f"run-{timestamp}")
     else:
-        exp_dir = os.path.join("experiments", f"{train_ratio=}", f"run-{timestamp}")
+        exp_dir = os.path.join("experiments", exp_name, f"run-{timestamp}")
     os.makedirs(exp_dir, exist_ok=True)
 
     # init logger
     logger = LoggerManager.get_logger(log_dir=exp_dir, 
                             wandb_project=args.wandb_project, 
-                            config=config, name=f"{train_ratio=}(run-{timestamp})")
+                            config=config, name=f"{exp_name}(run-{timestamp})")
     
     # set up device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -59,9 +69,9 @@ def main():
     # get data loader
     dataset = config["dataset"]
     batch_size = config["batch_size"]
-    test_ratio = config["test_ratio"]
-    train_ratio = config["train_ratio"]
-    train_val_ratio = config["train_val_ratio"]
+    test_ratio = config.get("test_ratio", 0.15)
+    train_ratio = config.get("train_ratio", None)  # Optional for KTH dataset
+    train_val_ratio = config.get("train_val_ratio", 4)
     seed = config["seed"]
     
     if dataset == "mnist":
@@ -82,15 +92,49 @@ def main():
         resize = config["resize"]
         kth_root_dir = config["kth_root_dir"]
         fold = config.get("fold", None)  # Optional fold parameter for cross-validation
-        train_loader, val_loader, test_loader, nb_class, image_shape = get_loaders(
+        example_per_class = config.get("example_per_class", None)  # New: examples per class
+        use_balanced_batches = config.get("use_balanced_batches", True)  # Use balanced batches
+        
+        # If example_per_class is not set, try to use train_ratio (backward compatibility)
+        if example_per_class is None and train_ratio is not None and train_ratio < 1.0:
+            # Note: train_ratio is deprecated for KTH dataset when using balanced batches
+            # Will use all available data if example_per_class is not specified
+            pass
+        
+        loaders_result = get_loaders(
             dataset=dataset,
             root_dir=kth_root_dir,
             resize=resize,
             batch_size=batch_size,
             fold=fold,
-            train_ratio=train_ratio,  # KTH loader handles train_ratio internally
-            drop_last=False
+            train_ratio=train_ratio if example_per_class is None else None,  # Only use if example_per_class not set
+            example_per_class=example_per_class,
+            drop_last=False,
+            seed=seed,
+            use_balanced_batches=use_balanced_batches
         )
+        
+        # Handle return value: new version returns stats as 6th element
+        if len(loaders_result) == 6:
+            train_loader, val_loader, test_loader, nb_class, image_shape, dataset_stats = loaders_result
+        else:
+            # Backward compatibility: old version doesn't return stats
+            train_loader, val_loader, test_loader, nb_class, image_shape = loaders_result
+            dataset_stats = None
+        
+        # Write dataset statistics to config if available
+        if dataset_stats is not None:
+            config["dataset_stats"] = {
+                "num_classes": dataset_stats["num_classes"],
+                "examples_per_class": dataset_stats["examples_per_class"],
+                "min_examples_per_class": dataset_stats["min_examples_per_class"],
+                "max_examples_per_class": dataset_stats["max_examples_per_class"],
+                "is_balanced": dataset_stats["is_balanced"],
+                "train_examples_per_class": dataset_stats.get("train_examples_per_class", None),
+                "train_total_examples": dataset_stats.get("train_total_examples", len(train_loader.dataset))
+            }
+            logger.log(f"Dataset statistics: {config['dataset_stats']}")
+        
         # Note: KTH loader already handles train/val/test split, so no need for split_train_val
     elif dataset == "outex":
         # Outex returns train_loader, val_loader, test_loader already
