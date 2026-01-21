@@ -14,6 +14,7 @@ hypernet_hidden_dim: 64
 attention_d_model: 128
 attention_num_heads: 4
 attention_num_layers: 2
+pca_dim: 22  # Number of PCA components per class (only used when classifier_type='pca')
 
 # training setting
 dataset: outex

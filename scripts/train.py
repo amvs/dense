@@ -138,10 +138,11 @@ def main():
     
     # Classifier parameters
     classifier_type = config["classifier_type"]
-    hypernet_hidden_dim = config["hypernet_hidden_dim"]
-    attention_d_model = config["attention_d_model"]
-    attention_num_heads = config["attention_num_heads"]
-    attention_num_layers = config["attention_num_layers"]
+    hypernet_hidden_dim = config.get("hypernet_hidden_dim", 64)
+    attention_d_model = config.get("attention_d_model", 128)
+    attention_num_heads = config.get("attention_num_heads", 4)
+    attention_num_layers = config.get("attention_num_layers", 2)
+    pca_dim = config.get("pca_dim", 22)
     
     params = ScatterParams(
         n_scale=max_scale,
@@ -160,6 +161,7 @@ def main():
         attention_d_model=attention_d_model,
         attention_num_heads=attention_num_heads,
         attention_num_layers=attention_num_layers,
+        pca_dim=pca_dim,
     )
     model = dense(params).to(device)
 
@@ -189,85 +191,130 @@ def main():
         original_params = [p.clone().detach() for p in model.fine_tuned_params()]
     n_tuned_params = model.n_tuned_params()
     n_linear_params = model.n_classifier_params()
-    logger.log(f"n_tuned_params={n_tuned_params} n_classifier_params={n_linear_params}", data=True)
+    logger.log(f"n_tuned_params={n_tuned_params} n_classifier_params={n_linear_params}", data=False)
     logger.log(f"Fine-tuning mode: {fine_tune_mode}")
     
-    # Stage 1: Freeze extractor and train classifier (same for both modes)
+    # Stage 1: Train classifier (same for both modes)
     # Note: No regularization needed here because:
     # - Extractor is frozen (parameters don't change)
     # - Classifier is trained from scratch (no original parameters to regularize against)
-    logger.log("Training classifier (extractor frozen)...") 
-    model.train_classifier()
+    classifier_type = config["classifier_type"]
     
-    optimizer_cls = torch.optim.Adam(
-        model.classifier.parameters(),
-        lr=linear_lr, # classifier needs larger lr
-        #weight_decay=weight_decays,
-    )
-    best_val_acc = 0.0
-    best_val_loss = float("inf")
-    best_train_acc = 0.0
-    best_train_loss = float("inf")
-    best_state = None
-    patience_counter = 0
-    for epoch in range(classifier_epochs):
-        train_metrics = train_one_epoch(
-            model, train_loader, optimizer_cls, base_loss, device
-        )
-        val_loss, val_acc = evaluate(
-            model, val_loader, base_loss, device
-        )
-
+    if classifier_type == 'pca':
+        # PCA classifier: fit on training data (non-parametric, no gradient training)
+        logger.log("Fitting PCA classifier (extractor frozen)...")
+        model.train_classifier()  # Freeze extractor
+        model.eval()  # Set to eval mode for feature extraction
+        
+        # Fit PCA classifier on training data
+        logger.log("Computing class means and PCA bases...")
+        model.classifier.fit(model, train_loader, device)
+        logger.log("PCA classifier fitted successfully.")
+        
+        # Evaluate on train and validation sets
+        train_loss, train_acc = evaluate(model, train_loader, base_loss, device)
+        val_loss, val_acc = evaluate(model, val_loader, base_loss, device)
+        
         logger.log(
-            f"Epoch={epoch+1}/{classifier_epochs} "
-            f"Train_Acc={train_metrics['accuracy']:.4f} "
-            f"Train_Loss={train_metrics['total_loss']:.4f} "
-            f"Base_Loss={train_metrics['base_loss']:.4f} "
-            f"Val_Acc={val_acc:.4f} "
-            f"Val_Loss={val_loss:.4f}",
+            f"PCA Classifier Results: "
+            f"Train_Acc={train_acc:.4f} Train_Loss={train_loss:.4f} "
+            f"Val_Acc={val_acc:.4f} Val_Loss={val_loss:.4f}",
             data=True,
         )
-        # Enhanced wandb logging with structured metrics
+        
+        # Log metrics
         logger.log_metrics({
-            "train_accuracy": train_metrics['accuracy'],
-            "train_loss": train_metrics['total_loss'],
-            "train_base_loss": train_metrics['base_loss'],
+            "train_accuracy": train_acc,
+            "train_loss": train_loss,
             "val_accuracy": val_acc,
             "val_loss": val_loss,
-        }, step=epoch+1, prefix="classifier/")
-        # Track metrics for plotting
-        logger.track_metric("classifier", "train_accuracy", train_metrics['accuracy'], epoch+1)
-        logger.track_metric("classifier", "val_accuracy", val_acc, epoch+1)
-        logger.track_metric("classifier", "train_loss", train_metrics['total_loss'], epoch+1)
-        logger.track_metric("classifier", "val_loss", val_loss, epoch+1)
+        }, prefix="classifier/")
+        
+        best_val_acc = val_acc
+        best_val_loss = val_loss
+        best_train_acc = train_acc
+        best_train_loss = train_loss
+        
+    else:
+        # Gradient-based classifiers (hypernetwork, attention)
+        logger.log("Training classifier (extractor frozen)...") 
+        model.train_classifier()
+        
+        optimizer_cls = torch.optim.Adam(
+            model.classifier.parameters(),
+            lr=linear_lr, # classifier needs larger lr
+            #weight_decay=weight_decays,
+        )
+        best_val_acc = 0.0
+        best_val_loss = float("inf")
+        best_train_acc = 0.0
+        best_train_loss = float("inf")
+        best_state = None
+        patience_counter = 0
+        for epoch in range(classifier_epochs):
+            train_metrics = train_one_epoch(
+                model, train_loader, optimizer_cls, base_loss, device
+            )
+            val_loss, val_acc = evaluate(
+                model, val_loader, base_loss, device
+            )
 
-        # ---- Early stopping on validation loss
-        if val_loss < best_val_loss:
-            best_val_acc = val_acc
-            best_val_loss = val_loss
-            best_train_acc = train_metrics['accuracy']
-            best_train_loss = train_metrics['base_loss']
+            # Log to console/file (no wandb call)
+            logger.log(
+                f"Epoch={epoch+1}/{classifier_epochs} "
+                f"Train_Acc={train_metrics['accuracy']:.4f} "
+                f"Train_Loss={train_metrics['total_loss']:.4f} "
+                f"Base_Loss={train_metrics['base_loss']:.4f} "
+                f"Val_Acc={val_acc:.4f} "
+                f"Val_Loss={val_loss:.4f}",
+                data=False,  # Changed to False - metrics logged via log_metrics instead
+            )
+            # Enhanced wandb logging with structured metrics (batched, flushed at epoch end)
+            logger.log_metrics({
+                "train_accuracy": train_metrics['accuracy'],
+                "train_loss": train_metrics['total_loss'],
+                "train_base_loss": train_metrics['base_loss'],
+                "val_accuracy": val_acc,
+                "val_loss": val_loss,
+            }, step=epoch+1, prefix="classifier/")
+            # Track metrics for plotting (in-memory only, no wandb call)
+            logger.track_metric("classifier", "train_accuracy", train_metrics['accuracy'], epoch+1)
+            logger.track_metric("classifier", "val_accuracy", val_acc, epoch+1)
+            logger.track_metric("classifier", "train_loss", train_metrics['total_loss'], epoch+1)
+            logger.track_metric("classifier", "val_loss", val_loss, epoch+1)
+            
+            # Flush metrics to wandb at end of epoch (non-blocking async)
+            logger.flush_metrics()
+
+            # ---- Early stopping on validation loss
+            if val_loss < best_val_loss:
+                best_val_acc = val_acc
+                best_val_loss = val_loss
+                best_train_acc = train_metrics['accuracy']
+                best_train_loss = train_metrics['base_loss']
+                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= classifier_patience:
+                    logger.log("Early stopping classifier training.")
+                    break
+        
+        # Restore best classifier
+        if best_state is None:
+            logger.log("Warning: No improvement during classifier training. Using final model state.")
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-            patience_counter = 0
-        else:
-            patience_counter += 1
-            if patience_counter >= classifier_patience:
-                logger.log("Early stopping classifier training.")
-                break
-    
-    # Restore best classifier
-    if best_state is None:
-        logger.log("Warning: No improvement during classifier training. Using final model state.")
-        best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-    model.load_state_dict(best_state)
-    logger.log(
-        f"Finish classifier training task. "
-        f"Best Val Acc: {best_val_acc:.4f}, Best Val Loss: {best_val_loss:.4f}, "
-        f"Best Train Acc: {best_train_acc:.4f}, Best Train Loss: {best_train_loss:.4f}"
-    )
+        model.load_state_dict(best_state)
+        logger.log(
+            f"Finish classifier training task. "
+            f"Best Val Acc: {best_val_acc:.4f}, Best Val Loss: {best_val_loss:.4f}, "
+            f"Best Train Acc: {best_train_acc:.4f}, Best Train Loss: {best_train_loss:.4f}"
+        )
 
     ini_test_loss, ini_test_acc = evaluate(model, test_loader, base_loss, device)
-    logger.log(f"classifier_test_acc={ini_test_acc:.4f} classifier_test_loss={ini_test_loss:.4f}", data=True)
+    logger.log(f"classifier_test_acc={ini_test_acc:.4f} classifier_test_loss={ini_test_loss:.4f}", data=False)
+    # Flush any remaining metrics before logging final metrics
+    logger.flush_metrics()
     # Log classifier stage final metrics
     logger.log_metrics({
         "test_accuracy": ini_test_acc,
@@ -284,13 +331,42 @@ def main():
     # Evaluate validation set right before fine-tuning to establish baseline
     model.eval()
     val_loss_before_ft, val_acc_before_ft = evaluate(model, val_loader, base_loss, device)
-    logger.log(f"Validation before fine-tuning: Acc={val_acc_before_ft:.4f}, Loss={val_loss_before_ft:.4f}", data=True)
+    logger.log(f"Validation before fine-tuning: Acc={val_acc_before_ft:.4f}, Loss={val_loss_before_ft:.4f}", data=False)
     logger.log_metrics({
         "val_accuracy": val_acc_before_ft,
         "val_loss": val_loss_before_ft,
     }, prefix="fine_tune/baseline/")
 
     # Stage 2: Fine-tuning based on mode
+    # Note: PCA classifier doesn't support fine-tuning (it's non-parametric)
+    # For PCA, we skip fine-tuning and only evaluate final performance
+    if classifier_type == 'pca':
+        logger.log("PCA classifier is non-parametric. Skipping fine-tuning stage.")
+        # Final evaluation
+        final_test_loss, final_test_acc = evaluate(model, test_loader, base_loss, device)
+        logger.log(f"Final Test Acc: {final_test_acc:.4f}, Final Test Loss: {final_test_loss:.4f}", data=False)
+        logger.flush_metrics()  # Flush before finishing
+        
+        # Save final metrics
+        config["dist"] = 0.0  # No parameter changes for PCA
+        config["nb_class"] = nb_class
+        config["n_tuned_params"] = n_tuned_params
+        config["n_linear_params"] = n_linear_params
+        config["classifier_test_acc"] = ini_test_acc
+        config["classifier_test_loss"] = ini_test_loss
+        config["image_shape"] = list(image_shape)
+        config["best_train_acc"] = best_train_acc
+        config["best_val_acc"] = best_val_acc
+        config["test_acc"] = final_test_acc
+        config["test_loss"] = final_test_loss
+        config["best_train_loss"] = best_train_loss
+        config["best_val_loss"] = best_val_loss
+        save_config(exp_dir, config)
+        
+        logger.finish()
+        return
+    
+    # Fine-tuning for gradient-based classifiers
     # Ensure model is in train mode before fine-tuning
     model.train()
     
@@ -359,7 +435,7 @@ def main():
             model, val_loader, base_loss, device
         )
 
-        # Log training progress (test evaluation only every N epochs or at end to save time)
+        # Log training progress (console/file only, metrics batched)
         logger.log(
             f"Epoch={classifier_epochs+epoch+1}/{classifier_epochs+conv_epochs} "
             f"Train_Acc={train_metrics['accuracy']:.4f} "
@@ -368,7 +444,7 @@ def main():
             f"Reg_Loss={train_metrics['reg_loss']:.4f} "
             f"Val_Acc={val_acc:.4f} "
             f"Val_Loss={val_loss:.4f}",
-            data=True,
+            data=False,  # Changed to False - metrics logged via log_metrics instead
         )
         # Calculate parameter distance for this epoch
         epoch_dist_sq = 0.0
@@ -404,6 +480,9 @@ def main():
         logger.track_metric("fine_tune", "train_base_loss", train_metrics['base_loss'], classifier_epochs+epoch+1)
         logger.track_metric("fine_tune", "train_reg_loss", train_metrics['reg_loss'], classifier_epochs+epoch+1)
         logger.track_metric("fine_tune", "parameter_distance", epoch_dist.item(), classifier_epochs+epoch+1)
+        
+        # Flush metrics to wandb at end of epoch (non-blocking async)
+        logger.flush_metrics()
 
         
         # ---- Early stopping on validation loss

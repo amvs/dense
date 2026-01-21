@@ -25,7 +25,7 @@ class ScatterParams:
     random: bool = False
     # Filter mode
     use_original_filters: bool = False  # If True, use filters at different scales without downsampling. If False, use first filter and downsample (current mode).
-    # Classifier type: 'hypernetwork', or 'attention'
+    # Classifier type: 'hypernetwork', 'attention', or 'pca'
     classifier_type: str = 'hypernetwork'
     # Hypernetwork parameters
     hypernet_hidden_dim: int = 64
@@ -33,6 +33,8 @@ class ScatterParams:
     attention_d_model: int = 128
     attention_num_heads: int = 4
     attention_num_layers: int = 2
+    # PCA parameters
+    pca_dim: int = 50  # Number of PCA components per class
 
 class MyConv2d(nn.Module):
     '''
@@ -173,6 +175,174 @@ class HypernetworkClassifier(nn.Module):
         per_node_logits = torch.einsum('bnd,ndc->bnc', features, weights)
 
         logits = per_node_logits.sum(dim=1) + self.bias
+        
+        return logits
+
+
+class PCAClassifier(nn.Module):
+    """
+    Method 3: PCA-based Classifier
+    Uses PCA to find subspaces for each class, then classifies by distance to subspace.
+    This is a non-parametric classifier that doesn't require gradient-based training.
+    """
+    def __init__(self, num_classes: int, pca_dim: int = 50):
+        """
+        Args:
+            num_classes: Number of classification classes
+            pca_dim: Number of PCA components per class
+        """
+        super().__init__()
+        self.num_classes = num_classes
+        self.pca_dim = pca_dim
+        # These will be set during fit()
+        self.register_buffer('class_means', None)
+        self.register_buffer('pca_bases', None)
+        self._fitted = False
+    
+    @torch.no_grad()
+    def fit(self, feature_extractor, dataloader, device):
+        """
+        Fit PCA classifier by computing class means and PCA bases.
+        
+        Args:
+            feature_extractor: The dense model (or any model with scatter_forward method)
+            dataloader: DataLoader with training data
+            device: Device to run computation on
+        """
+        self.eval()
+        feature_extractor.eval()
+        
+        # running statistics
+        count = torch.zeros(self.num_classes, device=device)
+        sum_feat = None
+        
+        # ---------- pass 1: class means ----------
+        for imgs, labels in dataloader:
+            imgs = imgs.to(device)
+            labels = labels.to(device)
+            
+            feats = feature_extractor.scatter_forward(imgs)  # [B, D]
+            
+            if sum_feat is None:
+                D = feats.shape[1]
+                sum_feat = torch.zeros(self.num_classes, D, device=device)
+            
+            for c in range(self.num_classes):
+                mask = labels == c
+                if mask.any():
+                    sum_feat[c] += feats[mask].sum(dim=0)
+                    count[c] += mask.sum()
+        
+        class_means = sum_feat / count.unsqueeze(1)
+        
+        # ---------- pass 2: PCA bases ----------
+        pca_bases = self._compute_pca_bases_randomized(
+            feature_extractor, dataloader, class_means, device
+        )
+        
+        self.class_means = class_means
+        self.pca_bases = pca_bases
+        self._fitted = True
+    
+    @torch.no_grad()
+    def _compute_pca_bases_randomized(
+        self, feature_extractor, dataloader, class_means, device
+    ):
+        """
+        Compute PCA bases using randomized SVD for each class.
+        
+        Args:
+            feature_extractor: The dense model
+            dataloader: DataLoader with training data
+            class_means: Tensor of shape [num_classes, feature_dim] - class means
+            device: Device to run computation on
+            
+        Returns:
+            pca_bases: Tensor of shape [num_classes, feature_dim, pca_dim]
+        """
+        C = self.num_classes
+        k = self.pca_dim
+        oversample = 5  # Common setting for randomized SVD
+        
+        # Store features by class
+        feats_by_class = defaultdict(list)
+        
+        for imgs, labels in dataloader:
+            imgs = imgs.to(device)
+            labels = labels.to(device)
+            
+            feats = feature_extractor.scatter_forward(imgs)
+            
+            for c in range(C):
+                mask = labels == c
+                if mask.any():
+                    x = feats[mask] - class_means[c]
+                    feats_by_class[c].append(x)
+        
+        pca_bases = []
+        
+        for c in range(C):
+            X = torch.cat(feats_by_class[c], dim=0)  # [Nc, D]
+            
+            if X.shape[0] < k:
+                # Not enough samples, use identity-like basis
+                V = torch.eye(X.shape[1], device=device)[:, :k]
+                pca_bases.append(V)
+                continue
+            
+            # ---------- randomized SVD ----------
+            q = min(k + oversample, X.shape[0], X.shape[1])
+            R = torch.randn(X.shape[1], q, device=device)
+            
+            Y = X @ R                  # [Nc, q]
+            Q, _ = torch.linalg.qr(Y)  # [Nc, q]
+            
+            B = Q.T @ X                # [q, D]
+            _, _, Vh = torch.linalg.svd(B, full_matrices=False)
+            
+            V = Vh[:k].T               # [D, k]
+            pca_bases.append(V)
+        
+        return torch.stack(pca_bases)  # [C, D, k]
+    
+    @torch.no_grad()
+    def forward(self, features):
+        """
+        Classify features by computing distance to each class's PCA subspace.
+        
+        Args:
+            features: Tensor of shape [batch, feature_dim] - extracted features
+            
+        Returns:
+            logits: Tensor of shape [batch, num_classes] - negative distances (larger = closer)
+        """
+        if not self._fitted:
+            raise RuntimeError("PCAClassifier must be fitted before use. Call fit() first.")
+        
+        batch_size = features.shape[0]
+        
+        # Compute distance to each class subspace
+        dists = []
+        for c in range(self.num_classes):
+            # Center features by class mean: [batch, feature_dim] - [feature_dim] -> [batch, feature_dim]
+            centered = features - self.class_means[c].unsqueeze(0)  # [batch, feature_dim]
+            
+            # Project onto PCA basis: [batch, feature_dim] @ [feature_dim, pca_dim] -> [batch, pca_dim]
+            basis = self.pca_bases[c]  # [feature_dim, pca_dim]
+            projected = torch.matmul(centered, basis)  # [batch, pca_dim]
+            
+            # Reconstruct: [batch, pca_dim] @ [pca_dim, feature_dim] -> [batch, feature_dim]
+            reconstructed = torch.matmul(projected, basis.transpose(0, 1))  # [batch, feature_dim]
+            
+            # Compute distance (L2 norm of residual)
+            residual = centered - reconstructed  # [batch, feature_dim]
+            dist = torch.norm(residual, dim=1, p=2)  # [batch]
+            dists.append(dist)
+        
+        dists = torch.stack(dists, dim=1)  # [batch, num_classes]
+        
+        # Return negative distances as logits (larger = closer = higher score)
+        logits = -dists
         
         return logits
 
@@ -369,8 +539,15 @@ class dense(nn.Module):
             )
             # Register metadata as buffer
             self.register_buffer('feature_metadata', metadata)
+        elif self.classifier_type == 'pca':
+            pca_dim = self.pca_dim
+            self.classifier = PCAClassifier(
+                num_classes=self.n_class,
+                pca_dim=pca_dim
+            )
+            # PCA classifier doesn't need metadata
         else:
-            raise ValueError(f"Unknown classifier_type: {self.classifier_type}")
+            raise ValueError(f"Unknown classifier_type: {self.classifier_type}. Must be 'hypernetwork', 'attention', or 'pca'")
     
     def build_keep_idx(self):
         d = self.depth
@@ -471,7 +648,17 @@ class dense(nn.Module):
         return y
 
 
-    def forward(self, img):
+    def _extract_features(self, img):
+        """
+        Extract scattering features from input image.
+        Common feature extraction logic used by both forward() and scatter_forward().
+        
+        Args:
+            img: Input image tensor [batch, channels, H, W]
+            
+        Returns:
+            features: Tensor of shape [batch, num_features, H, W] - extracted features
+        """
         if self.use_original_filters:
             # Original filters mode: no downsampling during forward pass
             inputs = [img]
@@ -524,6 +711,21 @@ class dense(nn.Module):
                 inputs = [self.pooling(i) for i in inputs]
             features = torch.cat(outputs, dim=1)
         
+        return features
+
+    def forward(self, img):
+        """
+        Forward pass: extract features and apply classifier.
+        
+        Args:
+            img: Input image tensor [batch, channels, H, W]
+            
+        Returns:
+            logits: Tensor of shape [batch, num_classes] - classification logits
+        """
+        # Extract features using common logic
+        features = self._extract_features(img)
+        
         # Apply classifier
         if self.classifier_type == 'hypernetwork':
             # Reshape features: [batch, num_features, H, W] -> [batch, num_features, H*W]
@@ -538,6 +740,11 @@ class dense(nn.Module):
             # Attention classifier expects [batch, num_features, H, W] and does pooling internally
             metadata = self.feature_metadata
             return self.classifier(features, metadata)
+        elif self.classifier_type == 'pca':
+            # PCA classifier: flatten features to [batch, feature_dim]
+            batch_size = features.shape[0]
+            features_flat = features.view(batch_size, -1)  # [batch, feature_dim]
+            return self.classifier(features_flat)
         else:
             raise ValueError(f"Unknown classifier_type: {self.classifier_type}")
 
@@ -546,8 +753,10 @@ class dense(nn.Module):
     def train_classifier(self):
         for param in self.blocks.parameters():
             param.requires_grad = False
-        for param in self.classifier.parameters():
-            param.requires_grad = True
+        # PCA classifier doesn't have trainable parameters
+        if self.classifier_type != 'pca':
+            for param in self.classifier.parameters():
+                param.requires_grad = True
 
     def train_conv(self):
         for param in self.blocks.parameters():
@@ -572,11 +781,33 @@ class dense(nn.Module):
         return total_params
 
     def n_classifier_params(self):
+        # PCA classifier doesn't have trainable parameters (it's non-parametric)
+        if self.classifier_type == 'pca':
+            return 0
         total_params = 0
         for param in self.classifier.parameters():
                 total_params += param.numel()
         return total_params
     
+
+    def scatter_forward(self, img):
+        """
+        Extract scattering features without applying classifier.
+        Used for PCA classifier fitting.
+        
+        Args:
+            img: Input image tensor [batch, channels, H, W]
+            
+        Returns:
+            features: Flattened features [batch, feature_dim]
+        """
+        # Extract features using common logic
+        features = self._extract_features(img)
+        
+        # Flatten features: [batch, num_features, H, W] -> [batch, feature_dim]
+        batch_size = features.shape[0]
+        features_flat = features.view(batch_size, -1)
+        return features_flat
 
     def get_feature_metadata(self):
         """

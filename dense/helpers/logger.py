@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from collections import defaultdict
 from types import MethodType
+import threading
+from queue import Queue
 
 class LoggerManager:
     """
@@ -17,6 +19,10 @@ class LoggerManager:
     """
     _logger = None
     _cloud = False
+    _log_queue = None
+    _log_thread = None
+    _batch_metrics = {}
+    _batch_step = None
 
     @staticmethod
     def get_logger(log_dir='.', name="run", level=logging.INFO, wandb_project=None, config=None):
@@ -49,8 +55,30 @@ class LoggerManager:
         if wandb_project and not LoggerManager._cloud:
             # Additional cloud logging setup can be added here
             wandb_login()
-            wandb.init(project=wandb_project, config=config, name=name)
+            # Use async mode for non-blocking logging
+            wandb.init(project=wandb_project, config=config, name=name, settings=wandb.Settings(_disable_stats=True))
             LoggerManager._cloud = True
+            
+            # Initialize async logging queue and thread
+            LoggerManager._log_queue = Queue()
+            LoggerManager._batch_metrics = {}
+            LoggerManager._batch_step = None
+            
+            def _async_log_worker():
+                """Background thread for async wandb logging"""
+                while True:
+                    try:
+                        item = LoggerManager._log_queue.get(timeout=1.0)
+                        if item is None:  # Shutdown signal
+                            break
+                        if isinstance(item, dict):
+                            wandb.log(item)
+                        LoggerManager._log_queue.task_done()
+                    except:
+                        continue
+            
+            LoggerManager._log_thread = threading.Thread(target=_async_log_worker, daemon=True)
+            LoggerManager._log_thread.start()
 
         def send_file(title, path, type):
             '''
@@ -72,21 +100,51 @@ class LoggerManager:
                 else:
                     logger.error(f"Unsupported file type for wandb logging: {type}")
         
+        def _flush_batched_metrics():
+            '''Internal function to flush batched metrics'''
+            if LoggerManager._batch_metrics:
+                metrics_to_log = LoggerManager._batch_metrics.copy()
+                LoggerManager._batch_metrics.clear()
+                if LoggerManager._log_queue:
+                    LoggerManager._log_queue.put(metrics_to_log)
+                else:
+                    # Fallback to synchronous logging if queue not initialized
+                    wandb.log(metrics_to_log)
+        
+        def flush_metrics():
+            '''
+            Flush all batched metrics to wandb immediately.
+            Call this at epoch end or key checkpoints.
+            '''
+            if LoggerManager._cloud and LoggerManager._batch_metrics:
+                _flush_batched_metrics()
+        
         def finish():
             '''
             Finish the wandb run
             '''
             logger.info("Finishing log...")
             if LoggerManager._cloud:
+                # Flush any remaining batched metrics
+                _flush_batched_metrics()
+                # Wait for queue to empty (with timeout)
+                if LoggerManager._log_queue:
+                    LoggerManager._log_queue.put(None)  # Shutdown signal
+                    LoggerManager._log_thread.join(timeout=5.0)
                 wandb.finish()
 
-        def log(message: str, data: bool = False):
+        def log(message: str, data: bool = False, flush: bool = False):
             '''
             Unified log method
-            - If data=False, logs plain text message
-            - If data=True, logs text and parse key=value pairs for wandb
+            - If data=False, logs plain text message (no wandb call)
+            - If data=True, logs text and parse key=value pairs for wandb (batched)
             example for data=True:
                 logger.log("epoch=1 loss=0.345 acc=0.89", data=True)
+            
+            Args:
+                message: Log message string
+                data: If True, parse and log metrics to wandb
+                flush: If True, immediately flush batched metrics
             '''
             logger.info(message)
             if data and LoggerManager._cloud:
@@ -104,16 +162,24 @@ class LoggerManager:
                 except Exception as e:
                     logger.error(f"Failed to parse log message for cloud logging: {e}")
                     return
-                wandb.log(json_data)
+                
+                # Batch metrics instead of logging immediately
+                LoggerManager._batch_metrics.update(json_data)
+                
+                # Flush if requested
+                if flush:
+                    _flush_batched_metrics()
         
-        def log_metrics(metrics: dict, step: int = None, prefix: str = ""):
+        def log_metrics(metrics: dict, step: int = None, prefix: str = "", flush: bool = False):
             '''
             Log structured metrics to wandb with optional prefix for grouping.
+            Metrics are batched and logged asynchronously for better performance.
             
             Args:
                 metrics: Dictionary of metric_name -> value
                 step: Optional step/epoch number
                 prefix: Optional prefix for metric names (e.g., "classifier/", "fine_tune/")
+                flush: If True, immediately flush batched metrics to wandb
             
             Example:
                 logger.log_metrics({"accuracy": 0.95, "loss": 0.1}, step=5, prefix="train/")
@@ -123,7 +189,14 @@ class LoggerManager:
                 prefixed_metrics = {f"{prefix}{k}" if prefix else k: v for k, v in metrics.items()}
                 if step is not None:
                     prefixed_metrics["epoch"] = step
-                wandb.log(prefixed_metrics)
+                    LoggerManager._batch_step = step
+                
+                # Batch metrics: accumulate until flush is called
+                LoggerManager._batch_metrics.update(prefixed_metrics)
+                
+                # Flush immediately if requested or if queue is getting large
+                if flush or (LoggerManager._log_queue and LoggerManager._log_queue.qsize() > 10):
+                    _flush_batched_metrics()
         
         def log_comparison(metrics: dict, title: str = "Comparison"):
             '''
@@ -315,6 +388,7 @@ class LoggerManager:
         logger.log = log
         logger.send_file = send_file
         logger.finish = finish
+        logger.flush_metrics = flush_metrics
         # Create wrapper functions that accept 'self' as first argument (for method binding)
         def log_metrics_wrapper(self, metrics, step=None, prefix=""):
             return log_metrics(metrics, step, prefix)

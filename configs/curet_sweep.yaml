@@ -17,6 +17,7 @@ sweep:
   attention_d_model: [128]
   attention_num_heads: [4]
   attention_num_layers: [2]
+  pca_dim: [50]  # Number of PCA components per class (only used when classifier_type='pca')
   fine_tune_mode: [extractor_only, both]
   
 
