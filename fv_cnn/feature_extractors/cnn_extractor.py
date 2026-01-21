@@ -27,7 +27,7 @@ def _feature_module(model: nn.Module, backbone: str, layer: str) -> nn.Module:
     b = backbone.lower()
     # map named layers to actual submodules
     if b == "alexnet":
-        if layer == "conv5":
+        if layer == "conv5_3": # match with vgg layer name for sweeps
             return nn.Sequential(*list(model.features.children())[:12])  # up to conv5 activation
         raise ValueError("Unsupported layer for AlexNet: {layer}")
     if b == "vgg16":

@@ -11,8 +11,12 @@ def _load_backbone(name: str, pretrained: bool = True) -> nn.Module:
     name = name.lower()
     if name == "alexnet":
         return models.alexnet(weights=models.AlexNet_Weights.IMAGENET1K_V1 if pretrained else None)
+    if name == "vgg11":
+        return models.vgg11(weights=models.VGG11_Weights.IMAGENET1K_V1 if pretrained else None)
     if name == "vgg16":
         return models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1 if pretrained else None)
+    if name == "vgg19":
+        return models.vgg19(weights=models.VGG19_Weights.IMAGENET1K_V1 if pretrained else None)
     if name == "resnet50":
         return models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V2 if pretrained else None)
     raise ValueError(f"Unsupported backbone: {name}")
@@ -24,6 +28,12 @@ def _fc_module(model: nn.Module, backbone: str, layer: str) -> nn.Module:
         if layer == "fc7":
             return nn.Sequential(model.features, nn.Flatten(), model.classifier[:6])  # up to fc7
     if b == "vgg16":
+        if layer == "fc7":
+            return nn.Sequential(model.features, nn.Flatten(), model.classifier[:6])
+    if b == "vgg11":
+        if layer == "fc7":
+            return nn.Sequential(model.features, nn.Flatten(), model.classifier[:6])
+    if b == "vgg19":
         if layer == "fc7":
             return nn.Sequential(model.features, nn.Flatten(), model.classifier[:6])
     if b == "resnet50":
@@ -64,6 +74,9 @@ class FCFeatureExtractor(BaseFeatureExtractor):
     def extract(self, image: torch.Tensor | Image.Image, resize: Optional[int] = None) -> Dict[str, Any]:
         if isinstance(image, torch.Tensor):
             image = transforms.ToPILImage()(image)
+        # convert grayscale to RGB if needed (for pretrained models expecting RGB)
+        if image.mode == "L":
+            image = image.convert("RGB")
         x = self.preprocess(image).unsqueeze(0).to(self.device)
         feat = self.fc_model(x)  # (1, D)
         return {"descriptor": feat.squeeze(0).cpu()}  # single global feature

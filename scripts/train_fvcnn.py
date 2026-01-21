@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 import yaml
 from sklearn.svm import LinearSVC
+from sklearn.calibration import CalibratedClassifierCV
 import gc
 
 from fv_cnn import FisherVectorEncoder, MultiScaleCNNExtractor, FCFeatureExtractor
@@ -47,10 +48,15 @@ def build_outex_loaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, Da
     root_dir = cfg["root_dir"]
     resize = cfg.get("resize", 128)
     batch_size = cfg.get("batch_size", 32)
-    problem_id = cfg.get("problem_id", "000")
     train_val_ratio = cfg.get("train_val_ratio", 2)
     train_ratio = cfg.get("train_ratio", 1.0)
     drop_last = cfg.get("drop_last", False)
+    
+    # Determine problem_id from fold, matching train_wph behavior
+    from training.datasets.outex import get_available_problems
+    available_problems = get_available_problems(root_dir)
+    fold = cfg.get("fold", 0)
+    problem_id = available_problems[fold]
 
     transform = build_transforms(resize)
     train_dataset = OutexDataset(root_dir, problem_id=problem_id, split="train", transform=transform)
@@ -78,6 +84,8 @@ def build_curet_loaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, Da
     resize = cfg.get("resize", 200)
     batch_size = cfg.get("batch_size", 32)
     train_ratio = cfg.get("train_ratio", 0.8)
+    test_ratio = cfg.get("test_ratio", None)
+    train_val_ratio = cfg.get("train_val_ratio", None)
     drop_last = cfg.get("drop_last", False)
 
     from training.datasets.kaggle import get_kaggle_dataset
@@ -85,13 +93,26 @@ def build_curet_loaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, Da
     transform = build_transforms(resize)
     base_dataset = KaggleDataset(root, deeper_path=deeper_path, transform=transform)
     total_len = len(base_dataset)
-    train_len = int(total_len * train_ratio)
-    test_len = total_len - train_len
-    train_dataset, test_dataset = stratify_split(base_dataset, train_size=train_len, seed=42)
-    # create val from test split to mimic other loaders
-    val_len = max(1, test_len // 5)
-    test_len_final = test_len - val_len
-    test_dataset, val_dataset = stratify_split(test_dataset, train_size=test_len_final, seed=43)
+    train_len = max(1, int(total_len * train_ratio))
+    remain = total_len - train_len
+    if remain < 2:
+        raise ValueError("Not enough samples left after train split to form val/test")
+
+    if test_ratio is not None:
+        test_len = max(1, int(total_len * test_ratio))
+        if test_len >= remain:
+            test_len = max(1, remain // 2)
+        val_len = max(1, remain - test_len)
+    elif train_val_ratio is not None:
+        val_len = max(1, remain // (train_val_ratio + 1))
+        test_len = max(1, remain - val_len)
+    else:
+        val_len = max(1, remain // 5)
+        test_len = max(1, remain - val_len)
+
+    train_dataset, leftover_dataset = stratify_split(base_dataset, train_size=train_len, seed=42)
+    # First split leftover into test, then val
+    test_dataset, val_dataset = stratify_split(leftover_dataset, train_size=test_len, seed=43)
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=drop_last, num_workers=4)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=4)
@@ -308,7 +329,7 @@ def train_and_eval(cfg: Dict[str, Any], logger) -> None:
     logger.log(f"Framework={framework} backbone={backbone} feature_layer={feature_layer}")
     train_loader, val_loader, test_loader, nb_class = build_loaders(cfg)
     logger.log(f"Dataset has {nb_class} classes")
-
+    
     if framework == "fvcnn":
         extractor = MultiScaleCNNExtractor(
             backbone=backbone,
@@ -317,6 +338,9 @@ def train_and_eval(cfg: Dict[str, Any], logger) -> None:
             min_edge=cfg.get("min_edge", 30),
             max_sqrt_hw=cfg.get("max_sqrt_hw", 1024),
         )
+        encoder_type = cfg.get("encoder_type", "fv")
+        if encoder_type != "fv":
+            raise ValueError(f"encoder_type '{encoder_type}' not supported; expected 'fv'")
         encoder = FisherVectorEncoder(
             num_components=cfg.get("gmm_components", 64),
             pca_dim=cfg.get("pca_dim"),
@@ -363,10 +387,16 @@ def train_and_eval(cfg: Dict[str, Any], logger) -> None:
         logger.log(f"Encoder parameters: {encoder_params}")
 
     C = cfg.get("svm_C", 1.0)
-    clf = LinearSVC(C=C)
+    calibrate = bool(cfg.get("svm_calibration", False))
+    if calibrate:
+        clf = CalibratedClassifierCV(base_estimator=LinearSVC(C=C), method="sigmoid", cv=3)
+    else:
+        clf = LinearSVC(C=C)
+
     clf.fit(train_codes, train_labels)
     logger.log("Done fitting SVM classifier, computing scores")
     train_acc = clf.score(train_codes, train_labels)
+    logger.log(f"Train_Acc={train_acc:.4f}", data=True)
     # Free training encodings
     del train_codes, train_labels
     gc.collect()
@@ -416,9 +446,9 @@ def main() -> None:
     parser.add_argument("--config", required=True, help="Path to YAML config")
     parser.add_argument(
         "--override",
-        action="append",
+        nargs="*",
         default=[],
-        help="Override config entries with key=value (supports dotted keys)",
+        help="Override config entries with key=value (supports dotted keys)"
     )
     parser.add_argument(
         "--sweep_dir", type=str, default=None,
