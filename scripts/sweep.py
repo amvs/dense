@@ -26,7 +26,9 @@ def parse_args():
         "--random", action="store_true",
         help="If set, use random filters"
     )
-    parser.add_argument('--model-type', type=str, choices=['wph', 'scat', 'wph_pca', 'wph_hypernetwork', 'fvcnn', 'fccnn'], default='scat',
+    parser.add_argument('--model-type', type=str,
+                        choices=['wph', 'scat', 'wph_pca', 'wph_hypernetwork', 'fvcnn', 'fccnn'],
+                        default='scat',
                         help='Type of model to train (default: scat (dense))')
     parser.add_argument('--name', type=str, default='',
                         help='Optional short name for the sweep folder')
@@ -53,14 +55,26 @@ base_config = load_config(sweep["base_config"])
 # Extract dataset name after loading base_config
 dataset_name = base_config["dataset"].split("/")[-1] if "dataset" in base_config else "unknown"
 
+# Generate timestamp before creating output folder
+timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+# Determine experiment root based on model type
+if args.model_type in ['fvcnn', 'fccnn']:
+    exp_root = "experiments_fvcnn"
+else:
+    exp_root = "experiments"
+
 # Create output folder
 if args.sweep_dir:
     sweep_dir = args.sweep_dir
     os.makedirs(sweep_dir, exist_ok=True)
 else:
     short_name = f"{args.name}-" if args.name else ""
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    sweep_dir = os.path.join("experiments", dataset_name, f"{short_name}sweeps-{timestamp}")
+    # Only include timestamp if fold_filter is not specified
+    if args.fold_filter is None:
+        sweep_dir = os.path.join(exp_root, dataset_name, f"{short_name}sweeps-{timestamp}")
+    else:
+        sweep_dir = os.path.join(exp_root, dataset_name, f"{short_name}sweeps-foldSplit")
     os.makedirs(sweep_dir, exist_ok=True)
 
 params = sweep["sweep"]  # dict of lists
