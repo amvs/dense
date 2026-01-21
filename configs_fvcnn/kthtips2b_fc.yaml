@@ -12,10 +12,9 @@ seed: 42
 num_classes: 11
 
 # feature extractor
-framework: fvcnn
-backbone: vgg19
-feature_layer: conv5_3
-
+framework: fccnn
+backbone: vgg11
+feature_layer: fc7
 
 # multi-scale
 scales: [0.125, 0.17677670, 0.25, 0.35355339, 0.5, 0.70710678, 1., 1.41421356, 2., 2.82842712]
@@ -23,7 +22,7 @@ min_edge: 30
 max_sqrt_hw: 1024
 
 # IFV encoder
-encoder_type: fv
+encoder_type: none
 gmm_components: 64
 pca_dim: null
 signed_sqrt: true

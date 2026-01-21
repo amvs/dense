@@ -1,38 +1,34 @@
-# FV-CNN configuration for KTH-TIPS2b (image-level classification)
+# FV-CNN configuration for CUReT (image-level classification)
 
 # dataset
-dataset: kthtips2b
-root_dir: data/datasets/KTH-TIPS2-b
-fold: 0
+dataset: smohsensadeghi/curet-dataset
+deeper_path: CUReT/curetgrey/
 resize: 200
-train_ratio: 1.0
+train_ratio: 0.1
 test_ratio: 0.15
-drop_last: false
+train_val_ratio: 2
 seed: 42
-num_classes: 11
+num_classes: 61
 
 # feature extractor
-framework: fvcnn
-backbone: vgg19
-feature_layer: conv5_3
-
+framework: fccnn
+backbone: vgg11
+feature_layer: fc7
 
 # multi-scale
+# scales = 2 ** s, where s = [-3, -2.5, -2, ... 1.5]
 scales: [0.125, 0.17677670, 0.25, 0.35355339, 0.5, 0.70710678, 1., 1.41421356, 2., 2.82842712]
 min_edge: 30
 max_sqrt_hw: 1024
 
 # IFV encoder
-encoder_type: fv
+encoder_type: none
 gmm_components: 64
 pca_dim: null
 signed_sqrt: true
 l2_normalize: true
 
 # training
-batch_size: 16
+batch_size: 32
 svm_C: 1.0
 svm_calibration: false
-
-# logging
-vmap_chunk_size: 2
