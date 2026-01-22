@@ -7,6 +7,24 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 
+def combine_dfs(dir_name, pattern="*.csv"):
+    dfs = []
+    for root, dirs, files in os.walk(dir_name):
+        for file in files:
+            if file.endswith(pattern):
+                file_path = os.path.join(root, file)
+                try:
+                    df = pd.read_csv(file_path)
+                    df['source_file'] = file_path
+                    dfs.append(df)
+                except Exception as e:
+                    print(f"Warning: Failed to read {file_path}: {e}")
+    if dfs:
+        combined_df = pd.concat(dfs, ignore_index=True)
+        combined_path = os.path.join(root, f"combined_{dir_name.split('.')[0]}.csv")
+        combined_df.to_csv(combined_path, index=False)
+        print(f"Combined CSV saved to {combined_path}")
+
 def df_from_logs(args):
     sweep_dir = args.sweep_dir
     rows = []
