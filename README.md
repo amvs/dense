@@ -16,12 +16,17 @@ For any task, follow these steps to ensure smooth collaboration and code quality
 - `scripts/` → Command-line entry point
 - `experiments/` → Auto-created folder storing logs, saved model and configs for reproducibility
 - `configs/` → Subpackage for configuration of hyperparameter
+- `wph/` → Subpackge for PyTorch model definitions of wavelet phase harmonic model
+- `fvcnn/` → Subpackage for PyTorch model definitions of CNN model with Fisher vector encoding, from "Deep Filter Banks for Texture Recognition and Segmentation", Cimpoi et al 2016, implemented in MatLab at https://github.com/mcimpoi/deep-fbanks/tree/master
 
 # Support dataset
 - MNIST
-- curet
+- curet (via Kaggle)
+- Describable Textures Dataset (DTD, via Kaggle)
+- KTHTIPS dataset
+- Outex 10 and 12 datasets
 
-# Get Start
+# Get Started
 
 ## Package Requirement
 
