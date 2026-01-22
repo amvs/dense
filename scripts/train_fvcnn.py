@@ -14,11 +14,7 @@ from sklearn.calibration import CalibratedClassifierCV
 import gc
 
 from fv_cnn import FisherVectorEncoder, MultiScaleCNNExtractor, FCFeatureExtractor
-from training.datasets.outex import OutexDataset
-from training.datasets.kaggle import KaggleDataset
-from training.datasets.kthtips2b import KHTTips2bDataset, CenterCropToSquare
-from training.datasets.base import stratify_split
-from torchvision.datasets import MNIST
+from training.data_utils import load_and_split_data
 from dense.helpers import LoggerManager
 from training.experiment_utils import log_model_parameters
 from configs import save_config
@@ -32,163 +28,6 @@ def set_seed(seed: int) -> None:
     np.random.seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-
-
-def build_transforms(resize: int, center_crop: bool = False) -> transforms.Compose:
-    t: List[Any] = []
-    if center_crop:
-        t.append(CenterCropToSquare())
-    t.append(transforms.Resize((resize, resize)))
-    t.append(transforms.ToTensor())
-    # no normalization here; extractor handles ImageNet normalization
-    return transforms.Compose(t)
-
-
-def build_outex_loaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
-    root_dir = cfg["root_dir"]
-    resize = cfg.get("resize", 128)
-    batch_size = cfg.get("batch_size", 32)
-    train_val_ratio = cfg.get("train_val_ratio", 2)
-    train_ratio = cfg.get("train_ratio", 1.0)
-    drop_last = cfg.get("drop_last", False)
-    
-    # Determine problem_id from fold, matching train_wph behavior
-    from training.datasets.outex import get_available_problems
-    available_problems = get_available_problems(root_dir)
-    fold = cfg.get("fold", 0)
-    problem_id = available_problems[fold]
-
-    transform = build_transforms(resize)
-    train_dataset = OutexDataset(root_dir, problem_id=problem_id, split="train", transform=transform)
-    test_dataset = OutexDataset(root_dir, problem_id=problem_id, split="test", transform=transform)
-
-    if train_ratio < 1.0:
-        reduced_len = int(len(train_dataset) * train_ratio)
-        train_dataset, _ = stratify_split(train_dataset, train_size=reduced_len, seed=42)
-
-    total_test_len = len(test_dataset)
-    val_len = total_test_len // (train_val_ratio + 1)
-    test_len = total_test_len - val_len
-    test_dataset, val_dataset = stratify_split(test_dataset, train_size=test_len, seed=42)
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=drop_last, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=4)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=4)
-    nb_class = len(test_dataset.classes)
-    return train_loader, val_loader, test_loader, nb_class
-
-
-def build_curet_loaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
-    dataset_name = cfg["dataset"]
-    deeper_path = cfg.get("deeper_path", "")
-    resize = cfg.get("resize", 200)
-    batch_size = cfg.get("batch_size", 32)
-    train_ratio = cfg.get("train_ratio", 0.8)
-    test_ratio = cfg.get("test_ratio", None)
-    train_val_ratio = cfg.get("train_val_ratio", None)
-    drop_last = cfg.get("drop_last", False)
-
-    from training.datasets.kaggle import get_kaggle_dataset
-    root = get_kaggle_dataset(dataset_name)
-    transform = build_transforms(resize)
-    base_dataset = KaggleDataset(root, deeper_path=deeper_path, transform=transform)
-    total_len = len(base_dataset)
-    train_len = max(1, int(total_len * train_ratio))
-    remain = total_len - train_len
-    if remain < 2:
-        raise ValueError("Not enough samples left after train split to form val/test")
-
-    if test_ratio is not None:
-        test_len = max(1, int(total_len * test_ratio))
-        if test_len >= remain:
-            test_len = max(1, remain // 2)
-        val_len = max(1, remain - test_len)
-    elif train_val_ratio is not None:
-        val_len = max(1, remain // (train_val_ratio + 1))
-        test_len = max(1, remain - val_len)
-    else:
-        val_len = max(1, remain // 5)
-        test_len = max(1, remain - val_len)
-
-    train_dataset, leftover_dataset = stratify_split(base_dataset, train_size=train_len, seed=42)
-    # First split leftover into test, then val
-    test_dataset, val_dataset = stratify_split(leftover_dataset, train_size=test_len, seed=43)
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=drop_last, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=4)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=4)
-    nb_class = len(base_dataset.classes)
-    return train_loader, val_loader, test_loader, nb_class
-
-
-def build_kth_loaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
-    root_dir = cfg["root_dir"]
-    resize = cfg.get("resize", 200)
-    batch_size = cfg.get("batch_size", 16)
-    fold = cfg.get("fold", 0)
-    train_ratio = cfg.get("train_ratio", 1.0)
-    drop_last = cfg.get("drop_last", False)
-
-    transform = build_transforms(resize, center_crop=True)
-    # prepare datasets according to fold scheme
-    samples = ['sample_a', 'sample_b', 'sample_c', 'sample_d']
-    test_sample = samples[fold]
-    val_sample = samples[(fold + 1) % 4]
-    train_samples = [samples[(fold + 2) % 4], samples[(fold + 3) % 4]]
-
-    train_dataset = KHTTips2bDataset(root_dir, transform=transform, sample_filter=train_samples)
-    val_dataset = KHTTips2bDataset(root_dir, transform=transform, sample_filter=[val_sample])
-    test_dataset = KHTTips2bDataset(root_dir, transform=transform, sample_filter=[test_sample])
-
-    if train_ratio < 1.0:
-        reduced_len = int(len(train_dataset) * train_ratio)
-        train_dataset, _ = stratify_split(train_dataset, train_size=reduced_len, seed=42)
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=drop_last, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=4)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=4)
-    nb_class = len(train_dataset.classes)
-    return train_loader, val_loader, test_loader, nb_class
-
-
-def build_loaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
-    dataset = cfg["dataset"].lower()
-    if "outex" in dataset:
-        return build_outex_loaders(cfg)
-    if "curet" in dataset:
-        return build_curet_loaders(cfg)
-    if "kth" in dataset:
-        return build_kth_loaders(cfg)
-    if "mnist" in dataset:
-        return build_mnist_loaders(cfg)
-    raise ValueError(f"Unsupported dataset {dataset}")
-
-
-def build_mnist_loaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
-    root_dir = cfg["root_dir"]
-    resize = cfg.get("resize", 28)
-    batch_size = cfg.get("batch_size", 16)
-    train_ratio = cfg.get("train_ratio", 0.8)
-    drop_last = cfg.get("drop_last", False)
-
-    transform = build_transforms(resize)
-    train_dataset = MNIST(root_dir, train=True, download=True, transform=transform)
-    test_dataset = MNIST(root_dir, train=False, download=True, transform=transform)
-
-    if train_ratio < 1.0:
-        reduced_len = int(len(train_dataset) * train_ratio)
-        train_dataset, _ = stratify_split(train_dataset, train_size=reduced_len, seed=42)
-
-    val_len = max(1, len(test_dataset) // 5)
-    test_len = len(test_dataset) - val_len
-    test_dataset, val_dataset = stratify_split(test_dataset, train_size=test_len, seed=42)
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=drop_last, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=4)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=4)
-    nb_class = 10  # MNIST has 10 classes
-    return train_loader, val_loader, test_loader, nb_class
-
 
 
 def collect_descriptors(train_loader: DataLoader, extractor: MultiScaleCNNExtractor, max_samples: int) -> np.ndarray:
@@ -327,7 +166,7 @@ def train_and_eval(cfg: Dict[str, Any], logger) -> None:
     feature_layer = cfg.get("feature_layer", "conv5_3")
 
     logger.log(f"Framework={framework} backbone={backbone} feature_layer={feature_layer}")
-    train_loader, val_loader, test_loader, nb_class = build_loaders(cfg)
+    train_loader, val_loader, test_loader, nb_class = load_and_split_data(cfg)
     logger.log(f"Dataset has {nb_class} classes")
     
     if framework == "fvcnn":
