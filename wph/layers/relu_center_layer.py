@@ -2,7 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import math
-from wph.ops.backend import SubInitSpatialMean, DivInitStd
+from wph.ops.backend import SubSpatialMean, DivSpatialStd
 
 
 class ReluCenterLayer(nn.Module):
@@ -21,8 +21,8 @@ class ReluCenterLayer(nn.Module):
         # shape to (1, 1, J, 1, 1, M, N) to broadcast over (nb, nc, J, L, A, M, N)
         masks = masks.view(1, 1, J, 1, 1, M, N)
         self.register_buffer("masks", masks)
-        self.mean = SubInitSpatialMean()
-        self.std = DivInitStd()
+        self.mean = SubSpatialMean()
+        self.std = DivSpatialStd()
 
     def forward(self, x):
         """
@@ -89,7 +89,7 @@ class ReluCenterLayerDownsample(ReluCenterLayer):
             h_j = math.ceil(self.M / (2 ** j))
             w_j = math.ceil(self.N / (2 ** j))
             
-            # differnt mask logic for downsampled feature maps
+            # different mask logic for downsampled feature maps
             # On the full grid, border is 2^j // 2.
             # On the downsampled grid (factor 2^j), this border size becomes:
             # (2^j // 2) / 2^j = 0.5 pixels.

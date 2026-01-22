@@ -1,11 +1,11 @@
 import torch
 import torch.fft as fft
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 import warnings
 from typing import Optional, Literal
 from .utils import create_masks_shift
-import matplotlib.pyplot as plt
-from scripts.visualize import colorize
+from dense.helpers.logger import LoggerManager
 import math
 
 
@@ -52,7 +52,15 @@ class BaseCorrLayer(nn.Module):
         self.register_buffer("masks_shift", masks_shift)
         self.factr_shift = factr_shift
 
-        # precompute index mapping for filter pairs
+        # Index mapping will be computed by child classes via _initialize_indices()
+        # Child classes should call this method at the end of their __init__
+        self.idx_wph = None
+    
+    def _initialize_indices(self):
+        """
+        Initialize index mapping. Should be called by child classes at the end of __init__.
+        This ensures all child-specific attributes are set before computing indices.
+        """
         self.idx_wph = self.compute_idx()
 
     def uses_mask_union(self):
@@ -73,10 +81,10 @@ class BaseCorrLayer(nn.Module):
         """Override in child classes to define index computation."""
         raise NotImplementedError("compute_idx must be implemented in child classes")
 
-    def forward(self, xpsi, flatten: bool = True, vmap_chunk_size: Optional[int] = None):
-        return self.compute_correlations(xpsi, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
+    def forward(self, xpsi, flatten: bool = True, vmap_chunk_size: Optional[int] = None, use_checkpoint: bool = False):
+        return self.compute_correlations(xpsi, flatten=flatten, vmap_chunk_size=vmap_chunk_size, use_checkpoint=use_checkpoint)
 
-    def compute_correlations(self, xpsi, flatten: bool = True, vmap_chunk_size: Optional[int] = None):
+    def compute_correlations(self, xpsi, flatten: bool = True, vmap_chunk_size: Optional[int] = None, use_checkpoint: bool = False):
         """Override in child classes to define correlation computation."""
         raise NotImplementedError("compute_correlations must be implemented in child classes")
 
@@ -136,6 +144,9 @@ class CorrLayer(BaseCorrLayer):
                 ]
             )
             self.mask_to_union[shift_idx] = mask_in_union
+        
+        # Initialize indices now that child-specific attributes are set
+        self._initialize_indices()
         
     def uses_mask_union(self):
         return self.mask_union
@@ -287,38 +298,57 @@ class CorrLayer(BaseCorrLayer):
 
     @torch.jit.ignore
     def compute_correlations(
-        self, xpsi, flatten: bool = True, vmap_chunk_size: Optional[int] = None
+        self, xpsi, flatten: bool = True, vmap_chunk_size: Optional[int] = None, use_checkpoint: bool = False
     ):
-        """
-        Compute cross-correlations using FFT with vmapped per-pair computation.
+        """Compute cross-correlations using FFT with vmapped per-pair computation.
 
         Args:
             xpsi: real tensor (nb, C, M, N) where C = num_channels * J * L * A
             flatten: if True, extract only masked values; if False, return full spatial grid
             vmap_chunk_size: optional int for vmap memory control
+            use_checkpoint: Use gradient checkpointing to save memory during training
 
         Returns:
             (nb, n_corrs) with only masked correlation values if flatten=True
             (nb, n_pairs, M, N) with zeros outside masks if flatten=False
         """
-        la1 = self.idx_wph["la1"].to(xpsi.device)
-        la2 = self.idx_wph["la2"].to(xpsi.device)
-        shifted = self.idx_wph["shifted"].to(xpsi.device)
+        device = xpsi.device
+        
+        # Clear cache before processing to reduce fragmentation
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+        
+        la1 = self.idx_wph["la1"].to(device)
+        la2 = self.idx_wph["la2"].to(device)
+        shifted = self.idx_wph["shifted"].to(device)
 
         x_c = torch.complex(xpsi, torch.zeros_like(xpsi))
         hatx = fft.fft2(x_c)  # (nb, C, M, N)
 
         n_pairs = la1.shape[0]
 
-        vmapped = torch.vmap(
-            self._pair_corr,
-            in_dims=(None, None, 0, 0, 0, None),
-            out_dims=0,
-            chunk_size=vmap_chunk_size,
-        )
-        out = vmapped(
-            hatx, self.masks_shift, la1, la2, shifted, flatten
-        )  # (n_pairs, nb, n_union) if flatten else (n_pairs, nb, M, N)
+        # Apply checkpointing if requested and in training mode
+        if use_checkpoint and self.training:
+            def vmap_fn():
+                vmapped = torch.vmap(
+                    self._pair_corr,
+                    in_dims=(None, None, 0, 0, 0, None),
+                    out_dims=0,
+                    chunk_size=vmap_chunk_size,
+                )
+                return vmapped(hatx, self.masks_shift, la1, la2, shifted, flatten)
+            out = checkpoint(vmap_fn, use_reentrant=False)
+        else:
+            vmapped = torch.vmap(
+                self._pair_corr,
+                in_dims=(None, None, 0, 0, 0, None),
+                out_dims=0,
+                chunk_size=vmap_chunk_size,
+            )
+            out = vmapped(
+                hatx, self.masks_shift, la1, la2, shifted, flatten
+            )  # (n_pairs, nb, n_union) if flatten else (n_pairs, nb, M, N)
+        
         if flatten:
             out = out.permute(1, 0, 2)  # (nb, n_pairs, n_union) or (nb, n_pairs, M, N)
         else:
@@ -338,15 +368,43 @@ class CorrLayer(BaseCorrLayer):
             return out  # (nb, n_pairs, M, N)
         
 
-    def forward(self, xpsi: torch.Tensor, flatten:bool = True, vmap_chunk_size: Optional[int] = None):
+    def forward(self, xpsi: torch.Tensor, flatten:bool = True, vmap_chunk_size: Optional[int] = None, use_checkpoint: bool = False):
         if torch.jit.is_scripting():
             return self._compute_correlations_scripting(
                 xpsi, flatten
             )
         else:
             return self.compute_correlations(
-                xpsi, flatten=flatten, vmap_chunk_size=vmap_chunk_size
+                xpsi, flatten=flatten, vmap_chunk_size=vmap_chunk_size, use_checkpoint=use_checkpoint
             )
+
+    def flat_metadata(self):
+        """Return metadata aligned with flattened output order."""
+        meta = {
+            "scale1": [],
+            "scale2": [],
+            "rotation1": [],
+            "rotation2": [],
+            "phase1": [],
+            "phase2": [],
+            "mask_pos": [],
+        }
+        la1 = self.idx_wph["la1"].tolist()
+        la2 = self.idx_wph["la2"].tolist()
+        shifted = self.idx_wph["shifted"].tolist()
+        for p, (i1, i2, s) in enumerate(zip(la1, la2, shifted)):
+            p1 = self.params_la1[p]
+            p2 = self.params_la2[p]
+            mask_indices = self.mask_to_union[s].tolist()
+            for m in mask_indices:
+                meta["scale1"].append(p1["j"])
+                meta["scale2"].append(p2["j"])
+                meta["rotation1"].append(p1["l"])
+                meta["rotation2"].append(p2["l"])
+                meta["phase1"].append(p1["a"])
+                meta["phase2"].append(p2["a"])
+                meta["mask_pos"].append(int(m))
+        return meta
 
 
 class CorrLayerDownsample(BaseCorrLayer):
@@ -359,7 +417,7 @@ class CorrLayerDownsample(BaseCorrLayer):
 
         # 3. Create Correct Per-Scale Masks
         _masks_temp = []
-        _factr_temp = [] # <--- FIX: Need to store these too
+        _factr_temp = []
         
         for j in range(self.J):
             h_j = math.ceil(self.M / (2 ** j))
@@ -384,7 +442,6 @@ class CorrLayerDownsample(BaseCorrLayer):
         union_indices = torch.nonzero(union_mask.flatten(), as_tuple=True)[0]
         
         self.mask_indices_map = {}
-        # ... (Your logic for mapping indices) ...
         grid_to_union_map = torch.full((ref_masks[0].numel(),), -1, dtype=torch.long)
         grid_to_union_map[union_indices] = torch.arange(len(union_indices))
         
@@ -397,9 +454,15 @@ class CorrLayerDownsample(BaseCorrLayer):
         for k, idxs in self.mask_indices_map.items():
             self.register_buffer(f'mask_idx_map_{k}', idxs)
 
-        # 5. CRITICAL STEP: Re-run compute_idx
-        # The first run (in super) used bad/fallback values. 
-        self.idx_wph = self.compute_idx()
+        # Initialize indices now that child-specific attributes are set
+        self._initialize_indices()
+
+    def _decode_cla(self, idx: int):
+        c = idx // (self.A * self.L)
+        rem = idx % (self.A * self.L)
+        l = rem // self.A
+        a = rem % self.A
+        return c, l, a
 
     def get_mask_for_scale(self, j):
         if hasattr(self, f'mask_scale_{j}'):
@@ -473,7 +536,8 @@ class CorrLayerDownsample(BaseCorrLayer):
                                             {"j": j2, "l": l2, "a": a2, "c": c2}
                                         )
                                         pair_metadata.append((j1,j2))
-        print("number of moments (without low-pass and harr): ", nb_moments)
+        logger = LoggerManager.get_logger()
+        logger.info(f"Number of moments (without low-pass and harr): {nb_moments}")
 
         idx_wph = dict()
         idx_wph["la1"] = torch.tensor(idx_la1).long()
@@ -493,8 +557,15 @@ class CorrLayerDownsample(BaseCorrLayer):
         return idx_wph
     
 
-    def compute_correlations(self, xpsi: list[torch.Tensor], flatten: bool = True, vmap_chunk_size: Optional[int] = None):
-        nb = xpsi[0].shape[0]
+    def compute_correlations(self, xpsi: list[torch.Tensor], flatten: bool = True, vmap_chunk_size: Optional[int] = None, use_checkpoint: bool = False):
+        """Compute correlations with optional gradient checkpointing.
+        
+        Args:
+            xpsi: List of tensors at different scales
+            flatten: Whether to flatten output
+            vmap_chunk_size: Chunk size for vmap (smaller = less memory, slower)
+            use_checkpoint: Use gradient checkpointing to save memory during training
+        """
         device = xpsi[0].device
         
         # 1. Pre-compute FFTs to save time
@@ -517,7 +588,9 @@ class CorrLayerDownsample(BaseCorrLayer):
 
         # 2. Iterate groups
         for (j1, j2), global_idxs in self.grouped_indices.items():
-            global_idxs = global_idxs
+            # Clear cache before processing each group to reduce fragmentation
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
             
             # We filter by the rows in global_idxs
             la1_batch = self.idx_wph["la1"][global_idxs, 1].to(device)
@@ -541,17 +614,26 @@ class CorrLayerDownsample(BaseCorrLayer):
                 ))
             masks_current, _ = self.get_mask_for_scale(j1)
             
-            vmapped = torch.vmap(
-                self._pair_corr,
-                in_dims=(None, None, None, 0, 0, 0, None),
-                out_dims=0,
-                chunk_size=vmap_chunk_size
-            )
+            # Apply checkpointing if requested and in training mode
+            if use_checkpoint and self.training:
+                def vmap_fn():
+                    vmapped = torch.vmap(
+                        self._pair_corr,
+                        in_dims=(None, None, None, 0, 0, 0, None),
+                        out_dims=0,
+                        chunk_size=vmap_chunk_size
+                    )
+                    return vmapped(h1, h2, masks_current, la1_batch, la2_batch, shifted_batch, flatten)
+                out_batch = checkpoint(vmap_fn, use_reentrant=False)
+            else:
+                vmapped = torch.vmap(
+                    self._pair_corr,
+                    in_dims=(None, None, None, 0, 0, 0, None),
+                    out_dims=0,
+                    chunk_size=vmap_chunk_size
+                )
+                out_batch = vmapped(h1, h2, masks_current, la1_batch, la2_batch, shifted_batch, flatten)
             
-            # out_batch shape:
-            # flatten=True:  (Batch_Pairs, nb, Union_Pixels)
-            # flatten=False: (Batch_Pairs, nb, M, N)
-            out_batch = vmapped(h1, h2, masks_current, la1_batch, la2_batch, shifted_batch, flatten)
             if not flatten:
                 # out_batch contains full spatial maps. 
                 # Just save the whole batch to the correct scale bucket.
@@ -582,6 +664,35 @@ class CorrLayerDownsample(BaseCorrLayer):
                 final_output.append(combined)
                 
             return final_output
+
+    def flat_metadata(self):
+        """Return metadata aligned with flattened output order."""
+        meta = {
+            "scale1": [],
+            "scale2": [],
+            "rotation1": [],
+            "rotation2": [],
+            "phase1": [],
+            "phase2": [],
+            "mask_pos": [],
+        }
+        for (j1, j2), global_idxs in self.grouped_indices.items():
+            for g_idx in global_idxs.tolist():
+                la1_j, la1_idx = self.idx_wph["la1"][g_idx].tolist()
+                la2_j, la2_idx = self.idx_wph["la2"][g_idx].tolist()
+                shift_type = int(self.idx_wph["shifted"][g_idx].item())
+                _, l1, a1 = self._decode_cla(la1_idx)
+                _, l2, a2 = self._decode_cla(la2_idx)
+                mask_indices = getattr(self, f"mask_idx_map_{shift_type}").tolist()
+                for m in mask_indices:
+                    meta["scale1"].append(la1_j)
+                    meta["scale2"].append(la2_j)
+                    meta["rotation1"].append(l1)
+                    meta["rotation2"].append(l2)
+                    meta["phase1"].append(a1)
+                    meta["phase2"].append(a2)
+                    meta["mask_pos"].append(int(m))
+        return meta
         
 
 
@@ -632,8 +743,15 @@ class CorrLayerDownsamplePairs(BaseCorrLayer):
         for k, idxs in self.mask_indices_map.items():
             self.register_buffer(f'mask_idx_map_{k}', idxs)
 
-        # Recompute indices with correct downsampled masks
-        self.idx_wph = self.compute_idx()
+        # Initialize indices now that child-specific attributes are set
+        self._initialize_indices()
+
+    def _decode_cla(self, idx: int):
+        c = idx // (self.A * self.L)
+        rem = idx % (self.A * self.L)
+        l = rem // self.A
+        a = rem % self.A
+        return c, l, a
 
     def get_mask_for_scale(self, j):
         if hasattr(self, f'mask_scale_{j}'):
@@ -700,7 +818,15 @@ class CorrLayerDownsamplePairs(BaseCorrLayer):
         self.grouped_indices = {k: torch.tensor(v).long() for k, v in grouped_indices.items()}
         return idx_wph
 
-    def compute_correlations(self, xpsi_nested, flatten: bool = True, vmap_chunk_size: Optional[int] = None):
+    def compute_correlations(self, xpsi_nested, flatten: bool = True, vmap_chunk_size: Optional[int] = None, use_checkpoint: bool = False):
+        """Compute correlations with optional gradient checkpointing.
+        
+        Args:
+            xpsi_nested: Nested list of tensors at different scales
+            flatten: Whether to flatten output
+            vmap_chunk_size: Chunk size for vmap (smaller = less memory, slower)
+            use_checkpoint: Use gradient checkpointing to save memory during training
+        """
         # Accept sparse nested inputs; do not assume full JxJ grid
         nb = None
         device = None
@@ -727,6 +853,10 @@ class CorrLayerDownsamplePairs(BaseCorrLayer):
 
         # Iterate grouped pairs
         for (j1, j2), global_idxs in self.grouped_indices.items():
+            # Clear cache before processing each group to reduce fragmentation
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+            
             # Get spatial domain features and upsample before FFT if needed
             x1 = xpsi_nested[j1][j2]  # features at j1 resolution with W[j1,j2]
             x2 = xpsi_nested[j2][j1]  # features at j2 resolution with W[j2,j1]
@@ -761,13 +891,25 @@ class CorrLayerDownsamplePairs(BaseCorrLayer):
 
             masks_current, _ = self.get_mask_for_scale(j1)
 
-            vmapped = torch.vmap(
-                self._pair_corr,
-                in_dims=(None, None, None, 0, 0, 0, None),
-                out_dims=0,
-                chunk_size=vmap_chunk_size,
-            )
-            out_batch = vmapped(h1, h2, masks_current, la1_batch, la2_batch, shifted_batch, flatten)
+            # Apply checkpointing if requested and in training mode
+            if use_checkpoint and self.training:
+                def vmap_fn():
+                    vmapped = torch.vmap(
+                        self._pair_corr,
+                        in_dims=(None, None, None, 0, 0, 0, None),
+                        out_dims=0,
+                        chunk_size=vmap_chunk_size,
+                    )
+                    return vmapped(h1, h2, masks_current, la1_batch, la2_batch, shifted_batch, flatten)
+                out_batch = checkpoint(vmap_fn, use_reentrant=False)
+            else:
+                vmapped = torch.vmap(
+                    self._pair_corr,
+                    in_dims=(None, None, None, 0, 0, 0, None),
+                    out_dims=0,
+                    chunk_size=vmap_chunk_size,
+                )
+                out_batch = vmapped(h1, h2, masks_current, la1_batch, la2_batch, shifted_batch, flatten)
 
             if not flatten:
                 scale_accumulators[j1].append(out_batch.permute(1, 0, 2, 3))
@@ -846,6 +988,36 @@ class CorrLayerHybrid(CorrLayerDownsample):
             return self.masks_shift, self.factr_shift
         else:
             raise ValueError(f"No masks found for scale {j}")
+        
+    def flat_metadata(self):
+        """Return metadata aligned with flattened output order."""
+        meta = {
+            "scale1": [],
+            "scale2": [],
+            "rotation1": [],
+            "rotation2": [],
+            "phase1": [],
+            "phase2": [],
+            "mask_pos": [],
+        }
+        for (j1, j2), global_idxs in self.grouped_indices.items():
+            for g_idx in global_idxs.tolist():
+                la1_j, la1_idx = self.idx_wph["la1"][g_idx].tolist()
+                la2_j, la2_idx = self.idx_wph["la2"][g_idx].tolist()
+                shift_type = int(self.idx_wph["shifted"][g_idx].item())
+                _, l1, a1 = self._decode_cla(la1_idx)
+                _, l2, a2 = self._decode_cla(la2_idx)
+                mask_indices = getattr(self, f"mask_idx_map_{shift_type}").tolist()
+                for m in mask_indices:
+                    meta["scale1"].append(la1_j)
+                    meta["scale2"].append(la2_j)
+                    meta["rotation1"].append(l1)
+                    meta["rotation2"].append(l2)
+                    meta["phase1"].append(a1)
+                    meta["phase2"].append(a2)
+                    meta["mask_pos"].append(int(m))
+        return meta
+
 
 
 class CorrLayerHybridPairs(CorrLayerDownsamplePairs):
@@ -890,3 +1062,4 @@ class CorrLayerHybridPairs(CorrLayerDownsamplePairs):
             self.register_buffer(f"mask_idx_map_{k}", idxs)
 
         self.idx_wph = self.compute_idx()
+    

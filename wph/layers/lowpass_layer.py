@@ -1,7 +1,7 @@
 import torch
 import torch.fft as fft
 from torch import nn
-from wph.ops.backend import DivInitStd, SubInitSpatialMean, maskns
+from wph.ops.backend import DivSpatialStd, SubSpatialMean, maskns
 from wph.layers.utils import create_masks_shift
 
 
@@ -24,8 +24,8 @@ class LowpassLayer(nn.Module):
         self.mask_angles = mask_angles
         self.mask_union = mask_union
         self.num_channels = num_channels
-        self.divinitstdJ = DivInitStd()
-        self.subinitmeanJ = SubInitSpatialMean()
+        self.divstdJ = DivSpatialStd()
+        self.submeanJ = SubSpatialMean()
 
         # create border masks for aperiodicity (used during forward)
         masks = maskns(self.J, self.M, self.N)
@@ -61,14 +61,36 @@ class LowpassLayer(nn.Module):
         mask_flat = mask.expand(shape).reshape(nb, -1).bool()
         return signal[mask_flat].reshape(nb, -1)
 
+    def flat_metadata(self):
+        """Return metadata aligned with flattened output order."""
+        mask = self.masks_shift[-1, ...]
+        mask_positions = torch.nonzero(mask, as_tuple=False)
+        n_shifts = len(mask_positions)
+        
+        meta = {
+            "channel1": [],   # First channel in cross-correlation
+            "channel2": [],   # Second channel in cross-correlation
+            "mask_pos": [],   # Position in the mask
+        }
+        
+        # Iterate in same order as forward pass: compute correlations between all (c1,c2) pairs across all positions
+        # The forward pass applies a single lowpass filter to all channels, then correlates all channel pairs
+        for c1 in range(self.num_channels):
+            for c2 in range(self.num_channels):
+                for pos_idx in range(n_shifts):
+                    meta["channel1"].append(c1)
+                    meta["channel2"].append(c2)
+                    meta["mask_pos"].append(pos_idx)
+        return meta
+
     def forward(self, hatx_c: torch.Tensor) -> torch.Tensor:
         nb, nc = hatx_c.shape[:2]
         hatxphi_c = hatx_c * self.hatphi.expand(nb, nc, -1, -1)  # (nb,nc,M,N)
         xphi_c = fft.ifft2(hatxphi_c)
         # apply border mask for aperiodicity (matching alpha_torch)
         xphi_c = xphi_c * self.masks[-1, -1, ...].view(1, 1, self.M, self.N)
-        xphi0_c = self.subinitmeanJ(xphi_c)
-        xphi0_c = self.divinitstdJ(xphi0_c)
+        xphi0_c = self.submeanJ(xphi_c)
+        xphi0_c = self.divstdJ(xphi0_c)
 
         xphi0_c = xphi0_c.abs()
 

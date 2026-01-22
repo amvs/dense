@@ -40,9 +40,14 @@ train_ratio: 0.85
 train_val_ratio: 4
 seed: 42
 normalize_reg: false
+# Finetuning behavior
+# If true (default), keep the classifier frozen during the feature-extractor finetuning stage.
+freeze_classifier: true
+model_type: wph
 
 # Classifier settings
 num_classes: 10
 use_batch_norm: true
 copies: 1
 noise_std: 0.01
+
