@@ -4,6 +4,7 @@
 **/test
 **/*.egg-info
 **/experiments
+**/experiments_fvcnn
 **/.vscode
 **/.idea
 *.png
