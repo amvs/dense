@@ -15,6 +15,6 @@ sweep:
   downsample: [true]
   freeze_classifier: [false]
   random_filters: [false]
-  hidden_dim: [256, 512]
-  metadata_dim: [4, 6, 8]
+  hidden_dim: [512, 1024]
+  metadata_dim: [2, 4, 6]
 

@@ -1,8 +1,8 @@
 # FV-CNN configuration for DTD (Describable Textures Dataset)
 
 # dataset
-dataset: dtd
-root_dir: data/datasets/DTD
+dataset: jmexpert/describable-textures-dataset-dtd
+deeper_path: dtd/images/
 resize: 200
 train_ratio: 0.8
 test_ratio: 0.1

@@ -3,7 +3,7 @@
 
 # dataset settings
 dataset: outex12
-root_dir: data/datasets/Outex-TC-00012
+root_dir: data/datasets/Outex-TC-00012-bmp
 resize: 128
 train_ratio: 0.5
 test_ratio: 0.15

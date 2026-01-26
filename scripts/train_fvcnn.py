@@ -158,6 +158,11 @@ def save_artifacts(exp_dir: str, cfg: Dict[str, Any]) -> None:
     """Save unified config with all results."""
     save_config(exp_dir, cfg)
 
+def worker_init_fn(worker_id, seed=None):
+    """Ensure deterministic behavior in DataLoader workers."""
+    if seed is not None:
+        np.random.seed(seed + worker_id)
+
 
 def train_and_eval(cfg: Dict[str, Any], logger) -> None:
     set_seed(cfg.get("seed", 42))
@@ -166,7 +171,7 @@ def train_and_eval(cfg: Dict[str, Any], logger) -> None:
     feature_layer = cfg.get("feature_layer", "conv5_3")
 
     logger.log(f"Framework={framework} backbone={backbone} feature_layer={feature_layer}")
-    train_loader, val_loader, test_loader, nb_class = load_and_split_data(cfg)
+    train_loader, val_loader, test_loader, nb_class, img_shape = load_and_split_data(cfg, worker_init_fn=worker_init_fn)
     logger.log(f"Dataset has {nb_class} classes")
     
     if framework == "fvcnn":
