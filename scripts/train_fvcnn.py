@@ -7,20 +7,22 @@ import joblib
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from torchvision import transforms
 import yaml
 from sklearn.svm import LinearSVC
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.decomposition import PCA
 import gc
 
-from fv_cnn import FisherVectorEncoder, MultiScaleCNNExtractor, FCFeatureExtractor
+from fv_cnn.feature_extractors import MultiScaleCNNExtractor
+from fv_cnn.encoders import FisherVectorEncoder
+from fv_cnn import FCFeatureExtractor
 from training.data_utils import load_and_split_data
 from dense.helpers import LoggerManager
 from training.experiment_utils import log_model_parameters
 from configs import save_config
 
-IMAGENET_MEAN = [0.485, 0.456, 0.406]
-IMAGENET_STD = [0.229, 0.224, 0.225]
+# Silence Lightning SLURM warning when running without srun
+os.environ.setdefault("PL_DISABLE_SLURM_WARNING", "1")
 
 
 def set_seed(seed: int) -> None:
@@ -30,9 +32,8 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def collect_descriptors(train_loader: DataLoader, extractor: MultiScaleCNNExtractor, max_samples: int) -> np.ndarray:
+def collect_descriptors(train_loader: DataLoader, extractor: MultiScaleCNNExtractor) -> np.ndarray:
     collected: List[np.ndarray] = []
-    total = 0
     extractor.eval()
     # Resolve target device from extractor; fallback to CPU
     if hasattr(extractor, "device"):
@@ -43,7 +44,7 @@ def collect_descriptors(train_loader: DataLoader, extractor: MultiScaleCNNExtrac
         except Exception:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     with torch.no_grad():
-        for images, _ in train_loader:
+        for idx, (images, _) in enumerate(train_loader):
             images = images.to(device)
             for i in range(images.size(0)):
                 img = images[i]
@@ -51,9 +52,6 @@ def collect_descriptors(train_loader: DataLoader, extractor: MultiScaleCNNExtrac
                 for d in feats["descriptors"]:
                     arr = d.detach().cpu().numpy()
                     collected.append(arr)
-                    total += arr.shape[0]
-                    if total >= max_samples:
-                        return np.concatenate(collected, axis=0)[:max_samples]
     if len(collected) == 0:
         raise RuntimeError("No descriptors collected; check dataset/extractor.")
     return np.concatenate(collected, axis=0)
@@ -185,20 +183,32 @@ def train_and_eval(cfg: Dict[str, Any], logger) -> None:
         encoder_type = cfg.get("encoder_type", "fv")
         if encoder_type != "fv":
             raise ValueError(f"encoder_type '{encoder_type}' not supported; expected 'fv'")
+        gmm_batch_size = cfg.get("gmm_batch_size", 1024)
         encoder = FisherVectorEncoder(
             num_components=cfg.get("gmm_components", 64),
-            pca_dim=cfg.get("pca_dim"),
             signed_sqrt_postprocess=cfg.get("signed_sqrt", True),
             l2_postprocess=cfg.get("l2_normalize", True),
             random_state=cfg.get("seed", 42),
+            gmm_batch_size=gmm_batch_size,
         )
-        max_samples = cfg.get("gmm_samples", 100000)
-        logger.log(f"Collecting up to {max_samples} descriptors for GMM fitting...")
-        desc = collect_descriptors(train_loader, extractor, max_samples=max_samples)
+        logger.log("Collecting all descriptors for GMM fitting...")
+        desc = collect_descriptors(train_loader, extractor)
+        logger.log(f"Collected {desc.shape[0]} descriptors of dimension {desc.shape[1]}")
+        logger.log(f"GMM mini-batch size: {gmm_batch_size}")
         encoder.fit(desc)
         logger.log("GMM fitted")
         train_codes, train_labels = encode_split(train_loader, extractor, encoder)
         logger.log(f"Encoded training set: {train_codes.shape}")
+        
+        # Apply PCA reduction if specified
+        pca_model = None
+        if cfg.get("pca_dim") is not None:
+            pca_dim = cfg.get("pca_dim")
+            logger.log(f"Fitting PCA to reduce {train_codes.shape[1]}-D Fisher Vectors to {pca_dim}-D...")
+            pca_model = PCA(n_components=pca_dim, random_state=cfg.get("seed", 42), svd_solver='randomized')
+            train_codes = pca_model.fit_transform(train_codes)
+            logger.log(f"PCA fitted and applied. Reduced training set shape: {train_codes.shape}")
+        
         nb_moments = train_codes.shape[1]
     elif framework == "fccnn":
         extractor = FCFeatureExtractor(backbone=backbone, fc_layer=feature_layer)
@@ -233,7 +243,7 @@ def train_and_eval(cfg: Dict[str, Any], logger) -> None:
     C = cfg.get("svm_C", 1.0)
     calibrate = bool(cfg.get("svm_calibration", False))
     if calibrate:
-        clf = CalibratedClassifierCV(base_estimator=LinearSVC(C=C), method="sigmoid", cv=3)
+        clf = CalibratedClassifierCV(estimator=LinearSVC(C=C), method="sigmoid", cv=3)
     else:
         clf = LinearSVC(C=C)
 
@@ -248,6 +258,9 @@ def train_and_eval(cfg: Dict[str, Any], logger) -> None:
     # Validation encoding and eval
     val_codes, val_labels = encode_split(val_loader, extractor, encoder if framework == "fvcnn" else None)
     logger.log(f"Encoded validation set: {val_codes.shape}")
+    if pca_model is not None:
+        val_codes = pca_model.transform(val_codes)
+    breakpoint()
     val_acc = clf.score(val_codes, val_labels)
     del val_codes, val_labels
     gc.collect()
@@ -255,6 +268,8 @@ def train_and_eval(cfg: Dict[str, Any], logger) -> None:
     # Test encoding and eval
     test_codes, test_labels = encode_split(test_loader, extractor, encoder if framework == "fvcnn" else None)
     logger.log(f"Encoded test set: {test_codes.shape}")
+    if pca_model is not None:
+        test_codes = pca_model.transform(test_codes)
     test_acc = clf.score(test_codes, test_labels)
     del test_codes, test_labels
     gc.collect()
