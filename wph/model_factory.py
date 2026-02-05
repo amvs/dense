@@ -4,7 +4,7 @@ Used by train_wph.py and train_wph_svm.py.
 """
 import os
 import torch
-from wph.wph_model import WPHModel, WPHModelDownsample
+from wph.wph_model import WPHModel, WPHModelDownsample, WPHModelHybrid
 from dense.helpers import LoggerManager
 
 
@@ -168,7 +168,36 @@ def create_wph_feature_extractor(config, image_shape, device):
     logger = LoggerManager.get_logger()
     downsample = config.get("downsample", False)
     
-    if downsample:
+    if downsample == 'hybrid':
+        filters = construct_filters_downsample(config, image_shape)
+        T = filters['psi'].shape[-1]
+        logger.info(f"Using hybrid WPH model with downsampled filters of size T={T}")
+        feature_extractor = WPHModelHybrid(
+            J=config["max_scale"],
+            L=config["nb_orients"],
+            A=config["num_phases"],
+            A_prime=config.get("num_phases_prime", 1),
+            M=image_shape[1],
+            N=image_shape[2],
+            T=T,
+            filters=filters,
+            num_channels=image_shape[0],
+            share_rotations=config["share_rotations"],
+            share_phases=config["share_phases"],
+            share_channels=config["share_channels"],
+            share_scales=config.get("share_scales", True),
+            share_scale_pairs=config.get("share_scale_pairs", True),
+            normalize_relu=config["normalize_relu"],
+            delta_j=config.get("delta_j"),
+            delta_l=config.get("delta_l"),
+            shift_mode=config["shift_mode"],
+            mask_angles=config["mask_angles"],
+            mask_union_highpass=config["mask_union_highpass"],
+            spatial_attn=config.get("spatial_attn", False),
+            grad_checkpoint=config.get("grad_checkpoint", False),
+            downsample_splits=config.get("downsample_splits", None)
+        ).to(device)
+    elif downsample:
         filters = construct_filters_downsample(config, image_shape)
         T = filters['psi'].shape[-1]
         logger.info(f"Using downsampled WPH model with filter size T={T}")
