@@ -70,9 +70,21 @@ class WPHFeatureBase(nn.Module):
         self.normalize_relu = normalize_relu
         self.spatial_attn = spatial_attn
         self.grad_checkpoint = grad_checkpoint
+        if self.spatial_attn:
+            self.attent = SpatialAttentionLayer()
 
     def forward(self, x: torch.Tensor):
         raise NotImplementedError("Subclasses should implement this!")
+
+    def _apply_spatial_attn(self, x):
+        """Apply spatial attention uniformly across tensor, list, or nested list inputs."""
+        if not self.spatial_attn:
+            return x
+        if isinstance(x, torch.Tensor):
+            return self.attent(x)
+        if isinstance(x, (list, tuple)):
+            return [self._apply_spatial_attn(xi) for xi in x]
+        return x
 
 class WPHModel(WPHFeatureBase):
     def __init__(
@@ -138,8 +150,6 @@ class WPHModel(WPHFeatureBase):
             mask_union=self.mask_union,
             mask_union_highpass=self.mask_union_highpass,
         )
-        if self.spatial_attn:
-            self.attent = SpatialAttentionLayer()
         self.nb_moments = self.corr.nb_moments + self.lowpass.nb_moments + self.highpass.nb_moments
         
     def flat_metadata(self):
@@ -222,8 +232,7 @@ class WPHModel(WPHFeatureBase):
     def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         nb = x.shape[0]
         xpsi = self.wave_conv(x)
-        if self.spatial_attn:
-            xpsi = self.attent(xpsi)
+        xpsi = self._apply_spatial_attn(xpsi)
         xrelu = self.relu_center(xpsi)
         xcorr = self.corr(xrelu.view(nb, self.num_channels * self.J * self.L * self.A, self.M, self.N), flatten=flatten, vmap_chunk_size=vmap_chunk_size, use_checkpoint=self.grad_checkpoint)
         hatx_c = fft2(x)
@@ -313,8 +322,6 @@ class WPHModelDownsample(WPHFeatureBase):
                                      hatphi=filters["hatphi"],
                                      mask_angles=self.mask_angles,
                                      mask_union=False)
-        if self.spatial_attn:
-            self.attent = SpatialAttentionLayer()
         self.nb_moments = self.corr.nb_moments + self.lowpass.nb_moments + self.highpass.nb_moments
     
     def flat_metadata(self):
@@ -397,17 +404,15 @@ class WPHModelDownsample(WPHFeatureBase):
     def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> torch.Tensor:
         if self.share_scale_pairs:
             xpsi = self.wave_conv(x)
-            if self.spatial_attn:
-                xpsi = [self.attent(x) for x in xpsi]
+            xpsi = self._apply_spatial_attn(xpsi)
             xrelu = self.relu_center(xpsi)
-            xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size, use_checkpoint=self.grad_checkpoint)
+            xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
         else:
             # compute only required pairs
             # warm up indices by accessing property (built in __init__)
             needed_pairs = sorted(self.corr.grouped_indices.keys())
             xpsi_nested = self.wave_conv(x, scale_pairs=needed_pairs)
-            if self.spatial_attn:
-                xpsi_nested = [self.attent(x) for x in xpsi_nested]
+            xpsi_nested = self._apply_spatial_attn(xpsi_nested)
             xrelu = self.relu_center(xpsi_nested)
             xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size, use_checkpoint=self.grad_checkpoint)
         hatx_c = fft2(x)
@@ -526,13 +531,17 @@ class WPHModelHybrid(WPHFeatureBase):
     def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> torch.Tensor:
         if self.share_scale_pairs:
             xpsi = self.wave_conv(x)
+            # Apply spatial attention if enabled
+            xpsi = self._apply_spatial_attn(xpsi)
             xrelu = self.relu_center(xpsi)
-            xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
+            xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size, use_checkpoint=self.grad_checkpoint)
         else:
             needed_pairs = sorted(self.corr.grouped_indices.keys())
             xpsi_nested = self.wave_conv(x, scale_pairs=needed_pairs)
+            # Apply spatial attention if enabled
+            xpsi_nested = self._apply_spatial_attn(xpsi_nested)
             xrelu = self.relu_center(xpsi_nested)
-            xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
+            xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size, use_checkpoint=self.grad_checkpoint)
 
         hatx_c = fft2(x)
         xlow = self.lowpass(hatx_c)
