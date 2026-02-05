@@ -183,18 +183,15 @@ def train_and_eval(cfg: Dict[str, Any], logger) -> None:
         encoder_type = cfg.get("encoder_type", "fv")
         if encoder_type != "fv":
             raise ValueError(f"encoder_type '{encoder_type}' not supported; expected 'fv'")
-        gmm_batch_size = cfg.get("gmm_batch_size", 1024)
         encoder = FisherVectorEncoder(
             num_components=cfg.get("gmm_components", 64),
             signed_sqrt_postprocess=cfg.get("signed_sqrt", True),
             l2_postprocess=cfg.get("l2_normalize", True),
             random_state=cfg.get("seed", 42),
-            gmm_batch_size=gmm_batch_size,
         )
         logger.log("Collecting all descriptors for GMM fitting...")
         desc = collect_descriptors(train_loader, extractor)
         logger.log(f"Collected {desc.shape[0]} descriptors of dimension {desc.shape[1]}")
-        logger.log(f"GMM mini-batch size: {gmm_batch_size}")
         encoder.fit(desc)
         logger.log("GMM fitted")
         train_codes, train_labels = encode_split(train_loader, extractor, encoder)

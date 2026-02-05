@@ -4,7 +4,7 @@
 dataset: smohsensadeghi/curet-dataset
 deeper_path: CUReT/curetgrey/
 resize: 200
-train_ratio: 0.1
+train_ratio: 0.5
 test_ratio: 0.15
 train_val_ratio: 2
 seed: 42
@@ -24,6 +24,8 @@ max_sqrt_hw: 1024
 # IFV encoder
 encoder_type: fv
 gmm_components: 64
+gmm_samples: 1.0e+4
+gmm_batch_size: 128
 pca_dim: null
 signed_sqrt: true
 l2_normalize: true
