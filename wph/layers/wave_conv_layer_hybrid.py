@@ -8,6 +8,8 @@ from torch import nn
 from wph.layers.utils import periodic_rotate
 import warnings
 
+from scripts.visualize import colorize 
+
 
 class WaveConvLayerHybrid(nn.Module):
     """
@@ -83,8 +85,9 @@ class WaveConvLayerHybrid(nn.Module):
         self.base_imag = nn.Parameter(base_imag)
 
         # Upsampled filter parameters per scale (sharing-aware)
-        self.upsampled_real: List[Optional[nn.Parameter]] = [None] * J
-        self.upsampled_imag: List[Optional[nn.Parameter]] = [None] * J
+        # Use nn.ParameterList to properly register parameters with PyTorch
+        self.upsampled_real = nn.ParameterList()
+        self.upsampled_imag = nn.ParameterList()
 
         if self.share_scale_pairs:
             for j in range(J):
@@ -94,15 +97,16 @@ class WaveConvLayerHybrid(nn.Module):
                     # Preserve odd filter growth: size = (T-1) * 2^r + 1
                     size = (T - 1) * up_factor + 1
                     up_real, up_imag = self._init_upsampled_params(j, size, up_factor)
-                    self.upsampled_real[j] = nn.Parameter(up_real)
-                    self.upsampled_imag[j] = nn.Parameter(up_imag)
+                    self.upsampled_real.append(nn.Parameter(up_real))
+                    self.upsampled_imag.append(nn.Parameter(up_imag))
                 else:
-                    self.upsampled_real[j] = None
-                    self.upsampled_imag[j] = None
+                    # ParameterList doesn't support None, so use empty parameters as placeholders
+                    self.upsampled_real.append(nn.Parameter(torch.empty(0), requires_grad=False))
+                    self.upsampled_imag.append(nn.Parameter(torch.empty(0), requires_grad=False))
 
         # Pair-specific upsampled filters when share_scale_pairs is False
-        self.pair_upsampled_real: List[Optional[nn.Parameter]] = []
-        self.pair_upsampled_imag: List[Optional[nn.Parameter]] = []
+        self.pair_upsampled_real = nn.ParameterList()
+        self.pair_upsampled_imag = nn.ParameterList()
         if not self.share_scale_pairs and not self.share_scales:
             for j in range(J):
                 up_pow = (j - self.downsample_splits[j])
@@ -113,8 +117,8 @@ class WaveConvLayerHybrid(nn.Module):
                     self.pair_upsampled_real.append(nn.Parameter(real_j))
                     self.pair_upsampled_imag.append(nn.Parameter(imag_j))
                 else:
-                    self.pair_upsampled_real.append(None)
-                    self.pair_upsampled_imag.append(None)
+                    self.pair_upsampled_real.append(nn.Parameter(torch.empty(0), requires_grad=False))
+                    self.pair_upsampled_imag.append(nn.Parameter(torch.empty(0), requires_grad=False))
 
         # Caching
         self.filters_cached = False
@@ -126,11 +130,17 @@ class WaveConvLayerHybrid(nn.Module):
         # Hooks to invalidate cache
         self.base_real.register_hook(lambda grad: self._invalidate_cache())
         self.base_imag.register_hook(lambda grad: self._invalidate_cache())
-        for p in self.upsampled_real + self.upsampled_imag:
-            if p is not None:
+        for p in self.upsampled_real:
+            if p.numel() > 0:  # Skip empty placeholder parameters
                 p.register_hook(lambda grad: self._invalidate_cache())
-        for p in self.pair_upsampled_real + self.pair_upsampled_imag:
-            if p is not None:
+        for p in self.upsampled_imag:
+            if p.numel() > 0:
+                p.register_hook(lambda grad: self._invalidate_cache())
+        for p in self.pair_upsampled_real:
+            if p.numel() > 0:
+                p.register_hook(lambda grad: self._invalidate_cache())
+        for p in self.pair_upsampled_imag:
+            if p.numel() > 0:
                 p.register_hook(lambda grad: self._invalidate_cache())
 
     def _init_upsampled_params(self, j: int, size: int, up_factor: int) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -217,9 +227,9 @@ class WaveConvLayerHybrid(nn.Module):
 
         if not self.share_scale_pairs:
             # Pair-specific filters for current scale j (partners across dimension 0)
-            if self.pair_upsampled_real:
-                real = self.pair_upsampled_real[j] if self.pair_upsampled_real[j] is not None else None
-                imag = self.pair_upsampled_imag[j] if self.pair_upsampled_imag[j] is not None else None
+            if len(self.pair_upsampled_real) > 0:
+                real = self.pair_upsampled_real[j] if self.pair_upsampled_real[j].numel() > 0 else None
+                imag = self.pair_upsampled_imag[j] if self.pair_upsampled_imag[j].numel() > 0 else None
                 if real is not None:
                     filters = torch.complex(real, imag)
                 else:
@@ -236,10 +246,10 @@ class WaveConvLayerHybrid(nn.Module):
             filters = filters.reshape(self.J, self.param_L, self.param_A, T_j, T_j)
         else:
             # Scale-specific filters
-            real = self.upsampled_real[j] if self.upsampled_real[j] is not None else (
+            real = self.upsampled_real[j] if self.upsampled_real[j].numel() > 0 else (
                 self.base_real[0:1] if self.share_scales else self.base_real[j:j + 1]
             )
-            imag = self.upsampled_imag[j] if self.upsampled_imag[j] is not None else (
+            imag = self.upsampled_imag[j] if self.upsampled_imag[j].numel() > 0 else (
                 self.base_imag[0:1] if self.share_scales else self.base_imag[j:j + 1]
             )
             filters = torch.complex(real, imag)
