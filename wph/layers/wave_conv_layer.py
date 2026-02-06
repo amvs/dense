@@ -75,7 +75,11 @@ class WaveConvLayer(nn.Module):
 
     def get_full_filters(self):
         """Reconstruct full filter bank from base filters."""
-        if self.filters_cached and self.full_filters is not None:
+        if (
+            self.filters_cached
+            and self.full_filters is not None
+            and not torch.is_grad_enabled()
+        ):
             return self.full_filters
 
         filters = self.base_filters
@@ -117,8 +121,8 @@ class WaveConvLayer(nn.Module):
                 )
             filters = expanded_filters
 
-        # Cache the computed full filters only in eager mode
-        if not torch.jit.is_scripting():
+        # Cache the computed full filters only in eager mode and no-grad
+        if not torch.jit.is_scripting() and not torch.is_grad_enabled():
             self._cache_full_filters(filters)
         return filters
 

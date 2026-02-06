@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from typing import Optional, Literal, Union, Tuple
-from torch.fft import fft2, ifft2
+from torch.fft import fft2
 import copy
 
 from wph.layers.wave_conv_layer import WaveConvLayer, WaveConvLayerDownsample
@@ -238,7 +238,7 @@ class WPHModel(WPHFeatureBase):
         hatx_c = fft2(x)
         xlow = self.lowpass(hatx_c)
         xhigh = self.highpass(hatx_c)
-        
+
         if flatten:
             return torch.cat([xcorr, xlow.flatten(start_dim=1), xhigh], dim=1)
         else:
@@ -433,7 +433,7 @@ class WPHModelHybrid(WPHFeatureBase):
         hatphi: torch.Tensor = None,
         downsample_splits: Optional[list[int]] = None,
         share_scale_pairs: bool = True,
-        use_antialiasing: bool = False,
+        use_antialiasing: bool = True,
         *args,
         **kwargs,
     ):

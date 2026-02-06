@@ -35,7 +35,7 @@ class WaveConvLayerHybrid(nn.Module):
         share_scales: bool = False,
         share_scale_pairs: bool = True,
         init_filters: Optional[torch.Tensor] = None,
-        use_antialiasing: bool = False,
+        use_antialiasing: bool = True,
     ):
         super().__init__()
         self.J = J
@@ -151,17 +151,14 @@ class WaveConvLayerHybrid(nn.Module):
             base_real = self.base_real[j:j + 1] if self.share_scale_pairs else self.base_real
             base_imag = self.base_imag[j:j + 1] if self.share_scale_pairs else self.base_imag
         
-        # Reshape to (batch, channels, H, W) for interpolation
+        # Fourier-domain zero-padding upsampling
         b, l, a, h, w = base_real.shape
-        base_real_4d = base_real.view(b * l * a, 1, h, w)
-        base_imag_4d = base_imag.view(b * l * a, 1, h, w)
-        
-        up_real_4d = F.interpolate(base_real_4d, size=(size, size), mode="nearest")
-        up_imag_4d = F.interpolate(base_imag_4d, size=(size, size), mode="nearest")
+        base_complex = torch.complex(base_real, base_imag)
+        up_complex = self._fourier_upsample(base_complex, size)
         
         # Reshape back to (b, l, a, size, size)
-        up_real = up_real_4d.view(b, l, a, size, size)
-        up_imag = up_imag_4d.view(b, l, a, size, size)
+        up_real = up_complex.real.view(b, l, a, size, size)
+        up_imag = up_complex.imag.view(b, l, a, size, size)
         return up_real, up_imag
 
     def _init_pair_upsampled(self, j: int, size: int, up_factor: int) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -172,18 +169,43 @@ class WaveConvLayerHybrid(nn.Module):
         subset_r = subset_r.reshape(self.J, self.param_L, self.param_A, self.T, self.T)
         subset_i = subset_i.reshape(self.J, self.param_L, self.param_A, self.T, self.T)
         
-        # Reshape for interpolation: (batch*L*A, 1, T, T)
+        # Fourier-domain zero-padding upsampling
         b, l, a, h, w = subset_r.shape
-        subset_r_4d = subset_r.reshape(b * l * a, 1, h, w)
-        subset_i_4d = subset_i.reshape(b * l * a, 1, h, w)
-        
-        up_real = F.interpolate(subset_r_4d, size=(size, size), mode="nearest")
-        up_imag = F.interpolate(subset_i_4d, size=(size, size), mode="nearest")
+        subset_complex = torch.complex(subset_r, subset_i)
+        up_complex = self._fourier_upsample(subset_complex, size)
         
         # Reshape back to (b, l, a, size, size)
-        up_real = up_real.reshape(b, l, a, size, size)
-        up_imag = up_imag.reshape(b, l, a, size, size)
+        up_real = up_complex.real.reshape(b, l, a, size, size)
+        up_imag = up_complex.imag.reshape(b, l, a, size, size)
         return up_real, up_imag
+
+    def _fourier_upsample(self, x: torch.Tensor, size: int) -> torch.Tensor:
+        """Upsample spatial filters by zero-padding in the Fourier domain.
+
+        x: (..., H, W) complex tensor
+        size: target spatial size (assumed square)
+        """
+        h, w = x.shape[-2:]
+        if h == size and w == size:
+            return x
+
+        x_fft = torch.fft.fft2(x, dim=(-2, -1))
+        x_fft = torch.fft.fftshift(x_fft, dim=(-2, -1))
+
+        pad_h = size - h
+        pad_w = size - w
+        if pad_h < 0 or pad_w < 0:
+            raise ValueError(f"Target size {size} must be >= input size {(h, w)}")
+
+        pad_top = pad_h // 2
+        pad_bottom = pad_h - pad_top
+        pad_left = pad_w // 2
+        pad_right = pad_w - pad_left
+
+        x_fft_padded = F.pad(x_fft, (pad_left, pad_right, pad_top, pad_bottom))
+        x_fft_padded = torch.fft.ifftshift(x_fft_padded, dim=(-2, -1))
+        x_up = torch.fft.ifft2(x_fft_padded, dim=(-2, -1))
+        return x_up
 
     def _invalidate_cache(self):
         self.filters_cached = False

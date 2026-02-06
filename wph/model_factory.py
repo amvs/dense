@@ -92,7 +92,7 @@ def construct_filters_downsample(config, image_shape):
     share_rotations = config.get("share_rotations", False)
     share_channels = config.get("share_channels", True)
     share_phases = config.get("share_phases", False)
-    share_scales = config.get("share_scales", True)
+    share_scales = config.get("share_scales", False)
     share_scale_pairs = config.get("share_scale_pairs", True)
     num_channels = image_shape[0]
 
@@ -185,7 +185,7 @@ def create_wph_feature_extractor(config, image_shape, device):
             share_rotations=config["share_rotations"],
             share_phases=config["share_phases"],
             share_channels=config["share_channels"],
-            share_scales=config.get("share_scales", True),
+            share_scales=config.get("share_scales", False),
             share_scale_pairs=config.get("share_scale_pairs", True),
             normalize_relu=config["normalize_relu"],
             delta_j=config.get("delta_j"),
@@ -195,7 +195,8 @@ def create_wph_feature_extractor(config, image_shape, device):
             mask_union_highpass=config["mask_union_highpass"],
             spatial_attn=config.get("spatial_attn", False),
             grad_checkpoint=config.get("grad_checkpoint", False),
-            downsample_splits=config.get("downsample_splits", None)
+            downsample_splits=config.get("downsample_splits", None),
+            use_antialiasing=config.get("use_antialiasing", False),
         ).to(device)
     elif downsample:
         filters = construct_filters_downsample(config, image_shape)
@@ -214,7 +215,7 @@ def create_wph_feature_extractor(config, image_shape, device):
             share_rotations=config["share_rotations"],
             share_phases=config["share_phases"],
             share_channels=config["share_channels"],
-            share_scales=config.get("share_scales", True),
+            share_scales=config.get("share_scales", False),
             share_scale_pairs=config.get("share_scale_pairs", True),
             normalize_relu=config["normalize_relu"],
             delta_j=config.get("delta_j"),
@@ -242,6 +243,7 @@ def create_wph_feature_extractor(config, image_shape, device):
             share_rotations=config["share_rotations"],
             share_phases=config["share_phases"],
             share_channels=config["share_channels"],
+            share_scales=config.get("share_scales", False),
             normalize_relu=config["normalize_relu"],
             delta_j=config.get("delta_j"),
             delta_l=config.get("delta_l"),
