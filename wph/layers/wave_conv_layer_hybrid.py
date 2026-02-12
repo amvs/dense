@@ -56,13 +56,40 @@ class WaveConvLayerHybrid(nn.Module):
         if downsample_splits is None:
             self.downsample_splits = [j // 2 for j in range(J)]
         else:
-            assert len(downsample_splits) == J, "downsample_splits must have length J"
-            self.downsample_splits = list(downsample_splits)
+            if len(downsample_splits) > J:
+                dropped_count = len(downsample_splits) - J
+                dropped_values = list(downsample_splits[J:])
+                warnings.warn(
+                    "downsample_splits has length {total} but J={J}; "
+                    "dropping {count} trailing entries at scales {scales}: {values}".format(
+                        total=len(downsample_splits),
+                        J=J,
+                        count=dropped_count,
+                        scales=list(range(J, len(downsample_splits))),
+                        values=dropped_values,
+                    )
+                )
+            assert len(downsample_splits) >= J, "downsample_splits must have length >= J"
+            self.downsample_splits = list(downsample_splits[:J])
         for j, ds in enumerate(self.downsample_splits):
             if ds > j:
                 raise ValueError(f"downsample_splits[{j}]={ds} cannot exceed scale index {j}")
         if any(self.downsample_splits[i] > self.downsample_splits[i + 1] for i in range(J - 1)):
             warnings.warn("downsample_splits is not non-decreasing; outputs may upsample implicitly between scales")
+
+        # Ensure per-scale filter size fits the downsampled input
+        for j, ds in enumerate(self.downsample_splits):
+            up_pow = j - ds
+            up_factor = 2 ** up_pow
+            T_j = (T - 1) * up_factor + 1
+            eff_m = M // (2 ** ds)
+            eff_n = N // (2 ** ds)
+            if T_j > eff_m or T_j > eff_n:
+                raise ValueError(
+                    "Filter size exceeds downsampled input size: "
+                    f"scale={j}, downsample={ds}, T_j={T_j}, "
+                    f"input=({M},{N}), downsampled=({eff_m},{eff_n})"
+                )
 
         # Parameter dimensions
         self.param_nc = 1 if share_channels else num_channels

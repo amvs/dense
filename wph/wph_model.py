@@ -1,4 +1,5 @@
 import torch
+import warnings
 from torch import nn
 from typing import Optional, Literal, Union, Tuple
 from torch.fft import fft2
@@ -442,8 +443,22 @@ class WPHModelHybrid(WPHFeatureBase):
         self.downsample_splits = (
             [j // 2 for j in range(self.J)] if downsample_splits is None else list(downsample_splits)
         )
-        if len(self.downsample_splits) != self.J:
-            raise ValueError("downsample_splits must have length J")
+        if len(self.downsample_splits) > self.J:
+            dropped_count = len(self.downsample_splits) - self.J
+            dropped_values = list(self.downsample_splits[self.J:])
+            warnings.warn(
+                "downsample_splits has length {total} but J={J}; "
+                "dropping {count} trailing entries at scales {scales}: {values}".format(
+                    total=len(self.downsample_splits),
+                    J=self.J,
+                    count=dropped_count,
+                    scales=list(range(self.J, len(self.downsample_splits))),
+                    values=dropped_values,
+                )
+            )
+            self.downsample_splits = self.downsample_splits[:self.J]
+        if len(self.downsample_splits) < self.J:
+            raise ValueError("downsample_splits must have length >= J")
 
         self.share_scale_pairs = True if self.share_scales else share_scale_pairs
         A_param = 1 if self.share_phases else self.A
