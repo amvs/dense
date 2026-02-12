@@ -300,35 +300,42 @@ def plot_generalization_error_vs_l2(df, sweep_dir, fname_suffix="", use_best=Tru
     if df_with_l2.empty:
         return
     
-    # Define markers for random_filters and colors for train_ratio
+    # Color by random_filters, split train_ratio into subplots
     random_filters_values = sorted(df_with_l2["random_filters"].unique())
-    markers = {val: marker for val, marker in zip(random_filters_values, ['o', 's'][:len(random_filters_values)])}
-    
+    colors = plt.cm.Set1(np.linspace(0, 1, len(random_filters_values)))
+    color_map = {val: colors[i] for i, val in enumerate(random_filters_values)}
+
     train_ratio_values = sorted(df_with_l2["train_ratio"].unique())
-    colors = plt.cm.Set1(np.linspace(0, 1, len(train_ratio_values)))
-    color_map = {val: colors[i] for i, val in enumerate(train_ratio_values)}
-    
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    for train_ratio_val, train_ratio_grp in df_with_l2.groupby("train_ratio"):
+    ncols = min(3, len(train_ratio_values))
+    nrows = int(np.ceil(len(train_ratio_values) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows), squeeze=False)
+
+    for idx, train_ratio_val in enumerate(train_ratio_values):
+        ax = axes[idx // ncols][idx % ncols]
+        train_ratio_grp = df_with_l2[df_with_l2["train_ratio"] == train_ratio_val]
         for rf_val, rf_grp in train_ratio_grp.groupby("random_filters"):
-            label = f"train_ratio={train_ratio_val}, random_filters={rf_val}"
+            label = f"random_filters={rf_val}"
             ax.scatter(
                 rf_grp["l2_norm_finetuning"],
                 rf_grp["feature_extractor_gen_error"],
                 label=label,
                 alpha=0.6,
-                marker=markers[rf_val],
-                color=color_map[train_ratio_val],
-                s=80
+                color=color_map[rf_val],
+                s=80,
             )
-    
-    ax.set_xlabel("L2 Norm (Fine-tuning)")
-    ax.set_ylabel("Generalization Error")
-    ax.set_title(f"Feature Extractor Generalization Error vs L2 Norm ({acc_suffix})")
-    ax.set_xscale("log")
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax.grid(True, alpha=0.3)
+        ax.set_title(f"train_ratio={train_ratio_val}")
+        ax.set_xlabel("L2 Norm (Fine-tuning)")
+        ax.set_ylabel("Generalization Error")
+        ax.set_xscale("log")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+    # Hide any unused subplots
+    total_axes = nrows * ncols
+    for idx in range(len(train_ratio_values), total_axes):
+        fig.delaxes(axes[idx // ncols][idx % ncols])
+
+    fig.suptitle(f"Feature Extractor Generalization Error vs L2 Norm ({acc_suffix})")
     plt.tight_layout()
     
     plot_path = os.path.join(results_path, f"generalization_error_vs_l2_{acc_suffix}_{fname_suffix}.png")
@@ -357,6 +364,7 @@ if __name__ == "__main__":
         default=None,
         help="Column name to split dataset and generate separate plots for each unique value (e.g. 'S', 'max_scale'). If not provided, generates plots for entire dataset.",
     )
+    parser.add_argument('--split-plots-individual', action='store_true', help="If set, generates separate plots for each split value instead of combined plots.")
     args = parser.parse_args()
     df = df_from_logs(args)
     # df['wavelet_params'] = df['wavelet_params'].apply(literal_eval)
@@ -374,24 +382,28 @@ if __name__ == "__main__":
         split_values = sorted(df[args.split_by].dropna().unique())
         print(f"Splitting plots by '{args.split_by}' with values: {split_values}")
     
-    for split_val in split_values:
-        if split_val is None:
-            df_split = df
-            suffix = "all"
-        else:
-            df_split = df.loc[df[args.split_by] == split_val].reset_index(drop=True)
-            if df_split.empty:
-                continue
-            suffix = f"{args.split_by}={split_val}"
-        
-        plot_all_boxplots(
-            df_split,
-            group_cols=['max_scale', 'train_ratio', 'random_filters'],
-            sweep_dir=args.sweep_dir,
-            fname_suffix=suffix,
-        )
+    if args.split_plots_individual:
+        for split_val in split_values:
+            if split_val is None:
+                df_split = df
+                suffix = "all"
+            else:
+                df_split = df.loc[df[args.split_by] == split_val].reset_index(drop=True)
+                if df_split.empty:
+                    continue
+                suffix = f"{args.split_by}={split_val}"
+            
+            plot_all_boxplots(
+                df_split,
+                group_cols=['max_scale', 'train_ratio', 'random_filters'],
+                sweep_dir=args.sweep_dir,
+                fname_suffix=suffix,
+            )
     # df_lr1_fullsize = df_lr1.loc[~df_lr1.downsample].reset_index(drop=True)
-    plot_all_boxplots(df, group_cols = [args.split_by, 'train_ratio','lambda_reg', 'random_filters'],
+    group_cols = ['max_scale', 'train_ratio', 'random_filters']
+    if args.split_by and args.split_by in df.columns:
+        group_cols = [args.split_by] + group_cols
+    plot_all_boxplots(df, group_cols = group_cols,
                     sweep_dir=args.sweep_dir,
                     fname_suffix = 'all')
     # plot_all_boxplots(df_lr1_fullsize, group_cols = ['max_scale', 'train_ratio', 'random_filters'],
@@ -447,26 +459,27 @@ if __name__ == "__main__":
     plot_generalization_error_vs_l2(df, args.sweep_dir, fname_suffix='all', use_best=True)
     plot_generalization_error_vs_l2(df, args.sweep_dir, fname_suffix='all', use_best=False)
     
+    if args.split_plots_individual:
     # Side-by-side plots for each split value
-    for split_val in split_values:
-        if split_val is None:
-            continue  # Already plotted above for full dataset
-        df_split = df.loc[df[args.split_by] == split_val].reset_index(drop=True)
-        if df_split.empty:
-            continue
-        suffix = f"{args.split_by}={split_val}"
-        side_by_side_boxplots(
-            df_split,
-            metrics=['feature_extractor_test_acc', 'classifier_test_acc'],
-            group_cols=['lambda_reg', 'train_ratio', 'random_filters'],
-            facet_col='train_ratio',
-            sweep_dir=args.sweep_dir,
-            fname_suffix=suffix,
-        )
-        plot_generalization_error(df_split, args.sweep_dir, fname_suffix=suffix, use_best=True)
-        plot_generalization_error(df_split, args.sweep_dir, fname_suffix=suffix, use_best=False)
-        plot_generalization_error_vs_l2(df_split, args.sweep_dir, fname_suffix=suffix, use_best=True)
-        plot_generalization_error_vs_l2(df_split, args.sweep_dir, fname_suffix=suffix, use_best=False)
+        for split_val in split_values:
+            if split_val is None:
+                continue  # Already plotted above for full dataset
+            df_split = df.loc[df[args.split_by] == split_val].reset_index(drop=True)
+            if df_split.empty:
+                continue
+            suffix = f"{args.split_by}={split_val}"
+            side_by_side_boxplots(
+                df_split,
+                metrics=['feature_extractor_test_acc', 'classifier_test_acc'],
+                group_cols=['lambda_reg', 'train_ratio', 'random_filters'],
+                facet_col='train_ratio',
+                sweep_dir=args.sweep_dir,
+                fname_suffix=suffix,
+            )
+            plot_generalization_error(df_split, args.sweep_dir, fname_suffix=suffix, use_best=True)
+            plot_generalization_error(df_split, args.sweep_dir, fname_suffix=suffix, use_best=False)
+            plot_generalization_error_vs_l2(df_split, args.sweep_dir, fname_suffix=suffix, use_best=True)
+            plot_generalization_error_vs_l2(df_split, args.sweep_dir, fname_suffix=suffix, use_best=False)
 
     slope_group_cols = [
         "share_rotations",
