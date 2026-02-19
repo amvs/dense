@@ -85,7 +85,7 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
     # Accuracy and loss history per epoch for plotting
     train_acc_hist, val_acc_hist, test_acc_hist = [], [], []
     base_loss_hist, reg_loss_hist, total_loss_hist = [], [], []
-    l2_norm_hist = []
+    l2_norm_hist, l2_norm_fe_hist, l2_norm_classifier_hist = [], [], []
     for epoch in range(epochs):
         train_metrics = train_one_epoch(
             model=model,
@@ -122,19 +122,21 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
             log_msg += f" Test_Acc={test_acc_epoch:.4f}"
         
         # Add L2 norms if in feature extractor phase
+        l2_norm = 0.0
         if phase == 'feature_extractor' and original_fe_params is not None:
             current_fe_params = list(model.feature_extractors.parameters())
             l2_norm_fe = sum((p - o).norm().item() for p, o in zip(current_fe_params, original_fe_params))
-            l2_norm = l2_norm_fe
+            l2_norm += l2_norm_fe
             log_msg += f" L2_Norm_FE={l2_norm_fe:.4f}"
             
             # Also add classifier L2 norm if classifier is trainable (not frozen)
             if not freeze_classifier and original_classifier_params is not None:
                 current_classifier_params = list(model.classifier.parameters())
                 l2_norm_classifier = sum((p - o).norm().item() for p, o in zip(current_classifier_params, original_classifier_params))
+                l2_norm += l2_norm_classifier
                 log_msg += f" L2_Norm_Classifier={l2_norm_classifier:.4f}"
-        else:
-            l2_norm = 0.0
+            else:
+                l2_norm_classifier = 0.0
         
         logger.log(log_msg, data=True)
 
@@ -151,6 +153,9 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
         reg_loss_hist.append(float(train_metrics.get('reg_loss', float('nan'))))
         total_loss_hist.append(float(train_metrics.get('total_loss', float('nan'))))
         l2_norm_hist.append(float(l2_norm))
+        l2_norm_fe_hist.append(float(l2_norm_fe))
+        l2_norm_classifier_hist.append(float(l2_norm_classifier))
+
     
     # Save final model after training completes
     final_model_path = os.path.join(exp_dir, f"final_{phase}_model_state.pt")
@@ -387,7 +392,7 @@ def main():
         if os.path.exists(best_fe_path):
             model.load_state_dict(torch.load(best_fe_path, weights_only=True))
             logger.log(f"Loaded best feature extractor model from {best_fe_path}")
-    test_loss, feature_extractor_test_acc = evaluate(model, test_loader, criterion, device)
+    test_loss_fe, feature_extractor_test_acc = evaluate(model, test_loader, criterion, device)
     val_loss_fe, feature_extractor_val_acc = evaluate(model, val_loader, criterion, device)
     logger.log(f"Feature Extractor Val Accuracy={feature_extractor_val_acc:.4f}", data=True)
     logger.log(f"Feature Extractor Test Accuracy={feature_extractor_test_acc:.4f}", data=True)
@@ -477,6 +482,10 @@ def main():
     config["classifier_best_acc"] = best_acc_classifier
     config["feature_extractor_last_acc"] = feature_extractor_val_acc
     config["feature_extractor_best_acc"] = best_acc_feature_extractor
+    config['test_loss_classifier'] = test_loss
+    config['test_loss_feature_extractor'] = test_loss_fe
+    config['val_loss_classifier'] = val_loss
+    config['val_loss_feature_extractor'] = val_loss_fe
     config["feature_extractor_params"] = sum(p.numel() for fe in model.feature_extractors for p in fe.parameters())
     config["finetuning_gain"] = feature_extractor_test_acc - classifier_test_acc
     config["classifier_params"] = sum(p.numel() for p in model.classifier.parameters())
