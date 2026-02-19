@@ -1,0 +1,24 @@
+# This is a sweep config file for hyperparameter tuning on MNIST dataset
+# It uses the base configuration from mnist.yaml and overrides specific parameters for the sweep
+base_config: configs_wph/kthtips2.yaml
+sweep:
+  classifier_epochs: [15]
+  conv_epochs: [15]
+  seed: [0]
+  wavelet_params:
+    - {S: 15, w0: 2.7646}  # 0.88 * pi
+    - {S: 9, w0: 2.7646}   # 0.88 * pi
+  max_scale: [4,5]
+  nb_orients: [4, 8]
+  num_phases: [2, 4]
+  shift_mode: ['samec', 'strict']
+  share_scale_pairs: [true]
+  delta_l: [1, null]
+  delta_j: [1, null]
+  train_ratio: [0.5]
+  # lambda_reg: [0, 5.0e+5, 1.0e+6, 2.0e+6, 1.0e+7] # determined scale of lambda reg was 1e6
+  downsample: [true]
+  freeze_classifier: [false]
+  random_filters: [false]
+  fold: [0,1,2,3]
+

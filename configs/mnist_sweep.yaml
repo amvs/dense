@@ -2,11 +2,13 @@
 # It uses the base configuration from mnist.yaml and overrides specific parameters for the sweep
 base_config: configs/mnist.yaml
 sweep:
-  classifier_epochs: [10, 15]
-  conv_epochs: [10, 15]
-  val_ratio: [0.1, 0.2, 0.4]
-  lr: [0.01, 0.001, 0.0001]
+  classifier_epochs: [15]
+  conv_epochs: [15]
+  train_ratio: [0.85, 0.95, 0.99]
+  lr: [0.01, 0.1, 0.001]
   lambda_reg: [1e-3, 1e-4, 1e-5]
   nb_orients: [4, 6, 8]
+  wavelet: [meyer]
+  batch_size: [64]
 
 

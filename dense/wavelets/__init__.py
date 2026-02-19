@@ -2,8 +2,7 @@ from .morlet import morlet
 from .yang import yang
 from .meyer import meyer
 
-
-def filter_bank(wavelet_name, max_scale, nb_orients, *args):
+def filter_bank(wavelet_name, max_scale, nb_orients, *args, **kwargs):
     """
     Returns a list of tensors, one per scale, for the selected wavelet.
     
@@ -23,7 +22,7 @@ def filter_bank(wavelet_name, max_scale, nb_orients, *args):
         raise ValueError(f"Unknown wavelet: {wavelet_name}")
     
     wavelet_func = wavelets_map[wavelet_name]
-    return wavelet_func(max_scale, nb_orients, *args)
+    return wavelet_func(max_scale, nb_orients, *args, **kwargs)
 
 
 

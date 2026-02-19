@@ -1,0 +1,17 @@
+# This is a sweep config file for hyperparameter tuning on MNIST dataset
+# It uses the base configuration from mnist.yaml and overrides specific parameters for the sweep
+base_config: configs_wph/mnist.yaml
+sweep:
+  seed: [0,1,2]
+  share_scale_pairs: [true, false]
+  delta_j: [1, null]
+  copies: [1,10]
+  train_ratio: [0.1, 0.05, 0.01, 0.85, 0.5]
+  lambda_reg: [1, 100, 1.0e+4, 1.0e+6]
+  downsample: [true]
+  wavelet_params:
+    - {S: 7, w0: 1.09955}  # 0.35 * pi
+  random_filters: [true, false]
+
+
+

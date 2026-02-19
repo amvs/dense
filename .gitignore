@@ -6,6 +6,11 @@
 **/experiments
 **/.vscode
 **/.idea
+*.png
+*.jpg
+*.pt
 **/.DS_Store
 notes.txt
 profile*
+**/wandb
+.env
