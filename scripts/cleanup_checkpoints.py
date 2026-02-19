@@ -10,6 +10,7 @@ def parse_args():
         "--sweep_dir", type=str, required=True,
         help="Path to the sweep directory (e.g. experiments/mnist-sweeps-20251120-123456)"
     )
+    parser.add_argument('--dataset-dir', action='store_true', help="If set, loop through all sweep directories in the specified dataset directory instead of a single sweep directory.")
     parser.add_argument(
         "--top_n", type=int, default=3,
         help="Number of top models to keep per val_ratio (default: 3)"
@@ -22,12 +23,9 @@ def parse_args():
                         help='If set, group by val_ratio to determine top models, otherwise use train_ratio')
     return parser.parse_args()
 
-def main():
-    args = parse_args()
-    sweep_dir = args.sweep_dir
+def cleanup_sweep_dir(args, sweep_dir, col='train_ratio'):
     top_n = args.top_n
     use_val_ratio = args.val_ratio
-    col = 'val_ratio' if use_val_ratio else 'train_ratio'
     # Initialize logger
     logger = LoggerManager.get_logger(log_dir=sweep_dir)
     logger.info("Starting cleanup of sweep directory.")
@@ -81,6 +79,25 @@ def main():
                         logger.info(f"Deleted: {file_path}")
 
     logger.info("Cleanup complete. Top models retained.")
+
+def main():
+    args = parse_args()
+    if args.dataset_dir:
+        # Loop through all sweep directories in the specified dataset directory
+        dataset_dir = args.sweep_dir
+        for sweep_dir in os.listdir(dataset_dir):
+            sweep_path = os.path.join(dataset_dir, sweep_dir)
+            if os.path.isdir(sweep_path):
+                print(f"Cleaning sweep dir: {sweep_path}")
+                try:
+                    cleanup_sweep_dir(args, sweep_path, 'train_ratio')
+                except KeyError as e:
+                    print(f"KeyError for {sweep_path}: {e}. Trying with 'val_ratio' instead.")
+                    cleanup_sweep_dir(args, sweep_path, 'val_ratio')
+    else:
+        # Clean up a single specified sweep directory
+        cleanup_sweep_dir(args, sweep_dir = args.sweep_dir, col = 'val_ratio' if args.val_ratio else 'train_ratio')
+
 
 if __name__ == "__main__":
     main()
