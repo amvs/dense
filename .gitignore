@@ -3,7 +3,7 @@
 **/__pycache__
 **/test
 **/*.egg-info
-**/experiments
+**/experiments*
 **/.vscode
 **/.idea
 *.png
