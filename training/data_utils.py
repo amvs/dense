@@ -39,6 +39,7 @@ def load_and_split_data(config, worker_init_fn, batch_size=None):
         train_loader, val_loader, test_loader, nb_class, image_shape = get_loaders(
             dataset=dataset,
             root_dir=root_dir,
+            deeper_path=config.get("deeper_path", ''),
             resize=config["resize"],
             batch_size=batch_size,
             train_ratio=config["train_ratio"],
@@ -46,7 +47,19 @@ def load_and_split_data(config, worker_init_fn, batch_size=None):
             fold=config.get("fold", None),
             drop_last=drop_last
         )
-        # kthtips2b loader already returns train/val/test split, no need to split further
+        return train_loader, val_loader, test_loader, nb_class, image_shape
+    elif dataset == 'akash2sharma/tiny-imagenet':
+        from pathlib import Path
+        root_dir = str(Path(config["root_dir"]) / config.get("deeper_path", ''))
+        train_loader, val_loader, test_loader, nb_class, image_shape = get_loaders(
+            dataset=dataset,
+            root_dir=root_dir,
+            resize=config["resize"],
+            batch_size=batch_size,
+            train_ratio=config["train_ratio"],
+            worker_init_fn=worker_init_fn,
+            drop_last=drop_last
+        )
         return train_loader, val_loader, test_loader, nb_class, image_shape
     elif dataset.startswith('outex'):
         root_dir = config["root_dir"]

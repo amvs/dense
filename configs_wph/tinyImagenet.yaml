@@ -23,13 +23,14 @@ downsample_splits: null
 
 # training setting
 dataset: akash2sharma/tiny-imagenet
-deeper_path: tiny-imagenet-200
+root_dir: $PROJECT_HOME/data/datasets/akash2sharma/tiny-imagenet
+deeper_path: versions/1/tiny-imagenet-200
 classifier_epochs: 10
 conv_epochs: 10
 batch_size: 200
 resize: 64
 lr: 0.001
-lambda_reg: 1.0e-3
+lambda_reg: 1.0e+3
 train_ratio: 0.8
 test_ratio: 0.15
 train_val_ratio: 2
