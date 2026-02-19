@@ -543,6 +543,79 @@ class WPHModelHybrid(WPHFeatureBase):
         )
         self.nb_moments = self.corr.nb_moments + self.lowpass.nb_moments + self.highpass.nb_moments
 
+    def flat_metadata(self):
+        """Combine metadata from all three layers (corr, lowpass, highpass) with layer indicator.
+
+        Returns consolidated metadata with common keys:
+        - scale1, scale2: scales (scale2=-1 for lowpass/highpass)
+        - rotation1, rotation2: rotations (rotation2=-1 for lowpass/highpass, rotation1=haar_idx for highpass)
+        - phase1, phase2: phases (-1 for lowpass/highpass)
+        - channel1, channel2: channels (channel2=-1 for highpass)
+        - mask_pos: mask position index
+        - layer: 0=corr, 1=lowpass, 2=highpass
+        - layer_feature_idx: index within that layer
+        """
+        corr_meta = self.corr.flat_metadata()
+        lowpass_meta = self.lowpass.flat_metadata()
+        highpass_meta = self.highpass.flat_metadata()
+
+        combined_meta = {
+            "layer": [],
+            "layer_feature_idx": [],
+            "scale1": [],
+            "scale2": [],
+            "rotation1": [],
+            "rotation2": [],
+            "phase1": [],
+            "phase2": [],
+            "channel1": [],
+            "channel2": [],
+            "mask_pos": [],
+        }
+
+        n_corr = len(corr_meta["scale1"])
+        for i in range(n_corr):
+            combined_meta["layer"].append(0)
+            combined_meta["layer_feature_idx"].append(i)
+            combined_meta["scale1"].append(corr_meta["scale1"][i])
+            combined_meta["scale2"].append(corr_meta["scale2"][i])
+            combined_meta["rotation1"].append(corr_meta["rotation1"][i])
+            combined_meta["rotation2"].append(corr_meta["rotation2"][i])
+            combined_meta["phase1"].append(corr_meta["phase1"][i])
+            combined_meta["phase2"].append(corr_meta["phase2"][i])
+            combined_meta["channel1"].append(-1)
+            combined_meta["channel2"].append(-1)
+            combined_meta["mask_pos"].append(corr_meta["mask_pos"][i])
+
+        n_lowpass = len(lowpass_meta["channel1"])
+        for i in range(n_lowpass):
+            combined_meta["layer"].append(1)
+            combined_meta["layer_feature_idx"].append(i)
+            combined_meta["scale1"].append(-1)
+            combined_meta["scale2"].append(-1)
+            combined_meta["rotation1"].append(-1)
+            combined_meta["rotation2"].append(-1)
+            combined_meta["phase1"].append(-1)
+            combined_meta["phase2"].append(-1)
+            combined_meta["channel1"].append(lowpass_meta["channel1"][i])
+            combined_meta["channel2"].append(lowpass_meta["channel2"][i])
+            combined_meta["mask_pos"].append(lowpass_meta["mask_pos"][i])
+
+        n_highpass = len(highpass_meta["rotation1"])
+        for i in range(n_highpass):
+            combined_meta["layer"].append(2)
+            combined_meta["layer_feature_idx"].append(i)
+            combined_meta["scale1"].append(-1)
+            combined_meta["scale2"].append(-1)
+            combined_meta["rotation1"].append(highpass_meta["rotation1"][i])
+            combined_meta["rotation2"].append(-1)
+            combined_meta["phase1"].append(-1)
+            combined_meta["phase2"].append(-1)
+            combined_meta["channel1"].append(highpass_meta["channel1"][i])
+            combined_meta["channel2"].append(-1)
+            combined_meta["mask_pos"].append(highpass_meta["mask_pos"][i])
+        return combined_meta
+
     def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> torch.Tensor:
         if self.share_scale_pairs:
             xpsi = self.wave_conv(x)

@@ -77,19 +77,19 @@ class WaveConvLayerHybrid(nn.Module):
         if any(self.downsample_splits[i] > self.downsample_splits[i + 1] for i in range(J - 1)):
             warnings.warn("downsample_splits is not non-decreasing; outputs may upsample implicitly between scales")
 
-        # Ensure per-scale filter size fits the downsampled input
-        for j, ds in enumerate(self.downsample_splits):
-            up_pow = j - ds
-            up_factor = 2 ** up_pow
-            T_j = (T - 1) * up_factor + 1
-            eff_m = M // (2 ** ds)
-            eff_n = N // (2 ** ds)
-            if T_j > eff_m or T_j > eff_n:
-                raise ValueError(
-                    "Filter size exceeds downsampled input size: "
-                    f"scale={j}, downsample={ds}, T_j={T_j}, "
-                    f"input=({M},{N}), downsampled=({eff_m},{eff_n})"
-                )
+        # # Ensure per-scale filter size fits the downsampled input
+        # for j, ds in enumerate(self.downsample_splits):
+        #     up_pow = j - ds
+        #     up_factor = 2 ** up_pow
+        #     T_j = (T - 1) * up_factor + 1
+        #     eff_m = M // (2 ** ds)
+        #     eff_n = N // (2 ** ds)
+        #     if T_j > eff_m or T_j > eff_n:
+        #         raise ValueError(
+        #             "Filter size exceeds downsampled input size: "
+        #             f"scale={j}, downsample={ds}, T_j={T_j}, "
+        #             f"input=({M},{N}), downsampled=({eff_m},{eff_n})"
+        #         )
 
         # Parameter dimensions
         self.param_nc = 1 if share_channels else num_channels

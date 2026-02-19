@@ -932,6 +932,35 @@ class CorrLayerDownsamplePairs(BaseCorrLayer):
                 final_output.append(combined)
             return final_output
 
+    def flat_metadata(self):
+        """Return metadata aligned with flattened output order."""
+        meta = {
+            "scale1": [],
+            "scale2": [],
+            "rotation1": [],
+            "rotation2": [],
+            "phase1": [],
+            "phase2": [],
+            "mask_pos": [],
+        }
+        for (j1, j2), global_idxs in self.grouped_indices.items():
+            for g_idx in global_idxs.tolist():
+                la1_j, la1_idx = self.idx_wph["la1"][g_idx].tolist()
+                la2_j, la2_idx = self.idx_wph["la2"][g_idx].tolist()
+                shift_type = int(self.idx_wph["shifted"][g_idx].item())
+                _, l1, a1 = self._decode_cla(la1_idx)
+                _, l2, a2 = self._decode_cla(la2_idx)
+                mask_indices = getattr(self, f"mask_idx_map_{shift_type}").tolist()
+                for m in mask_indices:
+                    meta["scale1"].append(la1_j)
+                    meta["scale2"].append(la2_j)
+                    meta["rotation1"].append(l1)
+                    meta["rotation2"].append(l2)
+                    meta["phase1"].append(a1)
+                    meta["phase2"].append(a2)
+                    meta["mask_pos"].append(int(m))
+        return meta
+
 
 # Hybrid variants (per-scale downsample_splits)
 class CorrLayerHybrid(CorrLayerDownsample):
