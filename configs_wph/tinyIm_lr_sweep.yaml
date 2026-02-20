@@ -1,0 +1,12 @@
+# This is a sweep config file for hyperparameter tuning on MNIST dataset
+# It uses the base configuration from mnist.yaml and overrides specific parameters for the sweep
+base_config: configs_wph/tinyImagenet.yaml
+sweep:
+  downsample: [true]
+  train_ratio: [0.1]
+  share_scale_pairs: [true, false]
+  delta_j: [null, 1]
+  wavelet_params:
+    - {S: 15, w0: 2.7646}  # 0.88 * pi
+    - {S: 7, w0: 1.0995}   # 0.88 * pi
+  lr_conv: [1.0e-5, 1.0e-6, 1.0e-7]
