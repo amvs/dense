@@ -111,25 +111,26 @@ class TinyImageNetDataset(Dataset):
 
 def compute_mean_std(dataset):
     """Compute mean and std for a dataset."""
-    loader = DataLoader(dataset, batch_size=64, shuffle=False)
-    mean = 0.0
-    sq_mean = 0.0
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    loader = DataLoader(dataset, batch_size=64, shuffle=False, num_workers=4)
+    mean = torch.zeros(3, device=device)
+    sq_mean = torch.zeros(3, device=device)
     num_pixels = 0
     num_batches = 0
 
     for idx, (imgs, _) in enumerate(loader):
-        # Reshape to (N, C*H*W)
-        imgs = imgs.view(imgs.size(0), imgs.size(1), -1).mean(dim=2)
-        mean += imgs.sum()
-        sq_mean += (imgs ** 2).sum()
-        num_pixels += imgs.numel()
+        imgs = imgs.to(device)
+        # Sum over batch, height, width (N, H, W)
+        mean += imgs.sum(dim=(0, 2, 3))
+        sq_mean += (imgs ** 2).sum(dim=(0, 2, 3))
+        num_pixels += imgs.size(0) * imgs.size(2) * imgs.size(3)
         num_batches += 1
 
     mean /= num_pixels
     std = (sq_mean / num_pixels - mean ** 2).sqrt()
     logger = LoggerManager.get_logger()
-    logger.info(f"Computed mean/std from {num_batches} batches ({num_pixels} pixels total)")
-    return mean.item(), std.item()
+    logger.info(f"Computed mean/std from {num_batches} batches ({num_pixels} pixels total) on {device}")
+    return mean.cpu().tolist(), std.cpu().tolist()
 
 
 def _stats_cache_path(identifier: str, resize: int, cache_dir: str = "data/stats") -> Path:
@@ -159,8 +160,8 @@ def load_or_compute_mean_std(dataset, resize: int, force_recompute: bool = False
             data = np.load(cache_path, allow_pickle=True)
             cached_resize = int(data.get('resize', resize))
             if cached_resize == resize:
-                mean = float(data['mean'].tolist())
-                std = float(data['std'].tolist())
+                mean = data['mean'].tolist()
+                std = data['std'].tolist()
                 logger.info(f"Loaded mean/std from cache {cache_path}")
                 return mean, std
             else:
@@ -178,9 +179,13 @@ def load_or_compute_mean_std(dataset, resize: int, force_recompute: bool = False
     return mean, std
 
 
-def get_tinyimagenet_loaders(root_dir, resize=64, batch_size=64, train_ratio=0.8, worker_init_fn=None, drop_last=True):
+def get_tinyimagenet_loaders(root_dir, resize=64, batch_size=64, train_ratio=0.8, train_val_ratio=4, worker_init_fn=None, drop_last=True):
     """
     Load TinyImageNet dataset with train/val/test splits.
+    
+    The original 'train' split is split into train and val.
+    The original 'val' split becomes the test set.
+    The original 'test' split is not used (no labels).
 
     Parameters
     ----------
@@ -191,7 +196,9 @@ def get_tinyimagenet_loaders(root_dir, resize=64, batch_size=64, train_ratio=0.8
     batch_size : int
         Batch size for DataLoader
     train_ratio : float
-        Ratio of training data (unused if using predefined val split)
+        Ratio of data used for training+validation (from original train split)
+    train_val_ratio : int
+        Ratio between train and val sets (default 4:1)
     worker_init_fn : callable
         Worker initialization function for DataLoader
     drop_last : bool
@@ -201,8 +208,10 @@ def get_tinyimagenet_loaders(root_dir, resize=64, batch_size=64, train_ratio=0.8
     -------
     train_loader : DataLoader
         Training data loader
+    val_loader : DataLoader
+        Validation data loader
     test_loader : DataLoader
-        Validation/test data loader
+        Test data loader (original val split)
     nb_class : int
         Number of classes
     sample_shape : tuple
@@ -218,40 +227,64 @@ def get_tinyimagenet_loaders(root_dir, resize=64, batch_size=64, train_ratio=0.8
         transforms.Resize((resize, resize)),
     ])
 
-    # Load train and val datasets
-    train_dataset = TinyImageNetDataset(root_dir, split='train', transform=transform)
-    val_dataset = TinyImageNetDataset(root_dir, split='val', transform=transform)
+    # Load original train and val datasets
+    full_train_dataset = TinyImageNetDataset(root_dir, split='train', transform=transform)
+    test_dataset = TinyImageNetDataset(root_dir, split='val', transform=transform)
 
-    logger.info(f"Dataset loaded. Train: {len(train_dataset)}, Val: {len(val_dataset)}")
+    logger.info(f"Dataset loaded. Full train: {len(full_train_dataset)}, Test (val): {len(test_dataset)}")
+
+    # Split the original train into train and val using stratified split
+    train_len = int(len(full_train_dataset) * train_ratio)
+    val_len = train_len // train_val_ratio
+    used_len = train_len + val_len
+    
+    if used_len > len(full_train_dataset):
+        val_len = len(full_train_dataset) - train_len
+        used_len = len(full_train_dataset)
+    
+    # First split: get the used portion
+    used_dataset, _ = stratify_split(
+        full_train_dataset, train_size=used_len, seed=42
+    )
+    
+    # Second split: split used portion into train and val
+    train_dataset, val_dataset = stratify_split(
+        used_dataset, train_size=train_len, seed=43
+    )
+
+    logger.info(f"Split train dataset - Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
 
     # compute (or load cached) mean and std from TRAIN set only (no data leakage)
     logger.info(f"Computing/loading normalization statistics from {len(train_dataset)} training samples...")
     mean, std = load_or_compute_mean_std(train_dataset, resize=resize)
-    logger.info(f"Normalization stats - mean: {mean:.6f}, std: {std:.6f}")
+    logger.info(f"Normalization stats - mean: {mean}, std: {std}")
 
-    # Apply normalization using train statistics to both train and val
+    # Apply normalization using train statistics to all splits
     normalized_transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Resize((resize, resize)),
-        transforms.Normalize((mean, mean, mean), (std, std, std))
+        transforms.Normalize(mean, std)
     ])
 
     # Update datasets' transforms
-    train_dataset.transform = normalized_transform
-    val_dataset.transform = normalized_transform
+    train_dataset.dataset.transform = normalized_transform
+    val_dataset.dataset.transform = normalized_transform
+    test_dataset.transform = normalized_transform
 
     logger.info(f"Updated dataset transforms with normalization")
 
     # Create data loaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
                              worker_init_fn=worker_init_fn, drop_last=drop_last, num_workers=4)
-    test_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
+                           worker_init_fn=worker_init_fn, drop_last=False, num_workers=4)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False,
                             worker_init_fn=worker_init_fn, drop_last=False, num_workers=4)
 
-    nb_class = len(train_dataset.classes)
+    nb_class = len(full_train_dataset.classes)
     sample_img, _ = train_dataset[0]
 
-    logger.info(f"Train size: {len(train_dataset)}, Val size: {len(val_dataset)}")
+    logger.info(f"Train size: {len(train_dataset)}, Val size: {len(val_dataset)}, Test size: {len(test_dataset)}")
     logger.info(f"# class: {nb_class}, shape {sample_img.shape}")
 
-    return train_loader, test_loader, nb_class, sample_img.shape
+    return train_loader, val_loader, test_loader, nb_class, sample_img.shape
