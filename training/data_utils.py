@@ -26,7 +26,7 @@ def load_and_split_data(config, worker_init_fn, batch_size=None):
     
     # Load dataset
     drop_last = config.get("drop_last", True)
-    if dataset == "mnist":
+    if dataset in ["mnist", "cifar"]:
         train_loader, test_loader, nb_class, image_shape = get_loaders(
             dataset=dataset,
             batch_size=batch_size,
@@ -57,6 +57,7 @@ def load_and_split_data(config, worker_init_fn, batch_size=None):
             resize=config["resize"],
             batch_size=batch_size,
             train_ratio=config["train_ratio"],
+            train_val_ratio=train_val_ratio,
             worker_init_fn=worker_init_fn,
             drop_last=drop_last
         )
@@ -92,7 +93,7 @@ def load_and_split_data(config, worker_init_fn, batch_size=None):
         )
     
     # Split train into train/val (only for datasets that don't return val_loader)
-    if dataset not in ['kthtips2b'] and not dataset.startswith('outex'):
+    if dataset not in ['kthtips2b', 'akash2sharma/tiny-imagenet'] and not dataset.startswith('outex'):
         train_loader, val_loader = split_train_val(
             train_loader.dataset,
             train_ratio=train_ratio,
