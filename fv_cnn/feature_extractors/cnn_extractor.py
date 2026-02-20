@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Sequence
 import torch
 import torch.nn as nn
 from torchvision import models, transforms
@@ -57,13 +57,28 @@ class MultiScaleCNNExtractor(BaseFeatureExtractor):
                  scales: Optional[List[float]] = None,
                  min_edge: int = 30,
                  max_sqrt_hw: int = 1024,
+                 preprocess_mode: str = "imagenet",
+                 matconvnet_mean: Optional[Sequence[float]] = None,
                  device: Optional[torch.device] = None):
         super().__init__()
         self.backbone = backbone
         self.feature_layer = feature_layer
-        self.scales = scales or [1.4142, 1.0, 0.7071, 0.5, 0.3536, 0.25, 0.1768, 0.125, 0.0884, 0.0625]
+        self.scales = scales or [
+            2.82842712,
+            2.0,
+            1.41421356,
+            1.0,
+            0.70710678,
+            0.5,
+            0.35355339,
+            0.25,
+            0.17677670,
+            0.125,
+        ]
         self.min_edge = min_edge
         self.max_sqrt_hw = max_sqrt_hw
+        self.preprocess_mode = preprocess_mode
+        self.matconvnet_mean = matconvnet_mean
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # backbone and feature extractor as buffers (not trainable)
@@ -78,12 +93,12 @@ class MultiScaleCNNExtractor(BaseFeatureExtractor):
         self.model.eval()
         self.feature_model.eval()
 
-        preprocess = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-        ])
         # store preprocessing as a buffer-like attribute (not a Parameter)
-        self.preprocess = preprocess
+        self.preprocess = build_preprocess(
+            resize=None,
+            mode=self.preprocess_mode,
+            matconvnet_mean=self.matconvnet_mean,
+        )
 
     @torch.no_grad()
     def extract(self, image: torch.Tensor | Image.Image, resize: Optional[int] = None) -> Dict[str, Any]:

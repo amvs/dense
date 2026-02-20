@@ -1,7 +1,7 @@
 import argparse
 import os
 from datetime import datetime
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 import joblib
 import numpy as np
@@ -12,10 +12,13 @@ from sklearn.svm import LinearSVC
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.decomposition import PCA
 import gc
+from fv_cnn.region_utils import get_region_crops, pool_region_codes
 
 from fv_cnn.feature_extractors import MultiScaleCNNExtractor
 from fv_cnn.encoders import FisherVectorEncoder
 from fv_cnn import FCFeatureExtractor
+from fv_cnn.descriptor_pca import LocalPCATransform
+from fv_cnn.gmm_utils import compute_matconvnet_mean, collect_descriptors, apply_local_pca
 from training.data_utils import load_and_split_data
 from dense.helpers import LoggerManager
 from training.experiment_utils import log_model_parameters
@@ -32,34 +35,18 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def collect_descriptors(train_loader: DataLoader, extractor: MultiScaleCNNExtractor) -> np.ndarray:
-    collected: List[np.ndarray] = []
-    extractor.eval()
-    # Resolve target device from extractor; fallback to CPU
-    if hasattr(extractor, "device"):
-        device = extractor.device
-    else:
-        try:
-            device = next(extractor.parameters()).device
-        except Exception:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    with torch.no_grad():
-        for idx, (images, _) in enumerate(train_loader):
-            images = images.to(device)
-            for i in range(images.size(0)):
-                img = images[i]
-                feats = extractor.extract(img)
-                for d in feats["descriptors"]:
-                    arr = d.detach().cpu().numpy()
-                    collected.append(arr)
-    if len(collected) == 0:
-        raise RuntimeError("No descriptors collected; check dataset/extractor.")
-    return np.concatenate(collected, axis=0)
 
 
-def encode_split(loader: DataLoader, extractor, encoder=None) -> Tuple[np.ndarray, np.ndarray]:
+def encode_split(
+    loader: DataLoader,
+    extractor,
+    encoder=None,
+    region_cfg: Optional[Dict[str, Any]] = None,
+    local_pca: Optional[LocalPCATransform] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
     codes: List[np.ndarray] = []
     labels: List[int] = []
+    region_cfg = region_cfg or {}
     extractor.eval()
     # Resolve target device from extractor; fallback to CPU
     if hasattr(extractor, "device"):
@@ -70,22 +57,54 @@ def encode_split(loader: DataLoader, extractor, encoder=None) -> Tuple[np.ndarra
         except Exception:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     with torch.no_grad():
-        for idx, (images, ys) in enumerate(loader):
+        for idx, batch in enumerate(loader):
+            if len(batch) == 2:
+                images, ys = batch
+                regions_batch = None
+            else:
+                images, ys, regions_batch = batch[0], batch[1], batch[2]
             images = images.to(device)
             ys = ys.to(device)
             bsz = images.size(0)
             for i in range(bsz):
                 img = images[i]
+                regions = None
+                if regions_batch is not None:
+                    regions = regions_batch[i]
                 if encoder is None:
                     # FC pathway
-                    feat = extractor.extract(img)["descriptor"].detach().cpu().numpy()
-                    codes.append(feat)
+                    if regions is None and (region_cfg.get("mode") or "none") == "none":
+                        feat = extractor.extract(img)["descriptor"].detach().cpu().numpy()
+                        codes.append(feat)
+                    else:
+                        crops = get_region_crops(img, regions, region_cfg)
+                        region_codes = []
+                        for crop in crops:
+                            feat = extractor.extract(crop)["descriptor"].detach().cpu().numpy()
+                            region_codes.append(feat)
+                        codes.append(pool_region_codes(region_codes, region_cfg.get("pooling", "mean")))
                 else:
-                    feats = extractor.extract(img)
-                    desc_list = [d.detach().cpu().numpy() for d in feats["descriptors"]]
-                    desc_concat = np.concatenate(desc_list, axis=0)
-                    code = encoder.encode(desc_concat)
-                    codes.append(code)
+                    if regions is None and (region_cfg.get("mode") or "none") == "none":
+                        feats = extractor.extract(img)
+                        desc_list = [d.detach().cpu().numpy() for d in feats["descriptors"]]
+                        desc_concat = np.concatenate(desc_list, axis=0)
+                        desc_concat = apply_local_pca(desc_concat, local_pca)
+                        code = encoder.encode(desc_concat)
+                        codes.append(code)
+                    else:
+                        crops = get_region_crops(img, regions, region_cfg)
+                        region_codes = []
+                        for crop in crops:
+                            feats = extractor.extract(crop)
+                            desc_list = [d.detach().cpu().numpy() for d in feats["descriptors"]]
+                            if len(desc_list) == 0:
+                                continue
+                            desc_concat = np.concatenate(desc_list, axis=0)
+                            desc_concat = apply_local_pca(desc_concat, local_pca)
+                            region_codes.append(encoder.encode(desc_concat))
+                        if len(region_codes) == 0:
+                            raise RuntimeError("No descriptors extracted for any region.")
+                        codes.append(pool_region_codes(region_codes, region_cfg.get("pooling", "mean")))
                 labels.append(int(ys[i]))
     return np.stack(codes, axis=0), np.array(labels)
 
@@ -172,6 +191,22 @@ def train_and_eval(cfg: Dict[str, Any], logger) -> None:
     train_loader, val_loader, test_loader, nb_class, img_shape = load_and_split_data(cfg, worker_init_fn=worker_init_fn)
     logger.log(f"Dataset has {nb_class} classes")
     
+    preprocess_mode = cfg.get("preprocess_mode", "imagenet")
+    matconvnet_mean = cfg.get("matconvnet_mean")
+    if preprocess_mode == "matconvnet":
+        if matconvnet_mean is None or str(matconvnet_mean).lower() == "auto":
+            logger.log("Computing matconvnet_mean from training data...")
+            matconvnet_mean = compute_matconvnet_mean(train_loader, logger=logger)
+            cfg["matconvnet_mean"] = matconvnet_mean
+    region_cfg = {
+        "mode": cfg.get("region_mode", "none"),
+        "size": cfg.get("region_size", 128),
+        "stride": cfg.get("region_stride", 64),
+        "border": cfg.get("region_border", 0.0),
+        "pooling": cfg.get("region_pooling", "mean"),
+    }
+    local_pca = None
+
     if framework == "fvcnn":
         extractor = MultiScaleCNNExtractor(
             backbone=backbone,
@@ -179,6 +214,8 @@ def train_and_eval(cfg: Dict[str, Any], logger) -> None:
             scales=cfg.get("scales"),
             min_edge=cfg.get("min_edge", 30),
             max_sqrt_hw=cfg.get("max_sqrt_hw", 1024),
+            preprocess_mode=preprocess_mode,
+            matconvnet_mean=matconvnet_mean,
         )
         encoder_type = cfg.get("encoder_type", "fv")
         if encoder_type != "fv":
@@ -188,13 +225,105 @@ def train_and_eval(cfg: Dict[str, Any], logger) -> None:
             signed_sqrt_postprocess=cfg.get("signed_sqrt", True),
             l2_postprocess=cfg.get("l2_normalize", True),
             random_state=cfg.get("seed", 42),
+            gmm_n_init=cfg.get("gmm_n_init", 10),
         )
-        logger.log("Collecting all descriptors for GMM fitting...")
-        desc = collect_descriptors(train_loader, extractor)
-        logger.log(f"Collected {desc.shape[0]} descriptors of dimension {desc.shape[1]}")
+        reservoir_size = cfg.get("gmm_reservoir_size")
+        max_desc_per_image = cfg.get("gmm_max_desc_per_image")
+        memmap_path = cfg.get("gmm_memmap_path")
+        memmap_size = cfg.get("gmm_memmap_size")
+        memmap_cleanup = cfg.get("gmm_memmap_cleanup", True)
+        if memmap_path is not None and str(memmap_path).lower() == "auto":
+            memmap_path = os.path.join(cfg.get("exp_dir", "."), "gmm_descriptors.memmap")
+        if reservoir_size is not None:
+            reservoir_size = int(reservoir_size)
+            if reservoir_size <= 0:
+                reservoir_size = None
+        if max_desc_per_image is not None:
+            max_desc_per_image = int(max_desc_per_image)
+            if max_desc_per_image <= 0:
+                max_desc_per_image = None
+        if memmap_size is not None:
+            memmap_size = int(memmap_size)
+            if memmap_size <= 0:
+                memmap_size = None
+        local_pca_dim = cfg.get("local_pca_dim")
+        local_whitening = bool(cfg.get("local_whitening", False))
+        local_whitening_regul = float(cfg.get("local_whitening_regul", 0.0))
+        local_pca = None
+        if local_pca_dim is not None or local_whitening:
+            local_pca_fit_samples = cfg.get("local_pca_fit_samples")
+            if local_pca_fit_samples is None:
+                local_pca_fit_samples = reservoir_size or memmap_size or 200000
+            local_pca_fit_samples = int(local_pca_fit_samples)
+            if local_pca_fit_samples <= 0:
+                local_pca_fit_samples = reservoir_size or memmap_size or 200000
+            logger.log(f"Collecting {local_pca_fit_samples} descriptors for local PCA fit...")
+            pca_desc, _ = collect_descriptors(
+                train_loader,
+                extractor,
+                reservoir_size=local_pca_fit_samples,
+                seed=cfg.get("seed", 42),
+                region_cfg=region_cfg,
+                max_per_image=max_desc_per_image,
+            )
+            if local_pca_dim is None:
+                local_pca_dim = pca_desc.shape[1]
+            local_pca = LocalPCATransform(
+                num_components=int(local_pca_dim),
+                whitening=local_whitening,
+                whitening_regul=local_whitening_regul,
+                random_state=cfg.get("seed", 42),
+            )
+            logger.log(
+                f"Fitting local PCA: dim={local_pca_dim} whitening={local_whitening} regul={local_whitening_regul}"
+            )
+            local_pca.fit(pca_desc)
+            logger.log("Local PCA fitted")
+        if reservoir_size is None and memmap_size is None:
+            logger.log("Collecting all descriptors for GMM fitting...")
+        else:
+            target_size = reservoir_size if reservoir_size is not None else memmap_size
+            logger.log(f"Collecting descriptors with sample size {target_size} for GMM fitting...")
+        if memmap_path is not None:
+            logger.log(f"Using memmap cache at {memmap_path}")
+        desc, total_seen = collect_descriptors(
+            train_loader,
+            extractor,
+            reservoir_size=reservoir_size,
+            seed=cfg.get("seed", 42),
+            region_cfg=region_cfg,
+            max_per_image=max_desc_per_image,
+            memmap_path=memmap_path,
+            memmap_size=memmap_size,
+            local_pca=local_pca,
+        )
+        percent_used = 0.0
+        if total_seen > 0:
+            percent_used = 100.0 * (desc.shape[0] / total_seen)
+        logger.info(
+            "Collected %d descriptors; using %d (%.2f%%) of dimension %d for GMM fit",
+            total_seen,
+            desc.shape[0],
+            percent_used,
+            desc.shape[1],
+        )
         encoder.fit(desc)
+        if memmap_path is not None and bool(memmap_cleanup):
+            try:
+                if isinstance(desc, np.memmap):
+                    desc.flush()
+                os.remove(memmap_path)
+                logger.log(f"Removed GMM memmap at {memmap_path}")
+            except FileNotFoundError:
+                logger.log(f"GMM memmap not found for cleanup: {memmap_path}")
         logger.log("GMM fitted")
-        train_codes, train_labels = encode_split(train_loader, extractor, encoder)
+        train_codes, train_labels = encode_split(
+            train_loader,
+            extractor,
+            encoder,
+            region_cfg=region_cfg,
+            local_pca=local_pca,
+        )
         logger.log(f"Encoded training set: {train_codes.shape}")
         
         # Apply PCA reduction if specified
@@ -208,9 +337,14 @@ def train_and_eval(cfg: Dict[str, Any], logger) -> None:
         
         nb_moments = train_codes.shape[1]
     elif framework == "fccnn":
-        extractor = FCFeatureExtractor(backbone=backbone, fc_layer=feature_layer)
+        extractor = FCFeatureExtractor(
+            backbone=backbone,
+            fc_layer=feature_layer,
+            preprocess_mode=preprocess_mode,
+            matconvnet_mean=matconvnet_mean,
+        )
         encoder = None
-        train_codes, train_labels = encode_split(train_loader, extractor, None)
+        train_codes, train_labels = encode_split(train_loader, extractor, None, region_cfg=region_cfg)
         nb_moments = train_codes.shape[1]
     else:
         raise ValueError(f"Unsupported framework {framework}")
@@ -253,17 +387,28 @@ def train_and_eval(cfg: Dict[str, Any], logger) -> None:
     gc.collect()
 
     # Validation encoding and eval
-    val_codes, val_labels = encode_split(val_loader, extractor, encoder if framework == "fvcnn" else None)
+    val_codes, val_labels = encode_split(
+        val_loader,
+        extractor,
+        encoder if framework == "fvcnn" else None,
+        region_cfg=region_cfg,
+        local_pca=local_pca if framework == "fvcnn" else None,
+    )
     logger.log(f"Encoded validation set: {val_codes.shape}")
     if pca_model is not None:
         val_codes = pca_model.transform(val_codes)
-    breakpoint()
     val_acc = clf.score(val_codes, val_labels)
     del val_codes, val_labels
     gc.collect()
 
     # Test encoding and eval
-    test_codes, test_labels = encode_split(test_loader, extractor, encoder if framework == "fvcnn" else None)
+    test_codes, test_labels = encode_split(
+        test_loader,
+        extractor,
+        encoder if framework == "fvcnn" else None,
+        region_cfg=region_cfg,
+        local_pca=local_pca if framework == "fvcnn" else None,
+    )
     logger.log(f"Encoded test set: {test_codes.shape}")
     if pca_model is not None:
         test_codes = pca_model.transform(test_codes)

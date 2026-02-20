@@ -1,10 +1,11 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Sequence
 import torch
 import torch.nn as nn
 from torchvision import models, transforms
 from PIL import Image
 
 from .base_extractor import BaseFeatureExtractor
+from .utils import build_preprocess
 
 
 def _load_backbone(name: str, pretrained: bool = True) -> nn.Module:
@@ -49,10 +50,14 @@ class FCFeatureExtractor(BaseFeatureExtractor):
     def __init__(self,
                  backbone: str = "vgg16",
                  fc_layer: str = "fc7",
+                 preprocess_mode: str = "imagenet",
+                 matconvnet_mean: Optional[Sequence[float]] = None,
                  device: Optional[torch.device] = None):
         super().__init__()
         self.backbone = backbone
         self.fc_layer = fc_layer
+        self.preprocess_mode = preprocess_mode
+        self.matconvnet_mean = matconvnet_mean
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model = _load_backbone(backbone)
         fc_model = _fc_module(model, backbone, fc_layer)
@@ -64,11 +69,11 @@ class FCFeatureExtractor(BaseFeatureExtractor):
         self.fc_model = fc_model.to(self.device)
         self.model.eval()
         self.fc_model.eval()
-        self.preprocess = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-        ])
+        self.preprocess = build_preprocess(
+            resize=224,
+            mode=self.preprocess_mode,
+            matconvnet_mean=self.matconvnet_mean,
+        )
 
     @torch.no_grad()
     def extract(self, image: torch.Tensor | Image.Image, resize: Optional[int] = None) -> Dict[str, Any]:
