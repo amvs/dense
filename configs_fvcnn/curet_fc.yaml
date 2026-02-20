@@ -15,15 +15,35 @@ framework: fccnn
 backbone: vgg11
 feature_layer: fc7
 
+# preprocessing
+preprocess_mode: imagenet
+matconvnet_mean: auto # [123.68, 116.779, 103.939]
+
+# region handling
+region_mode: none
+region_size: 128
+region_stride: 64
+region_border: 0.0
+region_pooling: mean
+
 # multi-scale
 # scales = 2 ** s, where s = [-3, -2.5, -2, ... 1.5]
-scales: [0.125, 0.17677670, 0.25, 0.35355339, 0.5, 0.70710678, 1., 1.41421356, 2., 2.82842712]
+scales: [2.82842712, 2.0, 1.41421356, 1.0, 0.70710678, 0.5, 0.35355339, 0.25, 0.17677670, 0.125]
 min_edge: 30
 max_sqrt_hw: 1024
 
 # IFV encoder
 encoder_type: none
 gmm_components: 64
+gmm_reservoir_size: 200000
+gmm_max_desc_per_image: null
+gmm_memmap_path: null
+gmm_memmap_size: null
+gmm_memmap_cleanup: true
+local_pca_dim: null
+local_whitening: false
+local_whitening_regul: 0.0
+local_pca_fit_samples: 200000
 pca_dim: null
 signed_sqrt: true
 l2_normalize: true

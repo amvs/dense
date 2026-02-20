@@ -2,6 +2,7 @@
 # It uses the base configuration from mnist.yaml and overrides specific parameters for the sweep
 base_config: configs_fvcnn/curet.yaml
 sweep:
+  gmm_memmap_size: [ 5.0e+6, 3.0e+6, 1.0e+6, 1.0e+5]
   backbone: [vgg11, vgg19, alexnet]
   train_ratio: [0.05, 0.1, 0.5, 0.85]
-
+  

@@ -18,14 +18,34 @@ backbone: vgg16            # alexnet | resnet50 | vgg16
 feature_layer: conv5_3     # conv5_3 (VGG-16), conv5 (AlexNet), layer4 (ResNet50)
 # for FC-CNN set feature_layer to: fc7 (AlexNet/VGG), avgpool (ResNet50)
 
+# preprocessing
+preprocess_mode: imagenet
+matconvnet_mean: auto # [123.68, 116.779, 103.939]
+
+# region handling
+region_mode: none
+region_size: 128
+region_stride: 64
+region_border: 0.0
+region_pooling: mean
+
 # multi-scale settings (Cimpoi-style)
-scales: [1.4142, 1.0, 0.7071, 0.5, 0.3536, 0.25, 0.1768, 0.125, 0.0884, 0.0625]
+scales: [2.82842712, 2.0, 1.41421356, 1.0, 0.70710678, 0.5, 0.35355339, 0.25, 0.17677670, 0.125]
 min_edge: 30
 max_sqrt_hw: 1024
 
 # IFV encoder settings
 encoder_type: fv           # fv only for this framework
 gmm_components: 64         # K
+gmm_reservoir_size: 200000
+gmm_max_desc_per_image: null
+gmm_memmap_path: null
+gmm_memmap_size: null
+gmm_memmap_cleanup: true
+local_pca_dim: null
+local_whitening: false
+local_whitening_regul: 0.0
+local_pca_fit_samples: 200000
 pca_dim: null              # optional PCA dims (null => no PCA)
 signed_sqrt: true
 l2_normalize: true
