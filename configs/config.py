@@ -3,6 +3,16 @@ import yaml
 from dense.helpers import LoggerManager
 import numpy as np
 
+def expand_env_vars(obj):
+    """Recursively expand environment variables in config values."""
+    if isinstance(obj, dict):
+        return {k: expand_env_vars(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [expand_env_vars(v) for v in obj]
+    elif isinstance(obj, str):
+        return os.path.expandvars(obj)
+    return obj
+
 def expand_param(val):
     """
     If val is a dict with start/stop/step -> create a list via range
@@ -33,6 +43,9 @@ def load_config(filename: str):
 
     if not isinstance(config, dict):
         raise ValueError(f"Config file {filename} must define a dictionary at top-level.")
+    
+    # Expand environment variables in config
+    config = expand_env_vars(config)
     # logger = LoggerManager.get_logger()
     # logger.info(f"Loading config file {filename}")
     return config
