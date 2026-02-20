@@ -19,8 +19,8 @@ mask_union_highpass: true
 downsample: true
 wavelet_params:
   S: 15
-  T: 8
-  w0: 2.7646
+  sigma: 1.4
+  xi: 1.57 # xi: 2.356 # xi: 1.57 # xi: 0.75 * pi 
 # For hybrid mode, control signal downsampling per scale. Default: [j//2 for j in range(J)]
 # Example: [0, 1, 2] means scales 0,1,2 get 2^0, 2^1, 2^2 signal downsampling
 downsample_splits: null

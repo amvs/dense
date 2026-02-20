@@ -7,6 +7,6 @@ sweep:
   share_scale_pairs: [true, false]
   delta_j: [null, 1]
   wavelet_params:
-    - {S: 15, w0: 2.7646}  # 0.88 * pi
-    - {S: 7, w0: 1.0995}   # 0.88 * pi
+    - {S: 15, sigma: 1.4, xi: 1.57}
+    - {S: 7, sigma: 1., xi: 2.356}
   lr_conv: [1.0e-5, 1.0e-6, 1.0e-7]
