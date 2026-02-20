@@ -29,10 +29,8 @@ class FisherVectorEncoder(BaseEncoder):
         signed_sqrt_postprocess: bool = True,
         l2_postprocess: bool = True,
         random_state: int = 42,
-        gmm_batch_size: Optional[int] = None,
-        gmm_log_every_n_steps: int = 1000,
-        gmm_enable_progress_bar: bool = True,
         device: Optional[torch.device] = None,
+        gmm_n_init: int = 10,
     ) -> None:
         super().__init__()
         self.num_components = num_components
@@ -40,6 +38,7 @@ class FisherVectorEncoder(BaseEncoder):
         self.l2_postprocess = l2_postprocess
         self.random_state = random_state
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.gmm_n_init = gmm_n_init
 
         # fitted parameters (torch tensors)
         self.register_buffer("gmm_weights", None)
@@ -54,22 +53,18 @@ class FisherVectorEncoder(BaseEncoder):
         else:
             X = descriptors
 
-        # Fit sklearn GMM with progress output
+        # Fit sklearn GMM once on the provided descriptors
         gmm = GaussianMixture(
             n_components=self.num_components,
             covariance_type="diag",
             random_state=self.random_state,
             verbose=2,  # Print progress information
             verbose_interval=10,  # Print every 10 iterations
-            warm_start=True,
+            n_init=self.gmm_n_init,
+            init_params='kmeans'
+
         )
-        chunk_size = 100000
-        for i in range(0, X.shape[0], chunk_size):
-            logger.info("Fitting GMM: processing samples %d to %d", i, min(i + chunk_size, X.shape[0]))
-            end = min(i + chunk_size, X.shape[0])
-            gmm.fit(X[i:end])
-        # Final fit to ensure convergence
-        # gmm.fit(X)
+        gmm.fit(X)
 
         # Extract fitted parameters and convert to torch tensors
         weights = torch.from_numpy(gmm.weights_).float().to(self.device)
