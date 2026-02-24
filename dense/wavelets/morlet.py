@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-import logging
+from dense.helpers import logger
 
 def gaussian_2d(x, y, sigma):
     """
@@ -47,9 +47,10 @@ def filter_bank_safe(S, L, sigma, xi=np.pi*3/4):
     y = np.linspace(-range_val, range_val, S)
     grid = np.meshgrid(x, y)
     
+    logger = logging.LoggerManager.get_logger()
     # Safety Checks
     if S < 4 * sigma:
-        logging.warning(f"S={S} is too small for sigma={sigma:.2f} (Truncation)")
+        logger.warning(f"S={S} is too small for sigma={sigma:.2f} (Truncation)")
 
     filters = []
     for orient in range(L):
@@ -79,21 +80,22 @@ def morlet(max_scale, nb_orients, S=7, sigma=1.0, xi=np.pi*3/4, T=None, w0=None)
     current_S = S
     current_sigma = sigma
     current_xi = xi
+    logger = logging.LoggerManager.get_logger()
 
     # Backwards compatibility for legacy parameters
     if w0 is not None:
         # Only override xi when caller did not explicitly change it from its default
         if xi == np.pi * 3 / 4:
-            logging.warning("`w0` is deprecated; please use `xi` instead. Treating `w0` as an alias for `xi`.")
+            logger.warning("`w0` is deprecated; please use `xi` instead. Treating `w0` as an alias for `xi`.")
             current_xi = w0
         else:
-            logging.warning("Both `xi` and legacy `w0` were provided; ignoring `w0` in favor of `xi`.")
+            logger.warning("Both `xi` and legacy `w0` were provided; ignoring `w0` in favor of `xi`.")
     if T is not None:
-        logging.warning("`T` is deprecated and ignored; temporal support is now controlled by `sigma` and scale.")
+        logger.warning("`T` is deprecated and ignored; temporal support is now controlled by `sigma` and scale.")
     
     for j in range(max_scale):
         # Create bank for this scale
-        print(f"Scale {j}: S={current_S}, Sigma={current_sigma:.2f}, Freq={current_xi:.2f}")
+        logger.info(f"Scale {j}: S={current_S}, Sigma={current_sigma:.2f}, Freq={current_xi:.2f}")
         
         f_bank = filter_bank_safe(S=current_S, L=nb_orients, sigma=current_sigma, xi=current_xi)
         filters.append(f_bank)

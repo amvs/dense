@@ -8,9 +8,6 @@ from torch import nn
 from wph.layers.utils import periodic_rotate
 import warnings
 
-from scripts.visualize import colorize 
-
-
 class WaveConvLayerHybrid(nn.Module):
     """
     Hybrid wavelet convolution layer mixing signal downsampling and filter upsampling.

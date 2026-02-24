@@ -59,13 +59,13 @@ class TestFilterInitialization:
             downsample_splits=[0, 0]  # all no downsampling
         )
         # j=0: up_factor = 2^(0 - 0) = 1, no upsampling
-        # j=1: up_factor = 2^(1 - 0) = 2, upsampling by 2x → (1, 4, 1, 14, 14)
-        assert layer.upsampled_real[0] is None
-        assert layer.upsampled_imag[0] is None
-        assert layer.upsampled_real[1] is not None
-        assert layer.upsampled_real[1].shape == (1, 4, 1, 14, 14)
-        assert layer.upsampled_imag[1] is not None
-        assert layer.upsampled_imag[1].shape == (1, 4, 1, 14, 14)
+        # j=1: up_factor = 2^(1 - 0) = 2, upsampling by 2x → (1, 4, 1, 13, 13)
+        assert layer.upsampled_real[0].numel() == 0  # no upsampling, so should be empty
+        assert layer.upsampled_imag[0].numel() == 0
+        assert layer.upsampled_real[1].numel() > 0
+        assert layer.upsampled_real[1].shape == (1, 4, 1, 13, 13)
+        assert layer.upsampled_imag[1].numel() > 0
+        assert layer.upsampled_imag[1].shape == (1, 4, 1, 13, 13)
 
     def test_upsampled_filter_shapes_with_downsample(self):
         """With some downsampling, up_factor = 2^(j - downsample_splits[j])"""
@@ -76,11 +76,11 @@ class TestFilterInitialization:
         # j=0: up_factor = 2^(0 - 0) = 1, no upsampling
         # j=1: up_factor = 2^(1 - 0) = 2, upsampling by 2x
         # j=2: up_factor = 2^(2 - 0) = 4, upsampling by 4x
-        assert layer.upsampled_real[0] is None
-        assert layer.upsampled_real[1] is not None
-        assert layer.upsampled_real[1].shape == (1, 4, 1, 14, 14)
-        assert layer.upsampled_real[2] is not None
-        assert layer.upsampled_real[2].shape == (1, 4, 1, 28, 28)
+        assert layer.upsampled_real[0].numel() == 0
+        assert layer.upsampled_real[1].numel() > 0
+        assert layer.upsampled_real[1].shape == (1, 4, 1, 13, 13)
+        assert layer.upsampled_real[2].numel() > 0
+        assert layer.upsampled_real[2].shape == (1, 4, 1, 25, 25)
 
     def test_upsampled_filter_shapes_actual_multi_scale(self):
         """Test upsampling with different parameters"""
@@ -91,11 +91,11 @@ class TestFilterInitialization:
         # j=0: up_factor = 2^(0 - 0) = 1, no upsampling
         # j=1: up_factor = 2^(1 - 0) = 2, upsampling by 2x
         # j=2: up_factor = 2^(2 - 1) = 2, upsampling by 2x
-        assert layer.upsampled_real[0] is None
-        assert layer.upsampled_real[1] is not None
-        assert layer.upsampled_real[1].shape == (1, 4, 1, 8, 8)
-        assert layer.upsampled_real[2] is not None
-        assert layer.upsampled_real[2].shape == (1, 4, 1, 8, 8)
+        assert layer.upsampled_real[0].numel() == 0
+        assert layer.upsampled_real[1].numel() > 0
+        assert layer.upsampled_real[1].shape == (1, 4, 1, 7, 7)
+        assert layer.upsampled_real[2].numel() > 0
+        assert layer.upsampled_real[2].shape == (1, 4, 1, 7, 7)
 
     def test_nearest_neighbor_initialization(self):
         """Verify upsampled filters are consistent with Fourier zero-padding"""
@@ -377,8 +377,8 @@ class TestGradientFlow:
         loss = output[0].real.sum()
         loss.backward()
         
-        assert layer.base_real.grad is not None
-        assert layer.base_imag.grad is not None
+        assert layer.base_real.grad.numel() > 0
+        assert layer.base_imag.grad.numel() > 0
 
     def test_gradients_flow_through_upsampled_filters(self):
         layer = WaveConvLayerHybrid(
@@ -392,6 +392,6 @@ class TestGradientFlow:
         loss = output[1].real.sum()
         loss.backward()
         
-        if layer.upsampled_real[1] is not None:
-            assert layer.upsampled_real[1].grad is not None
-            assert layer.upsampled_imag[1].grad is not None
+        if layer.upsampled_real[1].numel() > 0:
+            assert layer.upsampled_real[1].grad.numel() > 0
+            assert layer.upsampled_imag[1].grad.numel() > 0
