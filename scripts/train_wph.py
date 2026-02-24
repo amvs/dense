@@ -208,11 +208,11 @@ def main():
     if model_type == "wph":
         classifier = LinearClassifier(
             input_dim=nb_moments,
-            num_classes=config["num_classes"],
+            num_classes=nb_class,
         )
     elif model_type == "wph_hypernetwork":
         classifier = HyperNetworkClassifier(
-            num_classes=config["num_classes"],
+            num_classes=nb_class,
             metadata_dim=config.get("metadata_dim", 10),
             hidden_dim=config.get("hidden_dim", 128)
         )

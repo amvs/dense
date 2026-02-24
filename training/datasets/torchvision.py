@@ -246,15 +246,15 @@ def get_torchvision_loaders(
     return train_loader, test_loader, nb_class, sample_img.shape
 
 
-def get_cifar_loaders(batch_size=64, train_ratio=0.8, worker_init_fn=None, drop_last=True):
+def get_cifar_loaders(batch_size=64, train_ratio=0.8, worker_init_fn=None, drop_last=True, **kwargs):
     return get_torchvision_loaders(
         datasets.CIFAR10,
         dataset_name="cifar10",
         root="data",
-        resize=None,
         batch_size=batch_size,
         train_ratio=train_ratio,
         worker_init_fn=worker_init_fn,
         drop_last=drop_last,
         download=True,
+        **kwargs
     )
