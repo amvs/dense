@@ -49,7 +49,7 @@ def filter_bank_safe(S, L, sigma, xi=np.pi*3/4):
     
     # Safety Checks
     if S < 4 * sigma:
-        print(f"Warning: S={S} is too small for sigma={sigma:.2f} (Truncation)")
+        logging.warning(f"S={S} is too small for sigma={sigma:.2f} (Truncation)")
 
     filters = []
     for orient in range(L):
