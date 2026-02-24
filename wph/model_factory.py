@@ -119,11 +119,18 @@ def construct_filters_downsample(config, image_shape):
     else:
         logger.info(f"Generating filters with base wavelet: {config.get('wavelet', 'morlet')}")
         filters = {}
+        # Filter out invalid wavelet parameters
+        wavelet_params = dict(config.get("wavelet_params", {}))
+        # Remove parameters that morlet doesn't accept
+        invalid_params = {'w0', 'T'}  # T is handled separately
+        for param in invalid_params:
+            wavelet_params.pop(param, None)
+        
         filters['psi'] = filter_bank(
             wavelet_name=config.get("wavelet", "morlet"),
             max_scale=1,
             nb_orients=nb_orients,
-            **config.get("wavelet_params", {})
+            **wavelet_params
         )[0]  # Get first scale
         filter_dir = os.path.join(os.path.dirname(__file__), "../filters")
         hatphi_path = os.path.join(filter_dir, f"morlet_lp_N{image_shape[1]}_J1_L{nb_orients}.pt")

@@ -196,7 +196,7 @@ def get_tinyimagenet_loaders(root_dir, resize=64, batch_size=64, train_ratio=0.8
     batch_size : int
         Batch size for DataLoader
     train_ratio : float
-        Ratio of data used for training+validation (from original train split)
+        Fraction of the original train split to use for train+val
     train_val_ratio : int
         Ratio between train and val sets (default 4:1)
     worker_init_fn : callable
@@ -233,21 +233,22 @@ def get_tinyimagenet_loaders(root_dir, resize=64, batch_size=64, train_ratio=0.8
 
     logger.info(f"Dataset loaded. Full train: {len(full_train_dataset)}, Test (val): {len(test_dataset)}")
 
-    # Split the original train into train and val using stratified split
-    train_len = int(len(full_train_dataset) * train_ratio)
-    val_len = train_len // train_val_ratio
-    used_len = train_len + val_len
-    
-    if used_len > len(full_train_dataset):
-        val_len = len(full_train_dataset) - train_len
-        used_len = len(full_train_dataset)
-    
-    # First split: get the used portion
-    used_dataset, _ = stratify_split(
-        full_train_dataset, train_size=used_len, seed=42
-    )
-    
-    # Second split: split used portion into train and val
+    # Split the original train into train and val using stratified splits
+    total_len = len(full_train_dataset)
+    used_len = int(total_len * train_ratio)
+    used_len = min(used_len, total_len)
+    if used_len < 2:
+        raise ValueError("train_ratio results in too few samples to split.")
+
+    if used_len == total_len:
+        used_dataset = full_train_dataset
+    else:
+        used_dataset, _ = stratify_split(
+            full_train_dataset, train_size=used_len, seed=42
+        )
+
+    train_len = int(used_len * train_val_ratio / (train_val_ratio + 1))
+    train_len = min(train_len, used_len - 1)
     train_dataset, val_dataset = stratify_split(
         used_dataset, train_size=train_len, seed=43
     )

@@ -123,6 +123,8 @@ def train_model(model, train_loader, val_loader, optimizer, scheduler, criterion
         
         # Add L2 norms if in feature extractor phase
         l2_norm = 0.0
+        l2_norm_fe = 0.0
+        l2_norm_classifier = 0.0
         if phase == 'feature_extractor' and original_fe_params is not None:
             current_fe_params = list(model.feature_extractors.parameters())
             l2_norm_fe = sum((p - o).norm().item() for p, o in zip(current_fe_params, original_fe_params))
