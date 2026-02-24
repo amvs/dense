@@ -407,7 +407,7 @@ class WPHModelDownsample(WPHFeatureBase):
             xpsi = self.wave_conv(x)
             xpsi = self._apply_spatial_attn(xpsi)
             xrelu = self.relu_center(xpsi)
-            xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size)
+            xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size, use_checkpoint=self.grad_checkpoint)
         else:
             # compute only required pairs
             # warm up indices by accessing property (built in __init__)

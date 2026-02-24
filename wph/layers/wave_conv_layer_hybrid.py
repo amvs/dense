@@ -267,7 +267,7 @@ class WaveConvLayerHybrid(nn.Module):
         return filters * phase_shift
 
     def get_full_filters(self, j: int) -> torch.Tensor:
-        if self.filters_cached and j in self.cache_full_filters:
+        if self.filters_cached and not torch.is_grad_enabled() and j in self.cache_full_filters:
             return self.cache_full_filters[j]
 
         up_pow = (j - self.downsample_splits[j])
@@ -310,7 +310,7 @@ class WaveConvLayerHybrid(nn.Module):
         # Reshape for grouped conv: (param_J_effective, L*A, 1, T_j, T_j)
         filters = filters.reshape(filters.shape[0], self.L * self.A, 1, T_j, T_j)
 
-        if not torch.jit.is_scripting():
+        if not torch.jit.is_scripting() and not torch.is_grad_enabled():
             self.cache_full_filters[j] = filters
             self.filters_cached = True
         return filters
