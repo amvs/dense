@@ -61,15 +61,15 @@ def example_basic_usage():
     x = torch.randn(batch_size, 1, M, N)
     output = model(x)
     
-    # Output structure
-    print(f"Output keys: {output.keys()}")
-    # 'coeffs_psi': list of complex tensors, one per scale
-    # 'coeffs_phi': lowpass coefficients
+    # Output structure (default: flattened concatenated coefficients)
+    print(f"Output type: {type(output)}")
+    print(f"Output shape: {output.shape}")
     
-    coeffs = output['coeffs_psi']
-    print(f"Number of scales: {len(coeffs)}")
-    for j, coeff in enumerate(coeffs):
-        print(f"  Scale {j}: {coeff.shape} (spatial size {coeff.shape[2:]})")
+    # If you want access to the unflattened components, call with flatten=False:
+    # xcorr, xlow, xhigh = model(x, flatten=False)
+    # print(f"xcorr shape: {xcorr.shape}")
+    # print(f"xlow shape: {xlow.shape}")
+    # print(f"xhigh shape: {xhigh.shape}")
 
 
 def example_custom_downsample_splits():
