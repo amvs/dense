@@ -19,7 +19,8 @@ Loaders = [
     "outex12",
     "jmexpert/describable-textures-dataset-dtd",
     "akash2sharma/tiny-imagenet",
-    "cifar"
+    "cifar",
+    "imbikramsaha/caltech-101"
 ]
 
 
