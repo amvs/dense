@@ -1,0 +1,7 @@
+# This is a sweep config file for hyperparameter tuning on MNIST dataset
+# It uses the base configuration from mnist.yaml and overrides specific parameters for the sweep
+base_config: configs_fvcnn/outex10.yaml
+sweep:
+  backbone: [vgg11, vgg19, alexnet]
+  train_ratio: [0.1, 0.5, 0.85, 1.0]
+

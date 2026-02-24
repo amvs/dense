@@ -18,5 +18,7 @@ sweep:
   wavelet_params:
     {S: 7, sigma: 1., xi: 2.356} # S: 5, sigma: 1.4, xi: 2.356 # S: 7, sigma: 1.4, xi: 1.57 # S: 7, sigma: 1.4, xi: 0.75 * pi
   freeze_classifier: [false]
-  random_filters: [false, true]
+  random_filters: [false]
+  hidden_dim: [512, 1024]
+  metadata_dim: [2, 4, 6]
 
