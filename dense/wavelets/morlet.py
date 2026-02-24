@@ -65,16 +65,31 @@ def filter_bank_safe(S, L, sigma, xi=np.pi*3/4):
         
     return torch.cat(filters, dim=0)
 
-def morlet(max_scale, nb_orients, S=7, sigma=1.0, xi=np.pi*3/4):
+def morlet(max_scale, nb_orients, S=7, sigma=1.0, xi=np.pi*3/4, T=None, w0=None):
     """
     Creates a multi-scale filter bank.
     Correctly dilates sigma and xi for each scale j.
+
+    Backwards compatibility:
+    - Accepts legacy `w0` as an alias for `xi`.
+    - Accepts legacy `T` but ignores it (behavior now controlled by `sigma` and scale).
     """
     filters = []
     
     current_S = S
     current_sigma = sigma
     current_xi = xi
+
+    # Backwards compatibility for legacy parameters
+    if w0 is not None:
+        # Only override xi when caller did not explicitly change it from its default
+        if xi == np.pi * 3 / 4:
+            logging.warning("`w0` is deprecated; please use `xi` instead. Treating `w0` as an alias for `xi`.")
+            current_xi = w0
+        else:
+            logging.warning("Both `xi` and legacy `w0` were provided; ignoring `w0` in favor of `xi`.")
+    if T is not None:
+        logging.warning("`T` is deprecated and ignored; temporal support is now controlled by `sigma` and scale.")
     
     for j in range(max_scale):
         # Create bank for this scale
