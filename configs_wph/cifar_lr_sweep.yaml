@@ -1,0 +1,14 @@
+# This is a sweep config file for hyperparameter tuning on cifar dataset
+# It uses the base configuration from cifar.yaml and overrides specific parameters for the sweep
+base_config: configs_wph/cifar.yaml
+sweep:
+  downsample: [true]
+  train_ratio: [0.5]
+  share_scale_pairs: [true]
+  delta_j: [null]
+  max_scale: [2,3]
+  wavelet_params:
+    - {S: 15, sigma: 1.4, xi: 1.57}
+    - {S: 11, sigma: 1.2, xi: 1.57}
+    - {S: 7, sigma: 1., xi: 2.356}
+  lr_conv: [1.0e-6, 1.0e-7]

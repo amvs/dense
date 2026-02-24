@@ -65,7 +65,7 @@ def main():
                                                 train_ratio=1-test_ratio)
     else: # only kaggle dataset needs deeper path and resize
         resize = config["resize"]
-        deeper_path = config["deeper_path"]
+        deeper_path = config.get("deeper_path", '')
         train_loader, test_loader, nb_class, image_shape = get_loaders(dataset=dataset, 
                                                 resize=resize,
                                                 deeper_path=deeper_path,

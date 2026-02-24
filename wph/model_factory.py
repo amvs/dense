@@ -4,7 +4,7 @@ Used by train_wph.py and train_wph_svm.py.
 """
 import os
 import torch
-from wph.wph_model import WPHModel, WPHModelDownsample
+from wph.wph_model import WPHModel, WPHModelDownsample, WPHModelHybrid
 from dense.helpers import LoggerManager
 
 
@@ -92,7 +92,7 @@ def construct_filters_downsample(config, image_shape):
     share_rotations = config.get("share_rotations", False)
     share_channels = config.get("share_channels", True)
     share_phases = config.get("share_phases", False)
-    share_scales = config.get("share_scales", True)
+    share_scales = config.get("share_scales", False)
     share_scale_pairs = config.get("share_scale_pairs", True)
     num_channels = image_shape[0]
 
@@ -119,11 +119,18 @@ def construct_filters_downsample(config, image_shape):
     else:
         logger.info(f"Generating filters with base wavelet: {config.get('wavelet', 'morlet')}")
         filters = {}
+        # Filter out invalid wavelet parameters
+        wavelet_params = dict(config.get("wavelet_params", {}))
+        # Remove parameters that morlet doesn't accept
+        invalid_params = {'w0', 'T'}  # T is handled separately
+        for param in invalid_params:
+            wavelet_params.pop(param, None)
+        
         filters['psi'] = filter_bank(
             wavelet_name=config.get("wavelet", "morlet"),
             max_scale=1,
             nb_orients=nb_orients,
-            **config.get("wavelet_params", {})
+            **wavelet_params
         )[0]  # Get first scale
         filter_dir = os.path.join(os.path.dirname(__file__), "../filters")
         hatphi_path = os.path.join(filter_dir, f"morlet_lp_N{image_shape[1]}_J1_L{nb_orients}.pt")
@@ -168,7 +175,37 @@ def create_wph_feature_extractor(config, image_shape, device):
     logger = LoggerManager.get_logger()
     downsample = config.get("downsample", False)
     
-    if downsample:
+    if downsample == 'hybrid':
+        filters = construct_filters_downsample(config, image_shape)
+        T = filters['psi'].shape[-1]
+        logger.info(f"Using hybrid WPH model with downsampled filters of size T={T}")
+        feature_extractor = WPHModelHybrid(
+            J=config["max_scale"],
+            L=config["nb_orients"],
+            A=config["num_phases"],
+            A_prime=config.get("num_phases_prime", 1),
+            M=image_shape[1],
+            N=image_shape[2],
+            T=T,
+            filters=filters,
+            num_channels=image_shape[0],
+            share_rotations=config["share_rotations"],
+            share_phases=config["share_phases"],
+            share_channels=config["share_channels"],
+            share_scales=config.get("share_scales", False),
+            share_scale_pairs=config.get("share_scale_pairs", True),
+            normalize_relu=config["normalize_relu"],
+            delta_j=config.get("delta_j"),
+            delta_l=config.get("delta_l"),
+            shift_mode=config["shift_mode"],
+            mask_angles=config["mask_angles"],
+            mask_union_highpass=config["mask_union_highpass"],
+            spatial_attn=config.get("spatial_attn", False),
+            grad_checkpoint=config.get("grad_checkpoint", False),
+            downsample_splits=config.get("downsample_splits", None),
+            use_antialiasing=config.get("use_antialiasing", False),
+        ).to(device)
+    elif downsample:
         filters = construct_filters_downsample(config, image_shape)
         T = filters['psi'].shape[-1]
         logger.info(f"Using downsampled WPH model with filter size T={T}")
@@ -185,7 +222,7 @@ def create_wph_feature_extractor(config, image_shape, device):
             share_rotations=config["share_rotations"],
             share_phases=config["share_phases"],
             share_channels=config["share_channels"],
-            share_scales=config.get("share_scales", True),
+            share_scales=config.get("share_scales", False),
             share_scale_pairs=config.get("share_scale_pairs", True),
             normalize_relu=config["normalize_relu"],
             delta_j=config.get("delta_j"),
@@ -213,6 +250,7 @@ def create_wph_feature_extractor(config, image_shape, device):
             share_rotations=config["share_rotations"],
             share_phases=config["share_phases"],
             share_channels=config["share_channels"],
+            share_scales=config.get("share_scales", False),
             normalize_relu=config["normalize_relu"],
             delta_j=config.get("delta_j"),
             delta_l=config.get("delta_l"),

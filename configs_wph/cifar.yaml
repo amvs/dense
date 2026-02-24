@@ -1,6 +1,6 @@
 # model setting
 wavelet: morlet
-max_scale: 3
+max_scale: 2
 nb_orients: 4
 num_phases: 2
 num_phases_prime: 1
@@ -26,15 +26,13 @@ wavelet_params:
 downsample_splits: null
 
 # training setting
-dataset: akash2sharma/tiny-imagenet
-root_dir: $PROJECT_HOME/data/datasets/akash2sharma/tiny-imagenet
-deeper_path: versions/1/tiny-imagenet-200
+dataset: cifar
 classifier_epochs: 15
 conv_epochs: 15
 batch_size: 200
-resize: 64
+resize: 32
 lr: 0.001
-lr_conv: 1.0e-6
+lr_conv: 1.0e-7
 lambda_reg: 1.0e+5
 train_ratio: 0.8
 test_ratio: 0.15
@@ -43,6 +41,6 @@ seed: 42
 vmap_chunk_size: 50
 
 # Classifier settings
-num_classes: 200
+num_classes: 10
 use_batch_norm: true
 

@@ -1,12 +1,26 @@
 import torch
+import warnings
 from torch import nn
 from typing import Optional, Literal, Union, Tuple
-from torch.fft import fft2, ifft2
+from torch.fft import fft2
 import copy
 
 from wph.layers.wave_conv_layer import WaveConvLayer, WaveConvLayerDownsample
-from wph.layers.relu_center_layer import ReluCenterLayer, ReluCenterLayerDownsample, ReluCenterLayerDownsamplePairs
-from wph.layers.corr_layer import CorrLayer, CorrLayerDownsample, CorrLayerDownsamplePairs
+from wph.layers.wave_conv_layer_hybrid import WaveConvLayerHybrid
+from wph.layers.relu_center_layer import (
+    ReluCenterLayer,
+    ReluCenterLayerDownsample,
+    ReluCenterLayerDownsamplePairs,
+    ReluCenterLayerHybrid,
+    ReluCenterLayerHybridPairs,
+)
+from wph.layers.corr_layer import (
+    CorrLayer,
+    CorrLayerDownsample,
+    CorrLayerDownsamplePairs,
+    CorrLayerHybrid,
+    CorrLayerHybridPairs,
+)
 from wph.layers.lowpass_layer import LowpassLayer
 from wph.layers.highpass_layer import HighpassLayer
 from wph.layers.spatial_attent_layer import SpatialAttentionLayer
@@ -57,9 +71,21 @@ class WPHFeatureBase(nn.Module):
         self.normalize_relu = normalize_relu
         self.spatial_attn = spatial_attn
         self.grad_checkpoint = grad_checkpoint
+        if self.spatial_attn:
+            self.attent = SpatialAttentionLayer()
 
     def forward(self, x: torch.Tensor):
         raise NotImplementedError("Subclasses should implement this!")
+
+    def _apply_spatial_attn(self, x):
+        """Apply spatial attention uniformly across tensor, list, or nested list inputs."""
+        if not self.spatial_attn:
+            return x
+        if isinstance(x, torch.Tensor):
+            return self.attent(x)
+        if isinstance(x, (list, tuple)):
+            return [self._apply_spatial_attn(xi) for xi in x]
+        return x
 
 class WPHModel(WPHFeatureBase):
     def __init__(
@@ -125,8 +151,6 @@ class WPHModel(WPHFeatureBase):
             mask_union=self.mask_union,
             mask_union_highpass=self.mask_union_highpass,
         )
-        if self.spatial_attn:
-            self.attent = SpatialAttentionLayer()
         self.nb_moments = self.corr.nb_moments + self.lowpass.nb_moments + self.highpass.nb_moments
         
     def flat_metadata(self):
@@ -209,14 +233,13 @@ class WPHModel(WPHFeatureBase):
     def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         nb = x.shape[0]
         xpsi = self.wave_conv(x)
-        if self.spatial_attn:
-            xpsi = self.attent(xpsi)
+        xpsi = self._apply_spatial_attn(xpsi)
         xrelu = self.relu_center(xpsi)
         xcorr = self.corr(xrelu.view(nb, self.num_channels * self.J * self.L * self.A, self.M, self.N), flatten=flatten, vmap_chunk_size=vmap_chunk_size, use_checkpoint=self.grad_checkpoint)
         hatx_c = fft2(x)
         xlow = self.lowpass(hatx_c)
         xhigh = self.highpass(hatx_c)
-        
+
         if flatten:
             return torch.cat([xcorr, xlow.flatten(start_dim=1), xhigh], dim=1)
         else:
@@ -300,8 +323,6 @@ class WPHModelDownsample(WPHFeatureBase):
                                      hatphi=filters["hatphi"],
                                      mask_angles=self.mask_angles,
                                      mask_union=False)
-        if self.spatial_attn:
-            self.attent = SpatialAttentionLayer()
         self.nb_moments = self.corr.nb_moments + self.lowpass.nb_moments + self.highpass.nb_moments
     
     def flat_metadata(self):
@@ -384,8 +405,7 @@ class WPHModelDownsample(WPHFeatureBase):
     def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> torch.Tensor:
         if self.share_scale_pairs:
             xpsi = self.wave_conv(x)
-            if self.spatial_attn:
-                xpsi = [self.attent(x) for x in xpsi]
+            xpsi = self._apply_spatial_attn(xpsi)
             xrelu = self.relu_center(xpsi)
             xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size, use_checkpoint=self.grad_checkpoint)
         else:
@@ -393,14 +413,228 @@ class WPHModelDownsample(WPHFeatureBase):
             # warm up indices by accessing property (built in __init__)
             needed_pairs = sorted(self.corr.grouped_indices.keys())
             xpsi_nested = self.wave_conv(x, scale_pairs=needed_pairs)
-            if self.spatial_attn:
-                xpsi_nested = [self.attent(x) for x in xpsi_nested]
+            xpsi_nested = self._apply_spatial_attn(xpsi_nested)
             xrelu = self.relu_center(xpsi_nested)
             xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size, use_checkpoint=self.grad_checkpoint)
         hatx_c = fft2(x)
         xlow = self.lowpass(hatx_c)
         xhigh = self.highpass(hatx_c)
         
+        if flatten:
+            return torch.cat([xcorr, xlow.flatten(start_dim=1), xhigh], dim=1)
+        else:
+            return xcorr, xlow, xhigh
+
+
+class WPHModelHybrid(WPHFeatureBase):
+    def __init__(
+        self,
+        T: int,
+        filters: dict[str, torch.Tensor],
+        hatphi: torch.Tensor = None,
+        downsample_splits: Optional[list[int]] = None,
+        share_scale_pairs: bool = True,
+        use_antialiasing: bool = True,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.T = T
+        self.downsample_splits = (
+            [j // 2 for j in range(self.J)] if downsample_splits is None else list(downsample_splits)
+        )
+        if len(self.downsample_splits) > self.J:
+            dropped_count = len(self.downsample_splits) - self.J
+            dropped_values = list(self.downsample_splits[self.J:])
+            warnings.warn(
+                "downsample_splits has length {total} but J={J}; "
+                "dropping {count} trailing entries at scales {scales}: {values}".format(
+                    total=len(self.downsample_splits),
+                    J=self.J,
+                    count=dropped_count,
+                    scales=list(range(self.J, len(self.downsample_splits))),
+                    values=dropped_values,
+                )
+            )
+            self.downsample_splits = self.downsample_splits[:self.J]
+        if len(self.downsample_splits) < self.J:
+            raise ValueError("downsample_splits must have length >= J")
+
+        self.share_scale_pairs = True if self.share_scales else share_scale_pairs
+        A_param = 1 if self.share_phases else self.A
+        L_param = 1 if self.share_rotations else self.L
+        J_param = 1 if self.share_scales else (self.J if self.share_scale_pairs else self.J * self.J)
+        assert filters["psi"].shape == (J_param, L_param, A_param, T, T), (
+            f"filters['psi'] must have shape {(J_param, L_param, A_param, T, T)}, has shape {filters['psi'].shape}"
+        )
+
+        self.wave_conv = WaveConvLayerHybrid(
+            J=self.J,
+            L=self.L,
+            A=self.A,
+            T=self.T,
+            M=self.M,
+            N=self.N,
+            num_channels=self.num_channels,
+            downsample_splits=self.downsample_splits,
+            share_rotations=self.share_rotations,
+            share_phases=self.share_phases,
+            share_channels=self.share_channels,
+            share_scales=self.share_scales,
+            share_scale_pairs=self.share_scale_pairs,
+            init_filters=filters["psi"],
+            use_antialiasing=use_antialiasing,
+        )
+
+        if self.share_scale_pairs:
+            self.relu_center = ReluCenterLayerHybrid(
+                J=self.J, M=self.M, N=self.N, normalize=self.normalize_relu, downsample_splits=self.downsample_splits
+            )
+            self.corr = CorrLayerHybrid(
+                J=self.J,
+                L=self.L,
+                A=self.A,
+                A_prime=self.A_prime,
+                M=self.M,
+                N=self.N,
+                num_channels=self.num_channels,
+                delta_j=self.delta_j,
+                delta_l=self.delta_l,
+                shift_mode=self.shift_mode,
+                mask_angles=self.mask_angles,
+                downsample_splits=self.downsample_splits,
+            )
+        else:
+            self.relu_center = ReluCenterLayerHybridPairs(
+                J=self.J, M=self.M, N=self.N, normalize=self.normalize_relu, downsample_splits=self.downsample_splits
+            )
+            self.corr = CorrLayerHybridPairs(
+                J=self.J,
+                L=self.L,
+                A=self.A,
+                A_prime=self.A_prime,
+                M=self.M,
+                N=self.N,
+                num_channels=self.num_channels,
+                delta_j=self.delta_j,
+                delta_l=self.delta_l,
+                shift_mode=self.shift_mode,
+                mask_angles=self.mask_angles,
+                downsample_splits=self.downsample_splits,
+            )
+
+        self.highpass = HighpassLayer(
+            J=self.J,
+            M=self.M,
+            N=self.N,
+            num_channels=self.num_channels,
+            mask_angles=self.mask_angles,
+            mask_union=False,
+            mask_union_highpass=self.mask_union_highpass,
+        )
+        self.lowpass = LowpassLayer(
+            J=self.J,
+            M=self.M,
+            N=self.N,
+            num_channels=self.num_channels,
+            hatphi=hatphi if hatphi is not None else filters["hatphi"],
+            mask_angles=self.mask_angles,
+            mask_union=False,
+        )
+        self.nb_moments = self.corr.nb_moments + self.lowpass.nb_moments + self.highpass.nb_moments
+
+    def flat_metadata(self):
+        """Combine metadata from all three layers (corr, lowpass, highpass) with layer indicator.
+
+        Returns consolidated metadata with common keys:
+        - scale1, scale2: scales (scale2=-1 for lowpass/highpass)
+        - rotation1, rotation2: rotations (rotation2=-1 for lowpass/highpass, rotation1=haar_idx for highpass)
+        - phase1, phase2: phases (-1 for lowpass/highpass)
+        - channel1, channel2: channels (channel2=-1 for highpass)
+        - mask_pos: mask position index
+        - layer: 0=corr, 1=lowpass, 2=highpass
+        - layer_feature_idx: index within that layer
+        """
+        corr_meta = self.corr.flat_metadata()
+        lowpass_meta = self.lowpass.flat_metadata()
+        highpass_meta = self.highpass.flat_metadata()
+
+        combined_meta = {
+            "layer": [],
+            "layer_feature_idx": [],
+            "scale1": [],
+            "scale2": [],
+            "rotation1": [],
+            "rotation2": [],
+            "phase1": [],
+            "phase2": [],
+            "channel1": [],
+            "channel2": [],
+            "mask_pos": [],
+        }
+
+        n_corr = len(corr_meta["scale1"])
+        for i in range(n_corr):
+            combined_meta["layer"].append(0)
+            combined_meta["layer_feature_idx"].append(i)
+            combined_meta["scale1"].append(corr_meta["scale1"][i])
+            combined_meta["scale2"].append(corr_meta["scale2"][i])
+            combined_meta["rotation1"].append(corr_meta["rotation1"][i])
+            combined_meta["rotation2"].append(corr_meta["rotation2"][i])
+            combined_meta["phase1"].append(corr_meta["phase1"][i])
+            combined_meta["phase2"].append(corr_meta["phase2"][i])
+            combined_meta["channel1"].append(-1)
+            combined_meta["channel2"].append(-1)
+            combined_meta["mask_pos"].append(corr_meta["mask_pos"][i])
+
+        n_lowpass = len(lowpass_meta["channel1"])
+        for i in range(n_lowpass):
+            combined_meta["layer"].append(1)
+            combined_meta["layer_feature_idx"].append(i)
+            combined_meta["scale1"].append(-1)
+            combined_meta["scale2"].append(-1)
+            combined_meta["rotation1"].append(-1)
+            combined_meta["rotation2"].append(-1)
+            combined_meta["phase1"].append(-1)
+            combined_meta["phase2"].append(-1)
+            combined_meta["channel1"].append(lowpass_meta["channel1"][i])
+            combined_meta["channel2"].append(lowpass_meta["channel2"][i])
+            combined_meta["mask_pos"].append(lowpass_meta["mask_pos"][i])
+
+        n_highpass = len(highpass_meta["rotation1"])
+        for i in range(n_highpass):
+            combined_meta["layer"].append(2)
+            combined_meta["layer_feature_idx"].append(i)
+            combined_meta["scale1"].append(-1)
+            combined_meta["scale2"].append(-1)
+            combined_meta["rotation1"].append(highpass_meta["rotation1"][i])
+            combined_meta["rotation2"].append(-1)
+            combined_meta["phase1"].append(-1)
+            combined_meta["phase2"].append(-1)
+            combined_meta["channel1"].append(highpass_meta["channel1"][i])
+            combined_meta["channel2"].append(-1)
+            combined_meta["mask_pos"].append(highpass_meta["mask_pos"][i])
+        return combined_meta
+
+    def forward(self, x: torch.Tensor, flatten: bool = True, vmap_chunk_size=None) -> torch.Tensor:
+        if self.share_scale_pairs:
+            xpsi = self.wave_conv(x)
+            # Apply spatial attention if enabled
+            xpsi = self._apply_spatial_attn(xpsi)
+            xrelu = self.relu_center(xpsi)
+            xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size, use_checkpoint=self.grad_checkpoint)
+        else:
+            needed_pairs = sorted(self.corr.grouped_indices.keys())
+            xpsi_nested = self.wave_conv(x, scale_pairs=needed_pairs)
+            # Apply spatial attention if enabled
+            xpsi_nested = self._apply_spatial_attn(xpsi_nested)
+            xrelu = self.relu_center(xpsi_nested)
+            xcorr = self.corr(xrelu, flatten=flatten, vmap_chunk_size=vmap_chunk_size, use_checkpoint=self.grad_checkpoint)
+
+        hatx_c = fft2(x)
+        xlow = self.lowpass(hatx_c)
+        xhigh = self.highpass(hatx_c)
+
         if flatten:
             return torch.cat([xcorr, xlow.flatten(start_dim=1), xhigh], dim=1)
         else:
@@ -463,8 +697,6 @@ class WPHClassifier(nn.Module):
 
         if copies > 1:
             extra_copies = [self._deep_copy_feature_extractor(feature_extractor) for _ in range(copies - 1)]
-            for fe_copy in extra_copies:
-                self._add_noise_to_copy(fe_copy, noise_std)
             self.feature_extractors.extend(extra_copies)
 
             # Trainable averaging layer initialized to uniform weights (1/copies)
@@ -596,13 +828,23 @@ class WPHClassifier(nn.Module):
         if 'classifier' in parts:
             for param in self.classifier.parameters():
                 param.requires_grad = parts['classifier']
-
+        
         if 'spatial_attn' in parts and hasattr(self.feature_extractors[0], 'spatial_attn') and self.feature_extractors[0].spatial_attn:
             trainable = parts['spatial_attn']
             for fe in self.feature_extractors:
                 if hasattr(fe, 'attent'):
                     for param in fe.attent.parameters():
                         param.requires_grad = trainable
+
+    def add_noise_to_copies(self):
+        """
+        Add noise to all feature extractor copies (except the first one).
+        Should be called after classifier training, before fine-tuning.
+        """
+        if self.copies > 1:
+            for fe_copy in self.feature_extractors[1:]:
+                self._add_noise_to_copy(fe_copy, self.noise_std)
+
 
     def fine_tuned_params(self):
         """

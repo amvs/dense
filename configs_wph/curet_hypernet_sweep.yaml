@@ -7,6 +7,8 @@ sweep:
   lr: [1.0e-3]
   classifier_epochs: [30]
   conv_epochs: [30]
+  hidden_dim: [1024]
+  metadata_dim: [4]
   seed: [0]
   share_scale_pairs: [false]
   delta_j: [null]

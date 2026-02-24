@@ -65,6 +65,7 @@ else:
     exp_root = "experiments"
 
 # Create output folder
+timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 if args.sweep_dir:
     sweep_dir = args.sweep_dir
     os.makedirs(sweep_dir, exist_ok=True)
@@ -76,6 +77,14 @@ else:
     else:
         sweep_dir = os.path.join(exp_root, dataset_name, f"{short_name}sweeps-foldSplit")
     os.makedirs(sweep_dir, exist_ok=True)
+
+# Save a copy of the sweep and base configs for resume_sweep.py
+sweep_copy_path = os.path.join(sweep_dir, "sweep_config.yaml")
+base_copy_path = os.path.join(sweep_dir, "base_config.yaml")
+with open(sweep_copy_path, "w", encoding="utf-8") as f:
+    yaml.safe_dump(sweep, f, sort_keys=False)
+with open(base_copy_path, "w", encoding="utf-8") as f:
+    yaml.safe_dump(base_config, f, sort_keys=False)
 
 params = sweep["sweep"]  # dict of lists
 

@@ -3,6 +3,16 @@ import yaml
 from dense.helpers import LoggerManager
 import numpy as np
 
+def expand_env_vars(obj):
+    """Recursively expand environment variables in config values."""
+    if isinstance(obj, dict):
+        return {k: expand_env_vars(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [expand_env_vars(v) for v in obj]
+    elif isinstance(obj, str):
+        return os.path.expandvars(obj)
+    return obj
+
 def expand_param(val):
     """
     If val is a dict with start/stop/step -> create a list via range
@@ -33,6 +43,9 @@ def load_config(filename: str):
 
     if not isinstance(config, dict):
         raise ValueError(f"Config file {filename} must define a dictionary at top-level.")
+    
+    # Expand environment variables in config
+    config = expand_env_vars(config)
     # logger = LoggerManager.get_logger()
     # logger.info(f"Loading config file {filename}")
     return config
@@ -42,18 +55,38 @@ def apply_overrides(config, overrides):
         if "=" not in ov:
             raise ValueError(f"Override '{ov}' not in key=value format")
         k, v = ov.split("=", 1)
-        # try to cast to number or bool
-        if v.lower() in ["true","false"]:
-            v = v.lower() == "true"
-        else:
+        v_str = v.strip()
+
+        # Helper to cast a single scalar token
+        def _cast_scalar(token: str):
+            tl = token.strip().lower()
+            if tl in ("true", "false"):
+                return tl == "true"
+            if tl in ("none", "null"):
+                return None
             try:
-                v = int(v)
+                return int(token)
             except ValueError:
                 try:
-                    v = float(v)
+                    return float(token)
                 except ValueError:
-                    pass  # leave as string
-        config[k] = v
+                    return token
+
+        parsed = None
+        try:
+            # YAML-style list/dict, e.g. [1, 2, 3] or {a: 1, b: 2}
+            if v_str.startswith("[") or v_str.startswith("{"):
+                parsed = yaml.safe_load(v_str)
+            # Comma-separated list, e.g. a,b,c or 1,2,3
+            elif "," in v_str:
+                parsed = [_cast_scalar(tok) for tok in v_str.split(",")]
+            else:
+                parsed = _cast_scalar(v_str)
+        except Exception:
+            # Fallback: leave as raw string if parsing fails
+            parsed = v_str
+
+        config[k] = parsed
     return config
 
 def save_config(folder:str, config):
