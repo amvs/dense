@@ -7,6 +7,96 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 
+def margin_loss(data, label, margin):
+    loss = 1
+    if np.argmax(data) == label:
+        correct_prob = data[label]
+        other_probs = np.delete(data, label)
+        if (correct_prob - np.max(other_probs)) > margin:
+            loss = 0
+    return loss
+
+def plot_margin_loss(margins: list[float] = [0.05, 0.2], num_classes: int = 5):
+    # create figure to demonstrate margin loss
+    classes = list(range(num_classes))
+    correct_class = np.random.randint(num_classes)
+    random_logits = np.random.rand(num_classes)
+    random_logits = random_logits/random_logits.sum()
+
+    correct_pred = np.random.rand(num_classes)
+    correct_pred[correct_class] += 1
+    correct_pred = correct_pred/correct_pred.sum()
+
+    incorrect_pred = np.random.rand(num_classes)
+    incorrect_class = np.random.randint(num_classes)
+    while incorrect_class == correct_class:
+        incorrect_class = np.random.randint(num_classes)
+    incorrect_pred[incorrect_class] += 1
+    incorrect_pred = incorrect_pred/incorrect_pred.sum()
+
+    margins_sorted = sorted(margins)
+    if len(margins_sorted) > 1:
+        small_margin_delta = 0.5 * (margins_sorted[0] + margins_sorted[-1])
+    else:
+        small_margin_delta = margins_sorted[0] * 0.5
+    small_margin_delta = min(max(small_margin_delta, 1e-3), 0.9)
+
+    second_prob = 0.3
+    correct_prob = second_prob + small_margin_delta
+    if correct_prob >= 0.7:
+        correct_prob = 0.6
+        second_prob = correct_prob - small_margin_delta
+    remaining_total = 1.0 - (correct_prob + second_prob)
+    if remaining_total < 0:
+        correct_prob = (1.0 + small_margin_delta) / 2.0 - 1e-3
+        second_prob = correct_prob - small_margin_delta
+        remaining_total = 1.0 - (correct_prob + second_prob)
+
+    small_margin_pred = np.full(num_classes, remaining_total / max(num_classes - 2, 1))
+    small_margin_pred[correct_class] = correct_prob
+    second_best = (correct_class + 1) % num_classes
+    small_margin_pred[second_best] = second_prob
+
+    scenarios = [
+        ("Random Predictions", random_logits),
+        ("Small-Margin Correct", small_margin_pred),
+        ("Correct Predictions", correct_pred),
+        ("Incorrect Predictions", incorrect_pred),
+    ]
+
+    fig, axs = plt.subplots(len(scenarios), len(margins), figsize=(5 * len(margins), 4.5 * len(scenarios)))
+    fig.suptitle(f"Margin Loss Demo: Correct Class = {correct_class}")
+
+    bar_colors = ["#b0b0b0"] * num_classes
+    bar_colors[correct_class] = "#2ca02c"
+
+    for i, margin in enumerate(margins):
+        axs[0, i].set_title(f"Margin = {margin}")
+        for j, (scenario_label, scenario_data) in enumerate(scenarios):
+            ax = axs[j, i]
+            is_correct = np.argmax(scenario_data) == correct_class
+            loss = margin_loss(data=scenario_data, label=correct_class, margin=margin)
+            correct_prob = scenario_data[correct_class]
+            max_other = np.max(scenario_data)
+            ax.bar(x=classes, height=scenario_data, color=bar_colors)
+            ax.set_ylim(0, 1)
+            ax.hlines(
+                max_other - margin,
+                xmin=-0.5,
+                xmax=num_classes - 0.5,
+                colors="red",
+                linestyles="dashed",
+                label="Margin threshold",
+            )
+            ax.set_ylabel(scenario_label if i == 0 else "")
+            status = "pass" if (loss == 0 and is_correct) else "fail"
+            ax.set_xlabel(f"Correct={is_correct}, margin={status}")
+            if i == len(margins) - 1:
+                ax.legend(loc="upper right")
+    plt.tight_layout()
+    plt.savefig("margin_loss_demo.png")
+    plt.close()
+
 def df_from_logs(args):
     sweep_dir = args.sweep_dir
     rows = []
@@ -80,6 +170,9 @@ def add_intermediate_l2_norms(df, sweep_dir):
                 new_row["feature_extractor_best_acc"] = acc_row["val_acc"]
                 new_row["l2_norm_finetuning"] = acc_row["l2_norm"]
                 new_row["_intermediate"] = True
+                new_row['base_loss'] = acc_row.get('base_loss', np.nan)
+                new_row['reg_loss'] = acc_row.get('reg_loss', np.nan)
+                new_row['total_loss'] = acc_row.get('total_loss', np.nan)
                 new_rows.append(new_row)
         except Exception as e:
             print(f"Warning: Failed to read accuracy.csv from {run_path}: {e}")
@@ -274,24 +367,22 @@ def plot_generalization_error(df, sweep_dir, fname_suffix="", use_best=True):
     print(f"Generalization error plot saved to {plot_path}")
 
 
-def plot_generalization_error_vs_l2(df, sweep_dir, fname_suffix="", use_best=True):
+def plot_generalization_error_vs_l2(df, sweep_dir, fname_suffix="", metric_name="feature_extractor_best_acc", split_by=None):
     """
-    Plot feature extractor generalization error vs L2 norm, separated by train_ratio.
+    Plot feature extractor generalization error vs L2 norm and L2 norm vs test accuracy, separated by train_ratio.
     
     Args:
         df: DataFrame with experiment results
         sweep_dir: Path to sweep directory
         fname_suffix: Suffix for output filename
-        use_best: If True, use best_acc; if False, use last_acc
+        metric_name: Column name for the metric to use (e.g. 'feature_extractor_best_acc' or 'feature_extractor_last_acc')
+        split_by: Column name to use for different markers (optional)
     """
     results_path = os.path.join(sweep_dir, "results")
     
-    # Calculate generalization errors
-    acc_suffix = "best_acc" if use_best else "last_acc"
-    
     # Feature extractor generalization error
-    if f"feature_extractor_{acc_suffix}" in df.columns and "feature_extractor_test_acc" in df.columns:
-        df["feature_extractor_gen_error"] = df[f"feature_extractor_{acc_suffix}"] - df["feature_extractor_test_acc"]
+    if metric_name in df.columns and "feature_extractor_test_acc" in df.columns:
+        df["feature_extractor_gen_error"] = df[metric_name] - df["feature_extractor_test_acc"]
     
     if "feature_extractor_gen_error" not in df.columns or "l2_norm_finetuning" not in df.columns:
         return
@@ -300,38 +391,104 @@ def plot_generalization_error_vs_l2(df, sweep_dir, fname_suffix="", use_best=Tru
     if df_with_l2.empty:
         return
     
-    # Define markers for random_filters and colors for train_ratio
+    # Color by random_filters
     random_filters_values = sorted(df_with_l2["random_filters"].unique())
-    markers = {val: marker for val, marker in zip(random_filters_values, ['o', 's'][:len(random_filters_values)])}
-    
+    colors = plt.cm.Set1(np.linspace(0, 1, len(random_filters_values)))
+    color_map = {val: colors[i] for i, val in enumerate(random_filters_values)}
+
+    # Create marker map if split_by is specified
+    marker_map = {}
+    if split_by is not None and split_by in df_with_l2.columns:
+        split_values = sorted(df_with_l2[split_by].unique())
+        markers = ['o', 's', '^', 'v', 'D', 'p', '*', 'h', 'x', '+']
+        marker_map = {val: markers[i % len(markers)] for i, val in enumerate(split_values)}
+
     train_ratio_values = sorted(df_with_l2["train_ratio"].unique())
-    colors = plt.cm.Set1(np.linspace(0, 1, len(train_ratio_values)))
-    color_map = {val: colors[i] for i, val in enumerate(train_ratio_values)}
-    
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    for train_ratio_val, train_ratio_grp in df_with_l2.groupby("train_ratio"):
-        for rf_val, rf_grp in train_ratio_grp.groupby("random_filters"):
-            label = f"train_ratio={train_ratio_val}, random_filters={rf_val}"
-            ax.scatter(
-                rf_grp["l2_norm_finetuning"],
-                rf_grp["feature_extractor_gen_error"],
-                label=label,
-                alpha=0.6,
-                marker=markers[rf_val],
-                color=color_map[train_ratio_val],
-                s=80
-            )
-    
-    ax.set_xlabel("L2 Norm (Fine-tuning)")
-    ax.set_ylabel("Generalization Error")
-    ax.set_title(f"Feature Extractor Generalization Error vs L2 Norm ({acc_suffix})")
-    ax.set_xscale("log")
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax.grid(True, alpha=0.3)
+    nrows = len(train_ratio_values)
+    ncols = 2
+    fig, axes = plt.subplots(nrows, ncols, figsize=(12, 4.5 * nrows), squeeze=False)
+
+    for idx, train_ratio_val in enumerate(train_ratio_values):
+        train_ratio_grp = df_with_l2[df_with_l2["train_ratio"] == train_ratio_val]
+        
+        # Left plot: Generalization error vs L2 norm
+        ax_left = axes[idx, 0]
+        if split_by is not None and split_by in train_ratio_grp.columns:
+            # Group by both random_filters and split_by
+            for rf_val, rf_grp in train_ratio_grp.groupby("random_filters"):
+                for split_val, split_grp in rf_grp.groupby(split_by):
+                    label = f"random_filters={rf_val}, {split_by}={split_val}"
+                    marker = marker_map.get(split_val, 'o')
+                    ax_left.scatter(
+                        split_grp["l2_norm_finetuning"],
+                        split_grp["feature_extractor_gen_error"],
+                        label=label,
+                        alpha=0.6,
+                        color=color_map[rf_val],
+                        marker=marker,
+                        s=80,
+                    )
+        else:
+            # Original behavior without split_by
+            for rf_val, rf_grp in train_ratio_grp.groupby("random_filters"):
+                label = f"random_filters={rf_val}"
+                ax_left.scatter(
+                    rf_grp["l2_norm_finetuning"],
+                    rf_grp["feature_extractor_gen_error"],
+                    label=label,
+                    alpha=0.6,
+                    color=color_map[rf_val],
+                    s=80,
+                )
+        
+        ax_left.set_title(f"Gen. Error vs L2 (train_ratio={train_ratio_val})")
+        ax_left.set_xlabel("L2 Norm (Fine-tuning)")
+        ax_left.set_ylabel("Generalization Error")
+        ax_left.set_xscale("log")
+        ax_left.grid(True, alpha=0.3)
+        ax_left.legend()
+        
+        # Right plot: L2 norm vs test accuracy
+        ax_right = axes[idx, 1]
+        if split_by is not None and split_by in train_ratio_grp.columns:
+            # Group by both random_filters and split_by
+            for rf_val, rf_grp in train_ratio_grp.groupby("random_filters"):
+                for split_val, split_grp in rf_grp.groupby(split_by):
+                    label = f"random_filters={rf_val}, {split_by}={split_val}"
+                    marker = marker_map.get(split_val, 'o')
+                    ax_right.scatter(
+                        split_grp["l2_norm_finetuning"],
+                        split_grp["feature_extractor_test_acc"],
+                        label=label,
+                        alpha=0.6,
+                        color=color_map[rf_val],
+                        marker=marker,
+                        s=80,
+                    )
+        else:
+            # Original behavior without split_by
+            for rf_val, rf_grp in train_ratio_grp.groupby("random_filters"):
+                label = f"random_filters={rf_val}"
+                ax_right.scatter(
+                    rf_grp["l2_norm_finetuning"],
+                    rf_grp["feature_extractor_test_acc"],
+                    label=label,
+                    alpha=0.6,
+                    color=color_map[rf_val],
+                    s=80,
+                )
+        
+        ax_right.set_title(f"Test Acc vs L2 (train_ratio={train_ratio_val})")
+        ax_right.set_xlabel("L2 Norm (Fine-tuning)")
+        ax_right.set_ylabel("Test Accuracy")
+        ax_right.set_xscale("log")
+        ax_right.grid(True, alpha=0.3)
+        ax_right.legend()
+
+    fig.suptitle(f"Generalization Error and Test Accuracy vs L2 Norm ({metric_name})")
     plt.tight_layout()
     
-    plot_path = os.path.join(results_path, f"generalization_error_vs_l2_{acc_suffix}_{fname_suffix}.png")
+    plot_path = os.path.join(results_path, f"generalization_error_vs_l2_{metric_name}_{fname_suffix}.png")
     plt.savefig(plot_path)
     plt.close()
     print(f"Generalization error vs L2 plot saved to {plot_path}")
@@ -357,13 +514,15 @@ if __name__ == "__main__":
         default=None,
         help="Column name to split dataset and generate separate plots for each unique value (e.g. 'S', 'max_scale'). If not provided, generates plots for entire dataset.",
     )
+    parser.add_argument('--split-plots-individual', action='store_true', help="If set, generates separate plots for each split value instead of combined plots.")
+    parser.add_argument('--hybrid', action='store_true', help="If set, generates slope plot using rows downsample=hybrid instead of downsample=True.")
     args = parser.parse_args()
     df = df_from_logs(args)
     # df['wavelet_params'] = df['wavelet_params'].apply(literal_eval)
     df = df.join(pd.json_normalize(df['wavelet_params']))
     
     # Add intermediate l2 norms from accuracy.csv files
-    df = add_intermediate_l2_norms(df, args.sweep_dir)
+    df_l2 = add_intermediate_l2_norms(df, args.sweep_dir)
     
     df_lr1 = df.loc[df.lambda_reg == 1].reset_index(drop=True)
     df_lr1_downsample = df_lr1.loc[df_lr1.downsample].reset_index(drop=True)
@@ -374,30 +533,37 @@ if __name__ == "__main__":
         split_values = sorted(df[args.split_by].dropna().unique())
         print(f"Splitting plots by '{args.split_by}' with values: {split_values}")
     
-    for split_val in split_values:
-        if split_val is None:
-            df_split = df
-            suffix = "all"
-        else:
-            df_split = df.loc[df[args.split_by] == split_val].reset_index(drop=True)
-            if df_split.empty:
-                continue
-            suffix = f"{args.split_by}={split_val}"
-        
-        plot_all_boxplots(
-            df_split,
-            group_cols=['max_scale', 'train_ratio', 'random_filters'],
-            sweep_dir=args.sweep_dir,
-            fname_suffix=suffix,
-        )
+    if args.split_plots_individual:
+        for split_val in split_values:
+            if split_val is None:
+                df_split = df
+                suffix = "all"
+            else:
+                df_split = df.loc[df[args.split_by] == split_val].reset_index(drop=True)
+                if df_split.empty:
+                    continue
+                suffix = f"{args.split_by}={split_val}"
+            
+            plot_all_boxplots(
+                df_split,
+                group_cols=['max_scale', 'train_ratio', 'random_filters'],
+                sweep_dir=args.sweep_dir,
+                fname_suffix=suffix,
+            )
     # df_lr1_fullsize = df_lr1.loc[~df_lr1.downsample].reset_index(drop=True)
-    plot_all_boxplots(df, group_cols = [args.split_by, 'train_ratio','lambda_reg', 'random_filters'],
+    group_cols = ['max_scale', 'train_ratio', 'random_filters']
+    if args.split_by and args.split_by in df.columns:
+        group_cols = [args.split_by] + group_cols
+    plot_all_boxplots(df, group_cols = group_cols,
                     sweep_dir=args.sweep_dir,
                     fname_suffix = 'all')
     # plot_all_boxplots(df_lr1_fullsize, group_cols = ['max_scale', 'train_ratio', 'random_filters'],
     #                   sweep_dir=args.sweep_dir,
     #                   fname_suffix = 'lreg=1_fullsize')
-    df_downsample = df.loc[df.downsample].reset_index(drop=True)
+    if args.hybrid:
+        df_downsample = df.loc[df.downsample == 'hybrid'].reset_index(drop=True)
+    else:
+        df_downsample = df.loc[df.downsample].reset_index(drop=True)
     # df_fullsize = df.loc[~df.downsample].reset_index(drop=True)
     pair_boxplots(
         df,
@@ -442,31 +608,33 @@ if __name__ == "__main__":
     )
 
     # Plot generalization errors
-    plot_generalization_error(df, args.sweep_dir, fname_suffix='all', use_best=True)
-    plot_generalization_error(df, args.sweep_dir, fname_suffix='all', use_best=False)
-    plot_generalization_error_vs_l2(df, args.sweep_dir, fname_suffix='all', use_best=True)
-    plot_generalization_error_vs_l2(df, args.sweep_dir, fname_suffix='all', use_best=False)
-    
+    # plot_generalization_error(df, args.sweep_dir, fname_suffix='all', use_best=True)
+    # plot_generalization_error(df, args.sweep_dir, fname_suffix='all', use_best=False)
+    plot_generalization_error_vs_l2(df_l2, args.sweep_dir, fname_suffix='intermediate_all', metric_name='feature_extractor_last_acc', split_by=args.split_by)
+    plot_generalization_error_vs_l2(df, args.sweep_dir, fname_suffix='last_all', metric_name='feature_extractor_last_acc', split_by=args.split_by)
+    plot_generalization_error_vs_l2(df, args.sweep_dir, fname_suffix='best_all', metric_name='feature_extractor_best_acc', split_by=args.split_by)
+
+    if args.split_plots_individual:
     # Side-by-side plots for each split value
-    for split_val in split_values:
-        if split_val is None:
-            continue  # Already plotted above for full dataset
-        df_split = df.loc[df[args.split_by] == split_val].reset_index(drop=True)
-        if df_split.empty:
-            continue
-        suffix = f"{args.split_by}={split_val}"
-        side_by_side_boxplots(
-            df_split,
-            metrics=['feature_extractor_test_acc', 'classifier_test_acc'],
-            group_cols=['lambda_reg', 'train_ratio', 'random_filters'],
-            facet_col='train_ratio',
-            sweep_dir=args.sweep_dir,
-            fname_suffix=suffix,
-        )
-        plot_generalization_error(df_split, args.sweep_dir, fname_suffix=suffix, use_best=True)
-        plot_generalization_error(df_split, args.sweep_dir, fname_suffix=suffix, use_best=False)
-        plot_generalization_error_vs_l2(df_split, args.sweep_dir, fname_suffix=suffix, use_best=True)
-        plot_generalization_error_vs_l2(df_split, args.sweep_dir, fname_suffix=suffix, use_best=False)
+        for split_val in split_values:
+            if split_val is None:
+                continue  # Already plotted above for full dataset
+            df_split = df.loc[df[args.split_by] == split_val].reset_index(drop=True)
+            if df_split.empty:
+                continue
+            suffix = f"{args.split_by}={split_val}"
+            side_by_side_boxplots(
+                df_split,
+                metrics=['feature_extractor_test_acc', 'classifier_test_acc'],
+                group_cols=['lambda_reg', 'train_ratio', 'random_filters'],
+                facet_col='train_ratio',
+                sweep_dir=args.sweep_dir,
+                fname_suffix=suffix,
+            )
+            plot_generalization_error(df_split, args.sweep_dir, fname_suffix=suffix, use_best=True)
+            plot_generalization_error(df_split, args.sweep_dir, fname_suffix=suffix, use_best=False)
+            plot_generalization_error_vs_l2(df_split, args.sweep_dir, fname_suffix=suffix, metric_name='feature_extractor_best_acc', split_by=args.split_by)
+            plot_generalization_error_vs_l2(df_split, args.sweep_dir, fname_suffix=suffix, metric_name='feature_extractor_last_acc', split_by=args.split_by)
 
     slope_group_cols = [
         "share_rotations",

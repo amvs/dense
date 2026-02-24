@@ -1,6 +1,6 @@
 # model setting
 wavelet: morlet
-max_scale: 5
+max_scale: 6
 nb_orients: 4
 num_phases: 2
 num_phases_prime: 1
@@ -22,19 +22,19 @@ downsample: true
 # Example: [0, 1, 2] means scales 0,1,2 get 2^0, 2^1, 2^2 signal downsampling
 downsample_splits: null
 share_scale_pairs: true
-wavelet_params:
-  S: 15 # S: 5 # S: 7 # 
-  sigma: 1.4
-  xi: 1.57 # xi: 2.356 # xi: 1.57 # xi: 0.75 * pi 
+# wavelet_params:
+#   S: 15 # S: 5 # S: 7 # 
+#   sigma: 1.4
+#   xi: 1.57 # xi: 2.356 # xi: 1.57 # xi: 0.75 * pi 
 spatial_attn: false
 
 # training setting
-dataset: smohsensadeghi/curet-dataset
-deeper_path: CUReT/curetgrey/
-resize: 200
+dataset: imbikramsaha/caltech-101
+deeper_path: caltech-101
+resize: 256
 classifier_epochs: 15
 conv_epochs: 15
-batch_size: 32
+batch_size: 16
 lr: 0.0001
 lr_conv: 1.0e-6 # verified good choice for downsample=true and false
 lambda_reg: 1.0e+5
@@ -51,8 +51,7 @@ model_type: wph
 freeze_classifier: true
 
 # Classifier settings
-num_classes: 61
+num_classes: 101
 use_batch_norm: true
 copies: 1
 noise_std: 0.01
-

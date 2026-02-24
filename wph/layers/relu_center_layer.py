@@ -210,3 +210,107 @@ class ReluCenterLayerDownsamplePairs(ReluCenterLayer):
                     inner_out[j2] = fm
             out_nested.append(inner_out)
         return out_nested
+
+
+class ReluCenterLayerHybrid(ReluCenterLayer):
+    """
+    ReLU + masking for hybrid wavelet outputs (per-scale downsample_splits).
+    Expects a list of length J with tensors shaped (B, C, L, A, H_j, W_j).
+    """
+
+    def __init__(self, downsample_splits: list[int], **kwargs):
+        self.downsample_splits = list(downsample_splits)
+        super().__init__(**kwargs)
+
+        # overwrite masks with hybrid sizes
+        _masks_list = []
+        for j in range(self.J):
+            h_j = math.ceil(self.M / (2 ** self.downsample_splits[j]))
+            w_j = math.ceil(self.N / (2 ** self.downsample_splits[j]))
+            m_stack = self.maskns(J=1, M=h_j, N=w_j)
+            mask = m_stack[0].view(1, 1, 1, 1, h_j, w_j)
+            _masks_list.append(mask)
+        for i, m in enumerate(_masks_list):
+            self.register_buffer(f"mask_{i}", m)
+
+    def get_mask(self, idx: int) -> torch.Tensor:
+        return getattr(self, f"mask_{idx}")
+
+    def forward(self, x: list[torch.Tensor]) -> list[torch.Tensor]:
+        out = []
+        for idx, feature_map in enumerate(x):
+            expected_h = math.ceil(self.M / (2 ** self.downsample_splits[idx]))
+            expected_w = math.ceil(self.N / (2 ** self.downsample_splits[idx]))
+            assert feature_map.shape[-2:] == (expected_h, expected_w), (
+                f"Expected spatial dims {(expected_h, expected_w)} for scale {idx}, got {feature_map.shape[-2:]}"
+            )
+            fm = self.mean(feature_map)
+            if self.normalize:
+                fm = self.std(fm)
+            if torch.is_complex(fm):
+                fm = fm.real
+            fm = F.relu(fm)
+            mask = self.get_mask(idx)
+            fm = fm * mask
+            out.append(fm)
+        return out
+
+
+class ReluCenterLayerHybridPairs(ReluCenterLayer):
+    """
+    Pair-specific hybrid ReLU + masking. Accepts nested structures similar to
+    ReluCenterLayerDownsamplePairs but uses per-scale downsample_splits.
+    """
+
+    def __init__(self, downsample_splits: list[int], **kwargs):
+        self.downsample_splits = list(downsample_splits)
+        super().__init__(**kwargs)
+
+        _masks_list = []
+        for j in range(self.J):
+            h_j = math.ceil(self.M / (2 ** self.downsample_splits[j]))
+            w_j = math.ceil(self.N / (2 ** self.downsample_splits[j]))
+            m_stack = self.maskns(J=1, M=h_j, N=w_j)
+            mask = m_stack[0].view(1, 1, 1, 1, h_j, w_j)
+            _masks_list.append(mask)
+        for i, m in enumerate(_masks_list):
+            self.register_buffer(f"mask_{i}", m)
+
+    def get_mask(self, idx: int) -> torch.Tensor:
+        return getattr(self, f"mask_{idx}")
+
+    def forward(self, x_nested):
+        out_nested = []
+        for j1, row in enumerate(x_nested):
+            if row is None:
+                out_nested.append(None)
+                continue
+            inner_out = {} if isinstance(row, dict) else [None] * len(row)
+            iterable = row.items() if isinstance(row, dict) else enumerate(row)
+
+            for j2, feature_map in iterable:
+                if feature_map is None:
+                    if isinstance(inner_out, dict):
+                        inner_out[j2] = None
+                    else:
+                        inner_out[j2] = None
+                    continue
+                expected_h = math.ceil(self.M / (2 ** self.downsample_splits[j1]))
+                expected_w = math.ceil(self.N / (2 ** self.downsample_splits[j1]))
+                assert feature_map.shape[-2:] == (expected_h, expected_w), (
+                    f"Expected spatial dims {(expected_h, expected_w)} for scale {j1}, got {feature_map.shape[-2:]}"
+                )
+                fm = self.mean(feature_map)
+                if self.normalize:
+                    fm = self.std(fm)
+                if torch.is_complex(fm):
+                    fm = fm.real
+                fm = F.relu(fm)
+                mask = self.get_mask(j1)
+                fm = fm * mask
+                if isinstance(inner_out, dict):
+                    inner_out[j2] = fm
+                else:
+                    inner_out[j2] = fm
+            out_nested.append(inner_out)
+        return out_nested
