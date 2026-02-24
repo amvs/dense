@@ -29,14 +29,18 @@ def example_basic_usage():
     T = 8  # Filter spatial size (T x T)
     M, N = 28, 28  # Image dimensions (28x28 like MNIST)
     
-    # Generate filter bank (Morlet wavelets)
-    wavelet_params = {"S": 7, "T": T, "w0": 1.09955}
-    filters = filter_bank(
-        J=J, L=L, A=A,
-        S=wavelet_params["S"],
-        T=T,
-        w0=wavelet_params["w0"]
+    # Generate filter bank (Morlet wavelets) using the dense.wavelets API
+    wavelet_name = "morlet"
+    filter_bank_scales = filter_bank(
+        wavelet_name=wavelet_name,
+        max_scale=J,
+        nb_orients=L,
     )
+    # Adapt list-of-scales into the dict format expected by WPHModelHybrid
+    filters = {
+        "psi": [scale["psi"] for scale in filter_bank_scales],
+        "hatphi": filter_bank_scales[0]["hatphi"],
+    }
     
     # Create hybrid WPH model with default downsample_splits
     model = WPHModelHybrid(
