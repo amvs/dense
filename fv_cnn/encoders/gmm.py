@@ -52,57 +52,58 @@ class ImprovedGaussianMixModel(nn.Module):
         return samples
 
 #%%
-n_components = 1
-n_features = 2
-gmm = ImprovedGaussianMixModel( n_features=n_features, n_components=n_components)
-train_means = torch.randn( (n_components,n_features))
-train_stdevs = (torch.rand( (n_components,n_features)) + 1.0) * 0.25
-train_weights = torch.rand( n_components)
-ind_dists = torch.distributions.Independent( torch.distributions.Normal( train_means, train_stdevs), 1)
-mix_weight = torch.distributions.Categorical( train_weights)
-train_dist = torch.distributions.MixtureSameFamily( mix_weight, ind_dists)
+if __name__ == "__main__":
+    n_components = 1
+    n_features = 2
+    gmm = ImprovedGaussianMixModel( n_features=n_features, n_components=n_components)
+    train_means = torch.randn( (n_components,n_features))
+    train_stdevs = (torch.rand( (n_components,n_features)) + 1.0) * 0.25
+    train_weights = torch.rand( n_components)
+    ind_dists = torch.distributions.Independent( torch.distributions.Normal( train_means, train_stdevs), 1)
+    mix_weight = torch.distributions.Categorical( train_weights)
+    train_dist = torch.distributions.MixtureSameFamily( mix_weight, ind_dists)
 
-train_samp = train_dist.sample( [2000])
-valid_samp = torch.rand( (4000, 2)) * 8 - 4.0
+    train_samp = train_dist.sample( [2000])
+    valid_samp = torch.rand( (4000, 2)) * 8 - 4.0
 
-#%%
+    #%%
 
-max_iter = 2000
-features = train_samp #.to( 'cuda')
+    max_iter = 2000
+    features = train_samp #.to( 'cuda')
 
-optim = torch.optim.Adam( gmm.parameters(),  lr=5e-4)
-metrics = {'loss':[]}
+    optim = torch.optim.Adam( gmm.parameters(),  lr=5e-4)
+    metrics = {'loss':[]}
 
-for i in range( max_iter):
-    optim.zero_grad()
-    loss = - gmm(  features)
-    loss.mean().backward()
-    optim.step()
-    metrics[ 'loss'].append( loss.mean().item())
-    print( f"{i} ) \t {metrics[ 'loss'][-1]:0.5f}", end=f"{' '*20}\r")
-    if metrics[ 'loss'][-1] < 0.1:
-        print( "---- Close enough")
-        break
-    if len( metrics[ 'loss']) > 300 and np.std( metrics[ 'loss'][-300:]) < 0.0005:
-        print( "---- Giving up")
-        break
-    if i % 100 == 0:
-        print(i, metrics['loss'][-1])
-print( f"Min Loss: {np.min( metrics[ 'loss']):0.5f}")
+    for i in range( max_iter):
+        optim.zero_grad()
+        loss = - gmm(  features)
+        loss.mean().backward()
+        optim.step()
+        metrics[ 'loss'].append( loss.mean().item())
+        print( f"{i} ) \t {metrics[ 'loss'][-1]:0.5f}", end=f"{' '*20}\r")
+        if metrics[ 'loss'][-1] < 0.1:
+            print( "---- Close enough")
+            break
+        if len( metrics[ 'loss']) > 300 and np.std( metrics[ 'loss'][-300:]) < 0.0005:
+            print( "---- Giving up")
+            break
+        if i % 100 == 0:
+            print(i, metrics['loss'][-1])
+    print( f"Min Loss: {np.min( metrics[ 'loss']):0.5f}")
 
 
-#%% 
+    #%% 
 
-# Usage example
-n_features = 2
-n_components = 3
-model = ImprovedGaussianMixModel(n_features, n_components).to('cuda')
+    # Usage example
+    n_features = 2
+    n_components = 3
+    model = ImprovedGaussianMixModel(n_features, n_components).to('cuda')
 
-# Generate some random data
-x = torch.randn(1000, n_features).to('cuda')
+    # Generate some random data
+    x = torch.randn(1000, n_features).to('cuda')
 
-# Compute log probabilities
-log_probs = model(x)
+    # Compute log probabilities
+    log_probs = model(x)
 
-# Sample from the model
-samples = model.sample(1000)
+    # Sample from the model
+    samples = model.sample(1000)
