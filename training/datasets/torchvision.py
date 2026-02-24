@@ -9,6 +9,8 @@ from dense.helpers import LoggerManager
 import torch
 
 
+
+
 def _stats_cache_path(identifier: str, resize: int | None, cache_dir: str = "data/stats") -> Path:
     h = hashlib.sha1(identifier.encode("utf-8")).hexdigest()[:10]
     p = Path(cache_dir)
@@ -171,10 +173,13 @@ def get_torchvision_loaders(
     dataset_kwargs=None,
     dataset_kwargs_train=None,
     dataset_kwargs_test=None,
+    pre_transforms=None,
 ):
     logger = LoggerManager.get_logger()
 
     base_transforms = []
+    if pre_transforms is not None:
+        base_transforms.extend(pre_transforms)
     if resize is not None:
         base_transforms.append(transforms.Resize((resize, resize)))
     base_transforms.append(transforms.ToTensor())
